@@ -13,15 +13,19 @@ var boxType = gift.RegisterType("ui.Box")
 //
 // # Size
 //
-// A Box has no content and therefore no intrinsic size. It reports the
-// smallest size its constraints and its padding allow, which is the padding
-// extent for a loose constraint and zero for an empty one. Give it a size with
-// [BoxView.Frame], [BoxView.MinWidth] and friends, or let a parent stack
-// stretch it with [BoxView.Flex].
+// A Box has no content and therefore no intrinsic size, so it is greedy: it
+// takes the whole extent on every axis that is bounded, and collapses to its
+// padding on an axis that is not.
 //
-// Sizing to the maximum instead would have been the other defensible choice,
-// but a stack measures its children with an unbounded main axis, so a Box that
-// takes the maximum would be infinitely tall inside a VStack.
+// That makes the obvious spelling work. A ZStack hands its children loose but
+// bounded constraints, so
+//
+//	ui.ZStack(ui.Box().Background(c), content)
+//
+// paints the plate behind the content. A stack, however, measures an
+// inflexible child with an unbounded main axis, so a Box in a VStack still
+// collapses on the main axis: give it a height with [BoxView.Frame] or
+// [BoxView.MinHeight], or a share of the leftover space with [BoxView.Flex].
 type BoxView struct {
 	base
 }
@@ -34,11 +38,10 @@ func (b BoxView) ViewType() gift.TypeID { return boxType }
 
 // Build implements gift.View.
 //
-// A Box is laid out by the overlay algorithm with zero children, which
-// reduces to "padding plus constraints" and keeps one code path instead of
-// two.
+// A Box has its own tiny layout path rather than reusing the overlay
+// algorithm, because its sizing rule differs: it is greedy on bounded axes.
 func (b BoxView) Build(*gift.BuildContext) gift.Element {
-	return element(b.base, kindOverlay, 0, layout.Vertical, nil)
+	return element(b.base, kindBox, 0, layout.Vertical, nil)
 }
 
 // Padding sets the same padding on all four edges, replacing any previous

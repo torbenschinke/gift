@@ -287,6 +287,16 @@ im ersten Aufschlag ist `ebiten.SetTPS` samt reduzierter Zielrate im Idle als
 optionale App-Politik, nicht ein eigener Praesentationspfad. Echtes
 On-Demand-Rendering ist **kein** Bestandteil dieses Plans.
 
+Praezisierung aus WU-D, in laufendem Code geprueft: `SetTPS` regelt
+ausschliesslich die `Update`-Rate. Die `Draw`-Rate gibt das Display vor. Ein Pi
+an 60 Hz bekommt mit `IdleTPS=10` weiterhin 60 `Draw`-Aufrufe je Sekunde. Die
+Idle-Politik spart also Build, Layout und Eingabeverarbeitung, **nicht** die
+Fuellrate. Das ist dieselbe Trennung wie bei der Invalidierung oben.
+
+Ebitengine hat neben `Update` und `Draw` einen dritten Callback `Layout`. Er
+ist die einzige Stelle, an der die Viewportgroesse vor dem ersten `Update`
+bekannt ist. Das Backend bezieht sie von dort.
+
 ## 7. Layout, Text und Eingabe
 
 ```text
@@ -307,6 +317,13 @@ indexbasierten Handles und Generationen. Die Lebensdauer geliehener Display-
 Listen ist definiert: der Backend-Consumer darf sie nicht nach Wiederverwendung
 durch den Producer lesen. Backend-eigene Kopien und GPU-Kommandos sind gesondert
 zu budgetieren.
+
+Koordinatenraum von Clip und Transform, festgelegt in WU-D: **Clips sind
+Device-Space, Transformationen bilden Bounds nach Device-Space ab.**
+`List.PushClip` schneidet entlang eines einzigen Stapels, und das ergibt nur in
+einem gemeinsamen Raum Sinn. Sollte die Galerie spaeter in gescrolltem Raum
+clippen muessen, ist das eine Verhaltensaenderung und vor Schritt 3 zu
+entscheiden, kein Implementierungsdetail.
 
 ### Textstack
 
@@ -610,6 +627,18 @@ Wird eines verfehlt, wird der Plan revidiert statt fortgesetzt.
 
 ### Schritt 2: Text, Button und einfache Effekte
 
+**Vorgezogen und zuerst zu pruefen: `fwidth` auf dem Pi 4.** Der gemeinsame
+Shape-Shader aus Schritt 1 leitet die Kantenglaettung aus der Screen-Space-
+Ableitung des Distanzfeldes ab, braucht also `dfdx`/`dfdy`. Unter Metal
+funktioniert das. Faellt Ebitengine auf dem Pi auf GLSL ES 1.00 zurueck,
+verlangen Ableitungen `OES_standard_derivatives`, und der Shader kann erst
+**beim Zeichnen** scheitern: `ebiten.NewShader` faengt das nicht ab, weil die
+Uebersetzung im Treiber passiert. Betroffen ist alles Abgerundete. Der
+Ausweichweg waere ein AA-Faktor je Op als Vertex-Attribut, aber die zwoelf
+Float-Slots sind bereits belegt, also kaeme entweder ein zweiter Shader oder
+allozierende Uniforms hinzu. Das ist eine Designaenderung, keine Korrektur,
+und gehoert deshalb vor den Textstack.
+
 Groesster Einzelposten des Projekts. Shaping-Anbindung an go-text/typesetting,
 Messung, Shaping-Cache, Glyph-Atlas und Eviction. Danach Button-Interaktion,
 Fokus und das gemeinsame Pointer-Modell inklusive Touch. Border, Radius und
@@ -678,6 +707,14 @@ Build-/Benchmark-Pruefungen:
 
 Referenz ist Pi 4, Raspberry Pi OS 64-Bit, 1920x1080 bei 60 Hz, fixierte
 Qualitaetsstufe, ohne Throttling. Durchschnitts-FPS ist kein Kriterium.
+
+Definition "verpasstes Intervall", festgelegt in WU-D. Das nominale Intervall
+bei 60 Hz ist 16,667 ms. Ein reales Display trifft das nie exakt, und ein
+strikter Vergleich gegen 16,67 ms hat in einer sauber getakteten Messung
+50 % der Frames als verpasst gemeldet. Verbindlich ist deshalb eine Toleranz
+von **0,5 ms**: ein Intervall gilt als verpasst, wenn es **17,17 ms**
+ueberschreitet. Nominalwert, Toleranz und daraus folgende Schwelle werden in
+jeder Messausgabe mitgefuehrt, damit die Zahl nachvollziehbar bleibt.
 
 | Szenario | Kriterium |
 | --- | --- |

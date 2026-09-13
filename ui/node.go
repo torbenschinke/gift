@@ -12,6 +12,7 @@ type nodeKind uint8
 const (
 	kindStack nodeKind = iota
 	kindOverlay
+	kindBox
 )
 
 // node is the retained half of every container view: it is both the
@@ -69,6 +70,33 @@ func (n *node) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 			n.items[i].Flex = ctx.ChildFlex(i)
 		}
 		size = layout.Stack(n.spec, cc, k, n, n.items, n.origins)
+	case kindBox:
+		// A Box has no content, so it is greedy: it takes the whole extent
+		// on every axis that is bounded, and collapses to its padding on an
+		// axis that is not.
+		//
+		// This is what makes the obvious spelling work. A ZStack hands its
+		// children loose but bounded constraints, so
+		//
+		//	ui.ZStack(ui.Box().Background(c), content)
+		//
+		// paints the plate behind the content instead of producing a zero
+		// sized, invisible box. The minimum-size rule that was here before
+		// silently dropped such backgrounds, which cost real debugging time
+		// during WU-D.
+		//
+		// A stack measures an inflexible child with an unbounded main axis,
+		// so a Box in a VStack still collapses on the main axis. Give it a
+		// height with Frame or MinHeight, or a share with Flex.
+		pad := n.spec.Padding
+		size = geom.Sz(pad.Horizontal(), pad.Vertical())
+		if cc.HasBoundedWidth() {
+			size.W = cc.Max.W
+		}
+		if cc.HasBoundedHeight() {
+			size.H = cc.Max.H
+		}
+		size = cc.Constrain(size)
 	default:
 		size = layout.Overlay(n.spec.Padding, n.spec.Alignment, cc, k, n, n.items, n.origins)
 	}
