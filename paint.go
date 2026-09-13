@@ -1,6 +1,8 @@
 package gift
 
 import (
+	"fmt"
+
 	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/internal/scene"
 	"github.com/torbenschinke/gift/render"
@@ -98,22 +100,38 @@ func (p *PaintContext) PaintChild(i int) {
 func (p *PaintContext) ChildCount() int { return len(p.nd.children) }
 
 // paintNode paints h and, through its painter, its subtree.
+//
+// The saved context of the parent is restored with a defer. A painter that
+// panics, which is how gift reports a contract violation such as a state write
+// during Draw, must not leave the shared PaintContext pointing at a node that
+// is no longer being painted: the application may recover from that panic and
+// the next frame has to find the App intact. An open coded defer allocates
+// nothing, so the frame path contract is unaffected.
 func (a *App) paintNode(h scene.Handle) {
 	n := a.store.Get(h)
-	nd := n.Payload.(*nodeData)
+	nd := &n.Payload
 	if nd.painter == nil {
 		return
+	}
+	if a.paintDepth > scene.MaxDepth {
+		panic(fmt.Sprintf(
+			"gift: paint recursion deeper than %d levels; a painter is descending into a cycle or an unbounded tree",
+			scene.MaxDepth))
 	}
 
 	p := &a.pctx
 	prevHandle, prevData, prevDepth := p.cur, p.nd, p.clipDepth
 	p.cur, p.nd, p.clipDepth = h, nd, 0
+	a.paintDepth++
+	defer func() {
+		p.cur, p.nd, p.clipDepth = prevHandle, prevData, prevDepth
+		a.paintDepth--
+	}()
 
 	nd.painter.Paint(p)
 
 	if p.clipDepth != 0 {
 		panic("gift: painter returned with an unbalanced clip stack")
 	}
-	p.cur, p.nd, p.clipDepth = prevHandle, prevData, prevDepth
 	a.diag.PaintedNodes++
 }

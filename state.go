@@ -60,10 +60,15 @@ func (s *State[T]) Get() T {
 // Several writes before the next update are therefore coalesced into one
 // rebuild.
 //
-// Calling Set from an event handler is the normal case. Calling it from
-// another goroutine is a programming error and panics as far as it is
-// detectable, see [App.Update]. Calling it during [App.Paint] is a contract
-// violation and panics, because it would mean building during draw.
+// Calling Set from an event handler is the normal case, and that path is
+// allocation free: the UI executor check is compiled only into a build with
+// the giftdebug tag, because obtaining a goroutine id means parsing the
+// runtime stack header. Calling Set from another goroutine is a programming
+// error; with the tag it panics, without it the race detector is the tool that
+// finds it. Use [App.Post] to hand a worker result to the UI executor.
+//
+// Calling Set during [App.Paint] is a contract violation and panics in every
+// build, because it would mean building during draw.
 func (s *State[T]) Set(v T) {
 	a := s.base.app
 	a.assertUIGoroutine("State.Set")

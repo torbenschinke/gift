@@ -93,8 +93,8 @@ func TestSize(t *testing.T) {
 		{"inset clamps at zero", geom.Sz(10, 10).Inset(geom.InsetsAll(20)), geom.Sz(0, 0)},
 		{"inset asymmetric", geom.Sz(100, 50).Inset(geom.InsetsSymmetric(5, 20)), geom.Sz(60, 40)},
 		{"outset", geom.Sz(100, 50).Outset(geom.InsetsAll(10)), geom.Sz(120, 70)},
-		{"inset unbounded stays unbounded", geom.Sz(geom.Unbounded, 10).Inset(geom.InsetsAll(4)), geom.Sz(geom.Unbounded, 2)},
-		{"outset unbounded stays unbounded", geom.Sz(geom.Unbounded, 10).Outset(geom.InsetsAll(4)), geom.Sz(geom.Unbounded, 18)},
+		{"inset unbounded stays unbounded", geom.Sz(geom.Unbounded(), 10).Inset(geom.InsetsAll(4)), geom.Sz(geom.Unbounded(), 2)},
+		{"outset unbounded stays unbounded", geom.Sz(geom.Unbounded(), 10).Outset(geom.InsetsAll(4)), geom.Sz(geom.Unbounded(), 18)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,7 +113,7 @@ func TestSize(t *testing.T) {
 	if !geom.Sz(1, 2).IsFinite() {
 		t.Error("Sz(1,2).IsFinite() = false")
 	}
-	if geom.Sz(geom.Unbounded, 2).IsFinite() {
+	if geom.Sz(geom.Unbounded(), 2).IsFinite() {
 		t.Error("unbounded Size IsFinite() = true")
 	}
 	if geom.Sz(float32(math.NaN()), 2).IsFinite() {
@@ -401,7 +401,7 @@ func TestConstraintsConstructors(t *testing.T) {
 }
 
 func TestConstraintsConstrain(t *testing.T) {
-	unbounded := geom.Constraints{Min: geom.Sz(10, 10), Max: geom.Sz(geom.Unbounded, geom.Unbounded)}
+	unbounded := geom.Constraints{Min: geom.Sz(10, 10), Max: geom.Sz(geom.Unbounded(), geom.Unbounded())}
 	tests := []struct {
 		name string
 		c    geom.Constraints
@@ -416,7 +416,7 @@ func TestConstraintsConstrain(t *testing.T) {
 		{"unbounded still applies min", unbounded, geom.Sz(1, 1), geom.Sz(10, 10)},
 		{
 			"mixed boundedness",
-			geom.Constraints{Min: geom.Sz(0, 0), Max: geom.Sz(100, geom.Unbounded)},
+			geom.Constraints{Min: geom.Sz(0, 0), Max: geom.Sz(100, geom.Unbounded())},
 			geom.Sz(500, 500), geom.Sz(100, 500),
 		},
 		{"negative input clamped to min", geom.Loose(geom.Sz(100, 100)), geom.Sz(-5, -5), geom.Sz(0, 0)},
@@ -486,7 +486,7 @@ func TestConstraintsDeflate(t *testing.T) {
 		},
 		{
 			"unbounded stays unbounded", geom.Unconstrained(), geom.InsetsAll(12),
-			geom.Constraints{Min: geom.Sz(0, 0), Max: geom.Sz(geom.Unbounded, geom.Unbounded)},
+			geom.Constraints{Min: geom.Sz(0, 0), Max: geom.Sz(geom.Unbounded(), geom.Unbounded())},
 		},
 		{
 			"asymmetric insets",
@@ -541,7 +541,7 @@ func TestConstraintsPredicates(t *testing.T) {
 		},
 		{"unconstrained", geom.Unconstrained(), true, false, false, geom.Sz(1e9, 1e9), true},
 		{
-			"half bounded", geom.Constraints{Min: geom.Size{}, Max: geom.Sz(100, geom.Unbounded)},
+			"half bounded", geom.Constraints{Min: geom.Size{}, Max: geom.Sz(100, geom.Unbounded())},
 			true, true, false, geom.Sz(100, 1e9), true,
 		},
 		{
@@ -553,7 +553,7 @@ func TestConstraintsPredicates(t *testing.T) {
 			false, true, true, geom.Sz(1, 1), true,
 		},
 		{
-			"infinite min", geom.Constraints{Min: geom.Sz(geom.Unbounded, 0), Max: geom.Sz(geom.Unbounded, 5)},
+			"infinite min", geom.Constraints{Min: geom.Sz(geom.Unbounded(), 0), Max: geom.Sz(geom.Unbounded(), 5)},
 			false, false, true, geom.Sz(1, 1), false,
 		},
 	}
@@ -922,7 +922,7 @@ func TestNoAllocs(t *testing.T) {
 		sinkF32 = r.Width() + r.Height()
 		sinkBool = r.IsEmpty() || r.Contains(q) || r.Overlaps(r2)
 
-		c := geom.Loose(geom.Sz(300, geom.Unbounded))
+		c := geom.Loose(geom.Sz(300, geom.Unbounded()))
 		c = c.Deflate(i).Loosen().Tighten(geom.Sz(120, 90))
 		c2 := geom.Unconstrained().Deflate(i)
 		sinkCons = c

@@ -105,8 +105,10 @@ type scope struct {
 	// path is the diagnostic path from the root, for example
 	// "/root/left-counter".
 	path string
-	// fn is the component function.
-	fn func(*Context) View
+	// cell holds the component function and, for a memoised component, the
+	// props of the last build. It is created once at mount and survives
+	// every rebuild.
+	cell compCell
 	// node is the scene node representing the component itself. Its single
 	// child is the subtree the component function produced.
 	node scene.Handle
@@ -119,6 +121,9 @@ type scope struct {
 	// one is the reusable one element view slice used to reconcile the
 	// single child of the component node without allocating per build.
 	one [1]View
+
+	// gen is the request generation of this instance; see [Token].
+	gen uint64
 
 	ctx        Context
 	needsBuild bool

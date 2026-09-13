@@ -7,9 +7,15 @@ import (
 
 // nodeData is the gift owned payload of a scene node.
 //
-// It is allocated once per mounted node and reused for the whole lifetime of
-// that node, including all of its child side tables. That is what keeps
-// layout and paint of an unchanged tree allocation free.
+// It is stored *inline* in the node, not behind a pointer: a tree of N nodes
+// costs N node structs inside the store's blocks and no separate heap object
+// per node. The scene store never clears it on free, which is what makes an
+// unmount/remount cycle allocation free — the child side tables keep their
+// backing arrays and the recycled slot hands them straight back. See the
+// documentation of the scene package.
+//
+// The flip side is that everything the garbage collector must not retain has
+// to be released explicitly, which is what [App.destroyScopes] does.
 type nodeData struct {
 	// view is the view description the node was last built from. It is kept
 	// for diagnostics and for the ownership check.
@@ -40,7 +46,40 @@ type nodeData struct {
 	sizes   []geom.Size
 	origins []geom.Point
 
+	// lastC are the constraints this node was last measured with, and
+	// haveLastC says whether they mean anything yet.
+	//
+	// This is the cache that makes partial relayout possible: a node that is
+	// not marked dirty and is asked for the same constraints again returns
+	// its previous size without running its layouter and therefore without
+	// touching its subtree. See [App.layoutNode].
+	lastC     geom.Constraints
+	haveLastC bool
+
 	own ownershipGuard
+}
+
+// release drops everything the garbage collector must not retain, and
+// truncates the reusable side tables to zero length while keeping their
+// capacity. It runs when a node is unmounted.
+//
+// Truncating rather than niling the slices is the point of the exercise: the
+// slot goes back on the free list with its buffers intact, so the next mount
+// into that slot does not allocate.
+func (nd *nodeData) release() {
+	nd.view = nil
+	nd.scope = nil
+	nd.layouter = nil
+	nd.painter = nil
+	nd.childViews = nil
+	nd.children = nd.children[:0]
+	nd.next = nd.next[:0]
+	nd.used = nd.used[:0]
+	nd.sizes = nd.sizes[:0]
+	nd.origins = nd.origins[:0]
+	nd.lastC = geom.Constraints{}
+	nd.haveLastC = false
+	nd.releaseOwnership()
 }
 
 // prepareChildSlots makes sure the per child layout tables match the current

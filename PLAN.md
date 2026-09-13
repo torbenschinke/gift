@@ -660,7 +660,7 @@ Qualitaetsstufe, ohne Throttling. Durchschnitts-FPS ist kein Kriterium.
 | Scroll 60 s, warme reale Bilder | p99 < 16,67 ms; < 2 % verpasste Intervalle |
 | Kalter Cache, Scroll 60 s | p99,9 < 33 ms; keine Stalls > 100 ms |
 | Frame-Pfad ohne Build, aufgewaermt | 0 B/op im Allokationsbenchmark |
-| Build eines Counter-Scopes | < 8 Allokationen pro Build |
+| Build eines Counter-Scopes | 0 Allokationen im Anteil von gift; siehe unten |
 | Glass Reduced ueber Galerie | Zusatzkosten < 1,0 ms je Frame |
 | Glass Full ueber Galerie | Zusatzkosten < 4,0 ms je Frame; Materialflaeche <= 25 % des Screens |
 | Shadow, 20 sichtbare Instanzen | Zusatzkosten < 0,5 ms je Frame nach Cache-Aufwaermung |
@@ -671,6 +671,16 @@ Pi 5 wird getrennt gemessen und darf strengere Werte erreichen; er ersetzt die
 Pi-4-Abnahme nicht. Auf Pi 4 ist `Glass Full` ausdruecklich als "darf die
 Schwelle verfehlen" gekennzeichnet; dann greift Reduced als Default und der
 Fehlschlag wird dokumentiert, nicht versteckt.
+
+Korrektur zur Build-Schwelle, belegt in WU-B2. Die urspruengliche Vorgabe
+"< 8 Allokationen pro Build" war nicht erreichbar und ist zurueckgenommen. Der
+Counter aus Abschnitt 4 hat einen strukturellen Boden von neun Allokationen,
+die der Aufrufer erzeugt, bevor gift beteiligt ist: zwei variadische
+Kinderslices, fuenf Boxings von Kindwerten in `View` und zwei Closures fuer die
+Buttons. Das ist Variante A und deckt sich mit Abschnitt 11, der Build
+ausdruecklich vom 0-B/op-Vertrag ausnimmt. Gemessen wird deshalb der Anteil von
+gift selbst; er muss 0 sein. Die Gesamtzahl inklusive View-Konstruktion wird
+danebengestellt und beobachtet, aber nicht als Schwelle gefuehrt.
 
 example-gallery und example-effects erhalten reproduzierbare Szenarien und
 maschinell lesbare Messausgaben. Erfasst werden Build-/Layout-Aufrufe, sichtbare
@@ -731,6 +741,13 @@ Kompatibilitaetspolitik ersetzt.
   abgewiesen, nicht stillschweigend toleriert: Typwechsel unter gleichem
   State-Key, Verletzung des Slice-Ownership, State-Zugriff ausserhalb des
   UI-Executors, Build waehrend `Draw`.
+- Nicht jede dieser Pruefungen ist im Release-Build aktiv. Typwechsel, Build
+  waehrend `Draw` und Re-Entranz panicken immer. Slice-Ownership,
+  Duplikat-Keys und die UI-Executor-Pruefung sind nur unter dem Build-Tag
+  `giftdebug` aktiv, weil ihre Erkennung sonst den 0-B/op-Vertrag aus
+  Abschnitt 11 im Eventhandler-Pfad verletzen wuerde. Fuer nebenlaeufige
+  Fehler ist ohnehin `-race` das verbindliche Werkzeug, nicht diese
+  Laufzeitpruefung.
 - Laufzeitfehler aus der Aussenwelt sind normale Werte: I/O, HTTP, Decode,
   Cache. Sie werden ueber den asset-Vertrag zurueckgegeben und fuehren zu einem
   sichtbaren Fehlerzustand der betroffenen Kachel, nie zum Abbruch des Frames.

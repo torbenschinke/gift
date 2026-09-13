@@ -2,17 +2,23 @@ package geom
 
 import "math"
 
-// Unbounded is the sentinel used for a constraint maximum that imposes no upper
-// limit. It is positive infinity.
+// unbounded is the backing value of [Unbounded]. Go cannot express an infinite
+// floating point constant, so the sentinel has to live in a variable. The
+// variable is unexported so that nothing outside this package can assign to it:
+// a single stray write would break every constraint calculation in the process.
+var unbounded = float32(math.Inf(1))
+
+// Unbounded returns the sentinel used for a constraint maximum that imposes no
+// upper limit. It is positive infinity.
 //
 // Arithmetic on Unbounded is well defined for every operation in this package:
 // subtracting a finite inset from Unbounded stays Unbounded, and clamping a
 // finite value against Unbounded returns the value unchanged.
 //
-// Note that Go has no way to express an infinite floating point constant, so
-// this is a package level variable rather than a constant. It must be treated as
-// read only; assigning to it breaks every constraint calculation in the process.
-var Unbounded = float32(math.Inf(1))
+// This is a function rather than a variable because the sentinel is the anchor
+// of the whole constraints system and must be immutable. The body is a single
+// load and is inlined; the call costs nothing.
+func Unbounded() float32 { return unbounded }
 
 // clamp returns v limited to the inclusive range [lo, hi].
 //

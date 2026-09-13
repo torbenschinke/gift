@@ -3,13 +3,19 @@ package gift
 import (
 	"fmt"
 	"log/slog"
-	"runtime"
-	"sync/atomic"
 
 	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/internal/scene"
 	"github.com/torbenschinke/gift/render"
 )
+
+// store is the concrete instantiation of the retained node storage.
+//
+// The scene package is generic over the payload so that it can store gift's
+// per node data inline without importing the module root, which the project
+// plan, section 3, forbids. A type parameter satisfies that rule where an
+// interface field would have cost a heap object per node.
+type store = scene.Store[nodeData]
 
 // Options configures a new [App].
 type Options struct {
@@ -29,12 +35,13 @@ type Options struct {
 // App owns one user interface: the retained tree, the component scopes, the
 // state and the display list.
 //
-// An App belongs to exactly one goroutine, the UI executor. In a windowed
-// application that is the goroutine Ebitengine drives; in tests it is the test
-// goroutine.
+// An App belongs to exactly one goroutine, the UI executor: the goroutine that
+// called [New]. In a windowed application that is the goroutine Ebitengine
+// drives; in tests it is the test goroutine. The only method that may be
+// called from anywhere is [App.Diagnostics].
 type App struct {
 	log   *slog.Logger
-	store *scene.Store
+	store *store
 	root  *scope
 	list  render.List
 
@@ -52,29 +59,41 @@ type App struct {
 	needsLayout bool
 	needsPaint  bool
 	layoutDepth int
+	paintDepth  int
 
 	updating bool
 	painting bool
 
-	// owner is the goroutine id of the UI executor, captured on the first
-	// update. See assertUIGoroutine for what this does and does not catch.
-	owner    atomic.Uint64
-	ownerSet atomic.Bool
+	// ui identifies the goroutine that owns this App. It is an empty struct
+	// unless the giftdebug build tag is set; see uiGuard.
+	ui uiGuard
+
+	// diag are the counters of the frame path. They belong to the UI
+	// executor and are deliberately unsynchronised; they are copied into pub
+	// once per Update and once per Paint.
+	// box is the inbox for results posted from worker goroutines.
+	box postbox
 
 	diag       Diagnostics
+	pub        diagPublisher
 	liveScopes uint64
 }
 
 // New creates an App and mounts the root component. It does not build
 // anything yet; the first [App.Update] does.
+//
+// The calling goroutine becomes the UI executor of this App. Everything except
+// [App.Diagnostics] must be called from it, and the state of every component
+// belongs to it.
 func New(opts Options) *App {
 	if opts.Root == nil {
 		panic("gift: Options.Root must not be nil")
 	}
 	a := &App{
 		log:   opts.Logger,
-		store: scene.NewStore(256),
+		store: scene.NewStore[nodeData](256),
 	}
+	a.ui.capture()
 	a.bctx = BuildContext{app: a}
 	a.pctx = PaintContext{app: a, list: &a.list}
 	a.list.Reset()
@@ -82,13 +101,14 @@ func New(opts Options) *App {
 	// The root is an ordinary component instance, so that the root has state
 	// and a rebuild boundary like every other component.
 	h := a.store.Alloc()
-	nd := &nodeData{layouter: passthrough{}, painter: passthrough{}}
 	n := a.store.Get(h)
 	n.Key = "root"
 	n.TypeID = uint32(componentTypeID)
-	n.Payload = nd
+	nd := &n.Payload
+	nd.layouter = passthrough{}
+	nd.painter = passthrough{}
 
-	a.root = &scope{app: a, key: "root", path: "/root", fn: opts.Root, node: h, alive: true}
+	a.root = &scope{app: a, key: "root", path: "/root", cell: &plainCell{fn: opts.Root}, node: h, alive: true}
 	a.root.ctx = Context{app: a, scope: a.root}
 	nd.scope = a.root
 	a.liveScopes++
@@ -97,6 +117,7 @@ func New(opts Options) *App {
 	if a.log != nil {
 		a.log.Info("gift: app created")
 	}
+	a.publishDiagnostics()
 	return a
 }
 
@@ -114,9 +135,8 @@ func (a *App) Update(viewport geom.Size) error {
 	if a.painting {
 		panic("gift: App.Update called during App.Paint")
 	}
-	if !a.ownerSet.Load() {
-		a.owner.Store(goid())
-		a.ownerSet.Store(true)
+	if a.updating {
+		panic("gift: App.Update called during App.Update")
 	}
 	a.updating = true
 	defer a.endUpdate()
@@ -126,19 +146,27 @@ func (a *App) Update(viewport geom.Size) error {
 		a.needsLayout = true
 	}
 
+	a.drainPosts()
 	a.runBuilds()
 
 	if a.needsLayout {
 		a.layoutDepth = 0
 		a.layoutNode(a.root.node, geom.Loose(a.viewport))
-		a.assignBounds(a.root.node, geom.Point{})
+		a.assignBounds(a.root.node, geom.Point{}, 0)
 		a.needsLayout = false
 		a.needsPaint = true
 	}
 	return nil
 }
 
-func (a *App) endUpdate() { a.updating = false }
+// endUpdate runs deferred, so the flag is cleared even when a component
+// function panicked. A contract violation is diagnosed with a panic that the
+// application may recover from; leaving the App permanently marked "inside an
+// update" would turn that diagnosis into a second, unrelated failure.
+func (a *App) endUpdate() {
+	a.updating = false
+	a.publishDiagnostics()
+}
 
 // runBuilds rebuilds every scope queued for a build.
 //
@@ -158,7 +186,6 @@ func (a *App) runBuilds() {
 			continue
 		}
 		a.buildScope(sc)
-		a.needsLayout = true
 	}
 	// Keep whatever was queued while we were building.
 	k := copy(a.dirty, a.dirty[n:])
@@ -178,18 +205,52 @@ func (a *App) markNeedsBuild(sc *scope) {
 	}
 }
 
+// markNeedsLayout marks h and every node above it as needing a layout.
+//
+// This is the propagation half of the three level invalidation the project
+// plan, section 6, asks for. The layout pass descends along this path and
+// stops at every clean subtree whose incoming constraints did not change, so
+// a state write in one subtree does not measure a sibling subtree.
+//
+// The walk stops as soon as it meets a node that is already marked, so a
+// second dirty node under the same ancestors costs only its own depth.
+func (a *App) markNeedsLayout(h scene.Handle) {
+	a.needsLayout = true
+	for depth := 0; !h.IsZero() && a.store.Valid(h); depth++ {
+		if depth > scene.MaxDepth {
+			panic(fmt.Sprintf("gift: tree deeper than %d levels while marking layout invalidation", scene.MaxDepth))
+		}
+		n := a.store.Get(h)
+		if n.Flags&scene.FlagNeedsLayout != 0 {
+			return
+		}
+		n.Flags |= scene.FlagNeedsLayout | scene.FlagNeedsPaint
+		h = n.Parent
+	}
+}
+
 // Paint produces the display list of this frame.
 //
 // The returned list is borrowed: it is valid until the next call to Paint,
 // which resets and refills it. Copy what has to outlive the frame.
 //
 // Building or laying out during Paint is a contract violation. State writes
-// from a painter panic, and so does a nested Update.
+// from a painter panic, and so does a nested Update. Calling Paint from inside
+// Update is rejected as well: Ebitengine drives Update and Draw separately and
+// gift relies on that separation, so a paint nested in an update means the
+// backend is wired up wrongly.
 func (a *App) Paint() *render.List {
+	if a.updating {
+		panic("gift: App.Paint called during App.Update")
+	}
+	if a.painting {
+		panic("gift: App.Paint called during App.Paint")
+	}
 	a.painting = true
 	defer a.endPaint()
 
 	a.list.Reset()
+	a.paintDepth = 0
 	if a.store.Valid(a.root.node) {
 		a.paintNode(a.root.node)
 	}
@@ -198,14 +259,18 @@ func (a *App) Paint() *render.List {
 	return &a.list
 }
 
-func (a *App) endPaint() { a.painting = false }
+// endPaint runs deferred for the same reason as [App.endUpdate].
+func (a *App) endPaint() {
+	a.painting = false
+	a.publishDiagnostics()
+}
 
 // Invalidate forces a rebuild of the root component in the next update. It is
 // the blunt instrument for tests, for a resize and for external changes that
 // gift cannot observe.
 func (a *App) Invalidate() {
 	a.markNeedsBuild(a.root)
-	a.needsLayout = true
+	a.markNeedsLayout(a.root.node)
 }
 
 // NeedsPaint reports whether the tree changed since the last Paint.
@@ -219,61 +284,3 @@ func (a *App) NeedsPaint() bool { return a.needsPaint }
 // Logger returns the logger passed in [Options], or nil. It is never
 // slog.Default.
 func (a *App) Logger() *slog.Logger { return a.log }
-
-// assertUIGoroutine rejects state access from outside the UI executor.
-//
-// The check is deliberately cheap and therefore incomplete:
-//
-//   - While an update or a paint is running, access is accepted without any
-//     further test. That is the hot case, and paying for a goroutine identity
-//     lookup per state read would show up in the allocation benchmark.
-//     Consequence: a background goroutine that writes state exactly while the
-//     UI executor is inside Update is not detected here. The race detector
-//     is the tool for that case.
-//   - Outside an update, the goroutine identity of the caller is compared
-//     with the one captured at the first update. This catches the common
-//     mistake of writing state from a worker goroutine after a frame has
-//     finished.
-//   - Goroutine ids are reused by the runtime, so a new goroutine can in
-//     principle inherit the id of the UI executor after it has exited. That
-//     is a theoretical false negative, never a false positive.
-func (a *App) assertUIGoroutine(what string) {
-	if a.updating || a.painting {
-		return
-	}
-	if !a.ownerSet.Load() {
-		return
-	}
-	if id := goid(); id != a.owner.Load() {
-		panic(fmt.Sprintf(
-			"gift: %s called from goroutine %d, but the UI executor is goroutine %d; "+
-				"post the result to the UI executor instead of touching state directly",
-			what, id, a.owner.Load()))
-	}
-}
-
-var goroutinePrefix = []byte("goroutine ")
-
-// goid returns the id of the calling goroutine.
-//
-// There is no supported API for this. Parsing the stack header is the
-// portable way and costs roughly a microsecond, which is why it is only ever
-// called outside the frame path: once when the UI executor is captured and
-// once per rejected state access.
-func goid() uint64 {
-	var buf [48]byte
-	n := runtime.Stack(buf[:], false)
-	b := buf[:n]
-	if len(b) < len(goroutinePrefix) {
-		return 0
-	}
-	b = b[len(goroutinePrefix):]
-	var id uint64
-	for _, c := range b {
-		if c < '0' || c > '9' {
-			break
-		}
-		id = id*10 + uint64(c-'0')
-	}
-	return id
-}

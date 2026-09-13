@@ -21,6 +21,19 @@
 // still redraws everything, but it neither calls view functions nor measures
 // anything.
 //
+// The layout level is partial, not all or nothing. A node that is rebuilt
+// marks itself and every node up to the root as needing layout, and the layout
+// pass descends along that path only: a clean node that is offered the
+// constraints it was last measured with returns its cached size without
+// running its layouter, so a state write in one subtree does not measure a
+// sibling subtree. [App.Diagnostics] makes that observable.
+//
+// The build level has a top down boundary too, but only where the application
+// asks for one. [Component] is always rebuilt when its parent is, because its
+// inputs are captured in a closure that gift cannot compare. [Memo] takes its
+// inputs as an explicit comparable value and is skipped when they are
+// unchanged.
+//
 // # Allocation
 //
 // The frame path without build is allocation free after warmup: an update
@@ -39,7 +52,15 @@
 //
 // # Concurrency
 //
-// An App, its state and its tree belong to one goroutine, the UI executor.
-// Touching state from anywhere else is a programming error and is rejected
-// with a panic as far as it is cheaply detectable; see [State.Set].
+// An App, its state and its tree belong to one goroutine, the UI executor:
+// the goroutine that called [New]. Touching state from anywhere else is a
+// programming error. A build with the giftdebug tag rejects it with a panic; a
+// release build does not check, because the check cannot be made cheap enough
+// for the event handler path, and the race detector covers the same ground.
+//
+// Exactly two methods may be called from any goroutine. [App.Post] hands a
+// closure to the UI executor, which runs it at the beginning of the next
+// update; that is how a worker result reaches the interface, and [Token] is
+// how a result that has since gone stale is rejected. [App.Diagnostics]
+// returns a synchronised snapshot of the frame counters.
 package gift

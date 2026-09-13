@@ -5,6 +5,8 @@ package gift
 import (
 	"fmt"
 	"reflect"
+
+	"github.com/torbenschinke/gift/internal/scene"
 )
 
 // ownershipGuard remembers the children slice a build handed over together
@@ -54,5 +56,42 @@ func record(g *ownershipGuard, s []View) {
 	g.types = g.types[:0]
 	for _, v := range s {
 		g.types = append(g.types, reflect.TypeOf(v))
+	}
+}
+
+// releaseOwnership drops the recorded slice when the node is unmounted,
+// keeping the capacity of the type table so that a remount into the recycled
+// slot does not allocate.
+func (nd *nodeData) releaseOwnership() {
+	g := &nd.own
+	g.valid = false
+	g.slice = nil
+	g.types = g.types[:0]
+}
+
+// checkDuplicateKeys rejects two siblings with the same non empty key.
+//
+// The project plan, section 5, requires stable model keys for dynamic
+// children. Duplicates do not corrupt anything outright — the matcher takes
+// the first unused candidate, so duplicates end up matched by their position
+// among the duplicates — but that is exactly the silent, order dependent
+// identity the keys were supposed to remove. It is a programming error and is
+// diagnosed here rather than debugged later through lost state.
+//
+// The check is quadratic and therefore debug only.
+func checkDuplicateKeys(a *App, parent scene.Handle, kids []scene.Handle) {
+	for i, h := range kids {
+		k := a.store.Get(h).Key
+		if k == "" {
+			continue
+		}
+		for j := range i {
+			if a.store.Get(kids[j]).Key == k {
+				panic(fmt.Sprintf(
+					"gift: children %d and %d of node {index:%d} share the key %q; "+
+						"sibling keys must be unique, otherwise reconciliation falls back to matching by position among the duplicates",
+					j, i, parent.Index(), k))
+			}
+		}
 	}
 }

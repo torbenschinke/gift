@@ -28,7 +28,7 @@ func Loose(s Size) Constraints {
 // Unconstrained returns Constraints with a zero minimum and an Unbounded maximum
 // on both axes.
 func Unconstrained() Constraints {
-	return Constraints{Min: Size{}, Max: Size{W: Unbounded, H: Unbounded}}
+	return Constraints{Min: Size{}, Max: Size{W: Unbounded(), H: Unbounded()}}
 }
 
 // Constrain returns s clamped into the range described by c.

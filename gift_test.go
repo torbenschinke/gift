@@ -90,7 +90,7 @@ type stackLayout struct {
 
 func (s stackLayout) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 	var y, w float32
-	child := geom.Constraints{Min: geom.Size{}, Max: geom.Sz(c.Max.W, geom.Unbounded)}
+	child := geom.Constraints{Min: geom.Size{}, Max: geom.Sz(c.Max.W, geom.Unbounded())}
 	for i := range ctx.ChildCount() {
 		sz := ctx.Measure(i, child)
 		ctx.Place(i, geom.Pt(0, y))
@@ -337,13 +337,20 @@ func TestGetDoesNotRegisterReadDoes(t *testing.T) {
 	}
 }
 
+// TestUnmountReleasesStateAndNodes checks that state is actually released, not
+// merely that two counters went down. Counting alone would pass even if the
+// unmounted scope stayed subscribed to its state and kept invalidating.
 func TestUnmountReleasesStateAndNodes(t *testing.T) {
 	show := true
+	childBuilds := 0
+	var captured *gift.State[int]
 	root := func(ctx *gift.Context) gift.View {
 		kids := []gift.View{box{w: 1, h: 1}}
 		if show {
 			kids = append(kids, gift.Component("child", func(c *gift.Context) gift.View {
-				_ = c.State("v", 42)
+				childBuilds++
+				captured = c.State("v", 42)
+				_ = c.Read(captured)
 				return stack{children: []gift.View{box{w: 1, h: 1}, box{w: 2, h: 2}}}
 			}))
 		}
@@ -356,6 +363,9 @@ func TestUnmountReleasesStateAndNodes(t *testing.T) {
 	if before.LiveScopes != 2 {
 		t.Fatalf("LiveScopes = %d, want 2", before.LiveScopes)
 	}
+	if childBuilds != 1 {
+		t.Fatalf("childBuilds = %d, want 1", childBuilds)
+	}
 
 	show = false
 	a.Invalidate()
@@ -367,6 +377,22 @@ func TestUnmountReleasesStateAndNodes(t *testing.T) {
 	}
 	if after.LiveNodes >= before.LiveNodes {
 		t.Fatalf("LiveNodes did not drop: %d -> %d", before.LiveNodes, after.LiveNodes)
+	}
+
+	// The real assertion: a state handle captured before the unmount still
+	// reads and writes, but no longer invalidates anything. If the dead scope
+	// were still subscribed, this write would queue a rebuild of it.
+	buildsBefore := a.Diagnostics().Builds
+	captured.Set(99)
+	mustUpdate(t, a)
+	if got := a.Diagnostics().Builds; got != buildsBefore {
+		t.Fatalf("a write to the state of an unmounted scope caused %d builds; the dead scope is still subscribed", got-buildsBefore)
+	}
+	if childBuilds != 1 {
+		t.Fatalf("the unmounted component was rebuilt, childBuilds = %d", childBuilds)
+	}
+	if got := captured.Get(); got != 99 {
+		t.Fatalf("the detached state stopped working: %d", got)
 	}
 }
 
@@ -417,7 +443,11 @@ func TestContextOutsideBuildPanics(t *testing.T) {
 	_ = escaped.State("v", 0)
 }
 
-func TestKeyedReorderKeepsStateAndTypeChangeRemounts(t *testing.T) {
+// TestKeyedReorderKeepsState covers exactly what its name says. The type
+// change half that used to be bolted onto this test never changed a type; it
+// lives in TestTypeChangeUnderSameKeyRemounts, which asserts real remount
+// evidence.
+func TestKeyedReorderKeepsState(t *testing.T) {
 	order := []string{"a", "b", "c"}
 	states := map[string]*gift.State[int]{}
 	mounts := map[string]int{}
@@ -465,33 +495,91 @@ func TestKeyedReorderKeepsStateAndTypeChangeRemounts(t *testing.T) {
 	}
 }
 
+// TestTypeChangeUnderSameKeyRemounts asserts real remount evidence.
+//
+// Counting live nodes proves nothing here: a remount and an in place update
+// produce the same node count, so the old version of this test passed with the
+// type check deleted. What actually distinguishes the two is that a remount
+// throws the component instance below the key away, taking its state with it,
+// and that the replacement paints a different geometry.
 func TestTypeChangeUnderSameKeyRemounts(t *testing.T) {
 	useOther := false
-	var lastKeys []string
+	mounts := 0
+	var st *gift.State[int]
+
 	root := func(ctx *gift.Context) gift.View {
-		var child gift.View = box{key: "x", w: 1, h: 1}
+		var child gift.View
 		if useOther {
+			// A different concrete view type under the same key "x".
 			child = other{key: "x"}
+		} else {
+			child = gift.Component("x", func(c *gift.Context) gift.View {
+				s := c.State("n", 0)
+				if _ = c.Read(s); s.Get() == 0 {
+					mounts++
+				}
+				st = s
+				return box{w: 40, h: 20}
+			})
 		}
-		lastKeys = append(lastKeys, "built")
 		return stack{children: []gift.View{child}}
 	}
+
 	a := gift.New(gift.Options{Root: root})
 	mustUpdate(t, a)
-	nodesBefore := a.Diagnostics().LiveNodes
+	if mounts != 1 {
+		t.Fatalf("mounts = %d, want 1", mounts)
+	}
+	st.Set(5)
+	mustUpdate(t, a)
+	beforeScopes := a.Diagnostics().LiveScopes
+	if beforeScopes != 2 {
+		t.Fatalf("LiveScopes = %d, want 2", beforeScopes)
+	}
+	beforeBounds := paintedBounds(a)
 
+	// Swap the type under the stable key.
 	useOther = true
 	a.Invalidate()
 	mustUpdate(t, a)
 
-	if got := a.Diagnostics().LiveNodes; got != nodesBefore {
-		t.Fatalf("LiveNodes = %d, want %d", got, nodesBefore)
+	// Evidence 1: the component instance is gone, so its state went with it.
+	if got := a.Diagnostics().LiveScopes; got != 1 {
+		t.Fatalf("LiveScopes = %d after the type change, want 1; the old instance was kept alive", got)
 	}
-	if len(lastKeys) != 2 {
-		t.Fatalf("builds = %d", len(lastKeys))
+	// Evidence 2: the geometry is the one of the replacement, not the one of
+	// the node that used to be there.
+	afterBounds := paintedBounds(a)
+	if len(afterBounds) != 2 {
+		t.Fatalf("painted %d ops, want 2", len(afterBounds))
 	}
-	// The new node must have the layout of "other", which is 1x1 instead of
-	// the original box size; covered indirectly by the layout test below.
+	if afterBounds[1] == beforeBounds[len(beforeBounds)-1] {
+		t.Fatalf("the painted child is unchanged at %v; the node was updated in place instead of remounted", afterBounds[1])
+	}
+	if got := afterBounds[1]; got != geom.RcXYWH(0, 0, 1, 1) {
+		t.Fatalf("replacement bounds = %v, want the 1x1 of other{}", got)
+	}
+
+	// Evidence 3: swapping back mounts a *fresh* instance with the initial
+	// state, not the one that was set to 5.
+	useOther = false
+	a.Invalidate()
+	mustUpdate(t, a)
+	if mounts != 2 {
+		t.Fatalf("mounts = %d, want a fresh component instance after the round trip", mounts)
+	}
+	if got := st.Get(); got != 0 {
+		t.Fatalf("state survived the remount: %d, want the initial 0", got)
+	}
+}
+
+// paintedBounds returns the bounds of every operation of one frame.
+func paintedBounds(a *gift.App) []geom.Rect {
+	var out []geom.Rect
+	for _, op := range a.Paint().Ops() {
+		out = append(out, op.Bounds)
+	}
+	return out
 }
 
 func TestLayoutMeasuresAndPlacesEachChildOnce(t *testing.T) {
@@ -642,27 +730,6 @@ func TestResizeRelayoutsWithoutRebuilding(t *testing.T) {
 	}
 	if after.Layouts <= before.Layouts {
 		t.Fatalf("resize did not lay out again: %d -> %d", before.Layouts, after.Layouts)
-	}
-}
-
-func TestStateFromOtherGoroutinePanics(t *testing.T) {
-	var st *gift.State[int]
-	root := func(ctx *gift.Context) gift.View {
-		st = ctx.State("v", 0)
-		return box{w: 1, h: 1}
-	}
-	a := gift.New(gift.Options{Root: root})
-	mustUpdate(t, a)
-
-	done := make(chan any, 1)
-	go func() {
-		defer func() { done <- recover() }()
-		st.Set(1)
-	}()
-	r := <-done
-	msg, _ := r.(string)
-	if !strings.Contains(msg, "UI executor") {
-		t.Fatalf("panic = %v, want a UI executor diagnosis", r)
 	}
 }
 
