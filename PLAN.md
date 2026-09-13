@@ -307,6 +307,45 @@ Deklaration bei relevanter Aenderung
   -> Backend-Ressourcen und Ausgabe
 ```
 
+### Overflow-Modell
+
+Nachtrag aus Review-Gate 2. Der urspruengliche Plan hat die Frage "der Inhalt
+passt nicht" nicht beantwortet. WU-C hat sie stillschweigend beantwortet, und
+zwar falsch: ein Stack hat spaeteren Kindern den verbleibenden Platz als Maximum
+gegeben, diese sind auf Hoehe 0 kollabiert, ihre eigenen Kinder wurden aber
+weiterhin an ihren echten Positionen gezeichnet und lagen uebereinander. Bei
+40 Zeilen in einem begrenzten Viewport kollabierten 30 und stapelten sich in
+einem 120-Pixel-Band. Das ist die eine Kombination, die weder ehrlich noch
+sicher ist.
+
+Verbindlich gilt ab sofort:
+
+1. **Ein Stack misst unflexible Kinder mit unbegrenzter Hauptachse.** Er
+   verteilt keinen Restplatz an sie und verknappt sie nicht der Reihe nach. Die
+   Querachse bleibt begrenzt. Damit haengt die Groesse eines Kindes nicht davon
+   ab, wie viele Geschwister vor ihm stehen.
+2. **Flexible Kinder bekommen den Rest**, tight auf der Hauptachse, anteilig
+   nach `Flex`. Ist kein Rest da, bekommen sie 0.
+3. **Overflow ist erlaubt und sichtbar.** Ueberschreitet die Summe aus Kindern
+   und Gaps den verfuegbaren Platz, behalten die Kinder ihre ehrlichen Groessen
+   und Positionen. Der Stack meldet nach oben die von den Constraints erlaubte
+   Groesse, aber der Ueberstand wird als Zahl gefuehrt und ist in `Diagnostics`
+   sichtbar. Unter `giftdebug` gibt es zusaetzlich eine Diagnose mit Knoten und
+   Ueberstand.
+4. **Es wird nicht automatisch geclippt.** Wer Overflow abschneiden will, setzt
+   `Clip(true)`. Stillschweigendes Clippen wuerde denselben Fehler verstecken,
+   den Punkt 3 sichtbar machen soll.
+5. Das deckt sich mit dem bereits dokumentierten Vertrag von `gift.Layouter`,
+   dass eine constraint-verletzende Groesse unveraendert durchgereicht und nicht
+   stillschweigend geklemmt wird. Die bisherige Implementierung hat genau dagegen
+   verstossen.
+
+Folgeregel fuer `ui.Box`: ein `Box` ist auf jeder **begrenzten** Achse gierig.
+Weil ein Stack die Hauptachse nach Regel 1 unbegrenzt misst, kollabiert ein
+`Box` ohne `Frame` oder `Flex` in einem Stack auf der Hauptachse und fuellt die
+Querachse. In einem `ZStack` sind beide Achsen begrenzt, also fuellt er beide.
+Das ist genau das Verhalten, das die Godocs beider Stellen ohnehin behaupten.
+
 Erste Layoutregeln: numerische logische Pixel, Min-/Ideal-/Max-Groessen,
 Padding, Gap, Alignment und Spacer. Text wird mit begrenzter Breite gemessen;
 Zeilenumbruch und Baselines sind Bestandteil des gemeinsamen Vertrags.
