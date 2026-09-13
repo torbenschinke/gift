@@ -140,6 +140,7 @@ func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *
 	nd.view = desc.view
 	nd.layouter = desc.elem.Layouter
 	nd.painter = desc.elem.Painter
+	nd.flex = desc.elem.Flex
 
 	checkOwnership(nd, desc.elem.Children)
 	nd.childViews = desc.elem.Children

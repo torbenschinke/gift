@@ -74,6 +74,17 @@ func (l *LayoutContext) ChildSize(child int) geom.Size {
 	return l.nd.sizes[child]
 }
 
+// ChildFlex returns [Element.Flex] of the given child, zero for an
+// inflexible one. The index must be in [0, ChildCount).
+//
+// This is how a stack tells a spacer from an ordinary child: one float read
+// from the retained node, no interface dispatch and no type assertion in the
+// layout path.
+func (l *LayoutContext) ChildFlex(child int) float32 {
+	l.check(child)
+	return l.app.data(l.nd.children[child]).flex
+}
+
 func (l *LayoutContext) check(child int) {
 	if child < 0 || child >= len(l.nd.children) {
 		panic(fmt.Sprintf("gift: child index %d out of range, the node has %d children", child, len(l.nd.children)))

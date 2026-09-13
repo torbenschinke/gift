@@ -147,6 +147,31 @@ func Counter(ctx *gift.Context) gift.View {
 - Go-Generics garantieren weder vollstaendige Monomorphisierung noch Inlining
   oder Allokationsfreiheit. Escape-Analyse und Benchmarks entscheiden.
 
+### Styling endet an der View-Grenze
+
+Nachtrag aus WU-C. Variante A hat eine Konsequenz, die der urspruengliche Plan
+nicht ausgesprochen hat: **Modifier ueberleben die `gift.View`-Grenze nicht.**
+Sie sind auf konkreten Typen deklariert; sobald ein Wert in `gift.View` geboxt
+ist, sind sie weg.
+
+Daraus folgt konkret:
+
+- `gift.Component("row", Row).Padding(8)` kompiliert nicht und kann es nicht.
+  Der sanktionierte Weg ist `ui.VStack(gift.Component(...)).Padding(8)`, also
+  genau der zusaetzliche Knoten, den das Feld-Design bei Blaettern vermeidet.
+- Eine Hilfsfunktion `func Card(title string) gift.View` ist vom Aufrufer nicht
+  stylebar. Wiederverwendbare Widgets muessen entweder einen konkreten Typ
+  zurueckgeben oder Style-Parameter entgegennehmen.
+- Die API-Flaeche waechst multiplikativ: jede Modifier-Methode mal jedes Widget.
+  Bei Text, Image, Button und Gallery kommen dutzende Einzeiler-Forwarder dazu,
+  und der Compiler meldet nicht, wenn einer vergessen wurde. Vor Schritt 3 ist
+  zu pruefen, ob diese Forwarder generiert werden.
+
+Das ist kein Argument fuer gemeinsame Modifier-Interfaces; die bleiben
+abgelehnt. Es ist die ehrliche Formulierung des Preises: **Styling ist eine
+Eigenschaft der konkreten Konstruktionsstelle, nicht etwas, das man auf eine
+beliebige `View` anwenden kann.**
+
 ### Ownership der Kinderslices
 
 `ui.VStack(a, b, c)` erzeugt ein frisches, vom Compiler alloziertes Slice; Gift

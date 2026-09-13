@@ -26,6 +26,11 @@ type nodeData struct {
 	layouter Layouter
 	painter  Painter
 
+	// flex is [Element.Flex] of the last build. It is plain old data stored
+	// inline, so that a stack can read the flexibility of a child without an
+	// interface dispatch and without allocating.
+	flex float32
+
 	// children mirrors the scene sibling list as an indexable slice, because
 	// layout and paint address children by index.
 	children []scene.Handle
@@ -71,6 +76,7 @@ func (nd *nodeData) release() {
 	nd.scope = nil
 	nd.layouter = nil
 	nd.painter = nil
+	nd.flex = 0
 	nd.childViews = nil
 	nd.children = nd.children[:0]
 	nd.next = nd.next[:0]

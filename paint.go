@@ -22,6 +22,9 @@ type Painter interface {
 	// children on screen calls [PaintContext.PaintChildren] at the point in
 	// its own drawing order where they belong, which is what makes
 	// background, content and border ordering explicit.
+	//
+	// A node without a painter is the other case: a nil [Element.Painter]
+	// paints all children in order and nothing else.
 	Paint(ctx *PaintContext)
 }
 
@@ -101,22 +104,35 @@ func (p *PaintContext) ChildCount() int { return len(p.nd.children) }
 
 // paintNode paints h and, through its painter, its subtree.
 //
+// A node without a painter paints its children and nothing else; see
+// [Element.Painter]. This branch neither touches the shared PaintContext nor
+// installs a defer, because it can neither draw nor clip: it is the fast path
+// of every purely structural container.
+//
 // The saved context of the parent is restored with a defer. A painter that
 // panics, which is how gift reports a contract violation such as a state write
 // during Draw, must not leave the shared PaintContext pointing at a node that
 // is no longer being painted: the application may recover from that panic and
 // the next frame has to find the App intact. An open coded defer allocates
-// nothing, so the frame path contract is unaffected.
+// nothing, so the frame path contract is unaffected. The depth counter needs
+// no such care because [App.Paint] resets it at the start of every frame.
 func (a *App) paintNode(h scene.Handle) {
 	n := a.store.Get(h)
 	nd := &n.Payload
-	if nd.painter == nil {
-		return
-	}
 	if a.paintDepth > scene.MaxDepth {
 		panic(fmt.Sprintf(
 			"gift: paint recursion deeper than %d levels; a painter is descending into a cycle or an unbounded tree",
 			scene.MaxDepth))
+	}
+
+	if nd.painter == nil {
+		a.paintDepth++
+		for _, c := range nd.children {
+			a.paintNode(c)
+		}
+		a.paintDepth--
+		a.diag.PaintedNodes++
+		return
 	}
 
 	p := &a.pctx

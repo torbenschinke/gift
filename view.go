@@ -40,9 +40,18 @@ type Element struct {
 	// placed.
 	Layouter Layouter
 
-	// Painter emits the drawing operations of this node. A nil Painter means
-	// the node draws nothing; note that it then does not draw its children
-	// either, because painting children is an explicit act of the painter.
+	// Painter emits the drawing operations of this node.
+	//
+	// A nil Painter draws nothing of its own and paints all children in
+	// order. That is the fast path for a purely structural container: a
+	// stack without background, border or clip has nothing to draw, and
+	// making it invisible together with its whole subtree would be a trap
+	// whose only symptom is a blank screen.
+	//
+	// A non nil Painter is fully responsible for its subtree: children are
+	// drawn only where it calls [PaintContext.PaintChildren] or
+	// [PaintContext.PaintChild], which is what makes the background,
+	// content and border ordering explicit.
 	Painter Painter
 
 	// Children are the child views, in order.
@@ -52,6 +61,17 @@ type Element struct {
 	// copy first. A violation is detected in builds with the giftdebug tag;
 	// see the project plan, section 4.
 	Children []View
+
+	// Flex is the flexibility of this element along the main axis of an
+	// enclosing stack. Zero, the default, means inflexible: the element is
+	// measured against the space that is left. A positive value means the
+	// element takes a share of the remaining space proportional to it.
+	//
+	// It is a plain field rather than an interface or a type assertion in
+	// the layout path on purpose: a stack recognises a [ui.Spacer] by
+	// reading one float from the retained node, see
+	// [LayoutContext.ChildFlex]. A layouter that is not a stack ignores it.
+	Flex float32
 }
 
 // BuildContext is passed to [View.Build].
