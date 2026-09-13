@@ -274,6 +274,7 @@ func (a *App) destroyScopes(h scene.Handle, depth int) {
 		sc.one[0] = nil
 		a.liveScopes--
 	}
+	a.clearOverflow(nd)
 	nd.release()
 }
 

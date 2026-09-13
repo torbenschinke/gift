@@ -61,6 +61,12 @@ type nodeData struct {
 	lastC     geom.Constraints
 	haveLastC bool
 
+	// overflow is how far this node's content exceeded the size it reported,
+	// per axis, as of the last time its layouter ran. It is kept per node and
+	// not recomputed per frame because a clean node is not measured again;
+	// see [App.setOverflow].
+	overflow geom.Size
+
 	own ownershipGuard
 }
 
@@ -85,6 +91,9 @@ func (nd *nodeData) release() {
 	nd.origins = nd.origins[:0]
 	nd.lastC = geom.Constraints{}
 	nd.haveLastC = false
+	// The aggregate counters were already adjusted by App.clearOverflow;
+	// this only keeps the recycled slot from carrying a stale value.
+	nd.overflow = geom.Size{}
 	nd.releaseOwnership()
 }
 

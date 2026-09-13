@@ -18,7 +18,13 @@ type Diagnostics struct {
 	// skipped because it is clean and its constraints did not change is not
 	// counted, which is what makes partial relayout observable from a test.
 	Layouts uint64
-	// PaintedNodes counts the nodes whose painter ran.
+	// PaintedNodes counts the nodes whose painter actually ran.
+	//
+	// A node without background, border and clip supplies no painter at all
+	// and gift descends straight into its children; such a node is visited
+	// but not counted. That difference is the whole point of the counter: it
+	// is the only externally visible evidence that the nil painter fast path
+	// is still in place.
 	PaintedNodes uint64
 	// PaintedOps counts the drawing operations emitted.
 	PaintedOps uint64
@@ -26,6 +32,30 @@ type Diagnostics struct {
 	LiveNodes uint64
 	// LiveScopes is the number of mounted component instances.
 	LiveScopes uint64
+
+	// OverflowNodes is the number of nodes in the retained tree whose
+	// content does not fit into the size they reported.
+	//
+	// It answers "is any container lying about its size" with a single
+	// integer, which is the question the project plan, section 7,
+	// "Overflow-Modell", makes a first class one. Zero is the expected
+	// value of a healthy scene, so a test can assert on it directly.
+	//
+	// It describes the tree, not the last pass: a node that overflowed and
+	// was then skipped by the layout cache still counts. A per pass tally
+	// would drop to zero as soon as partial relayout started working, which
+	// is precisely when it would be needed.
+	OverflowNodes uint64
+
+	// OverflowExtent is the sum over those nodes of their horizontal plus
+	// vertical overflow, in logical pixels.
+	//
+	// The count alone cannot distinguish a row that is half a pixel too tall
+	// from one that is eight hundred pixels too tall. The extent is what
+	// makes "it got better" and "it got worse" different numbers, which is
+	// what a remediation needs; the count is what a regression test asserts
+	// on. Both are cheap, so both are here.
+	OverflowExtent float32
 }
 
 // diagPublisher makes the counters readable from another goroutine.

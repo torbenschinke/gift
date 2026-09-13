@@ -755,6 +755,28 @@ von **0,5 ms**: ein Intervall gilt als verpasst, wenn es **17,17 ms**
 ueberschreitet. Nominalwert, Toleranz und daraus folgende Schwelle werden in
 jeder Messausgabe mitgefuehrt, damit die Zahl nachvollziehbar bleibt.
 
+Ebenfalls verbindlich, ergaenzt in WU-C2, weil beides `missed_ratio`
+materiell verschiebt und eine Messung sonst nicht zwischen Laeufen
+vergleichbar ist:
+
+- **Aufwaermen.** Die ersten 60 Intervalle werden verworfen. Das Oeffnen des
+  Fensters erzeugt auf der Referenzmaschine ein Intervall von 123 bis 148 ms;
+  bei 4096 Ringplaetzen kann ein 60-Sekunden-Szenario diesen Ausreisser nie
+  verdraengen. Die Zahl ist auf der Zielhardware einmal nachzumessen, dort ist
+  das Aufwaermen vermutlich laenger.
+- **Sub-Frame-Intervalle.** Intervalle unter 1 ms sind zwei `Draw`-Callbacks
+  direkt hintereinander, keine zwei Praesentationen. Sie werden verworfen und
+  **getrennt gezaehlt**. Stilles Verwerfen waere derselbe leise Optimismus wie
+  eine falsch gerundete Perzentile.
+- Verworfene Aufwaermframes und Sub-Frame-Intervalle stehen als eigene Zahlen
+  in jeder Messausgabe.
+
+Perzentile werden nach Nearest Rank gebildet, nicht kaufmaennisch gerundet.
+Kaufmaennisches Runden lag in 282 von 900 geprueften Faellen eine Probe zu
+niedrig, also systematisch optimistisch genau am Tail, ueber den das Kriterium
+entscheidet. `p99,9` ist bei 60 Hz erst ab etwa 1000 Proben aussagekraeftig und
+entartet darunter zum Maximum; das ist in der Ausgabe kenntlich zu machen.
+
 | Szenario | Kriterium |
 | --- | --- |
 | Scroll 60 s, 100k Platzhalter | p99-Frametime < 16,67 ms; < 1 % verpasste Intervalle |

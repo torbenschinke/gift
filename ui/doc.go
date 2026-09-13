@@ -7,6 +7,13 @@
 // There is deliberately no shared modifier interface: a method that exists on
 // a widget which then ignores it is a lie the compiler cannot catch.
 //
+// There is exactly one exception, and it is named here so that it is not
+// discovered by surprise: a [ZStack] honours its own Flex, because its parent
+// stack is the one dividing space, but ignores the Flex of its children. A Z
+// stack has no main axis and therefore no remainder to divide. Its children
+// are measured with the full bounded constraints of the box instead, which is
+// the behaviour Flex would have been asked for. See [Overlay.Flex].
+//
 //	ui.VStack(
 //	    ui.Box().Frame(80, 24).Background(ui.RGB(200, 40, 40)),
 //	    ui.Spacer(),
@@ -24,6 +31,16 @@
 // which says so explicitly.
 //
 // Shadow is part of step 2 and is not implemented here.
+//
+// # Content that does not fit
+//
+// Nothing is clipped unless Clip(true) was asked for, and no container starves
+// a child to make its siblings fit. A stack measures an inflexible child with
+// an unbounded main axis, the children keep their honest sizes and positions,
+// and the amount by which the content exceeded the container is counted in
+// [gift.Diagnostics]: OverflowNodes and OverflowExtent. Build with
+// -tags giftdebug to have the offending node named. This is the overflow model
+// of the project plan, section 7.
 //
 // # Ownership of children
 //

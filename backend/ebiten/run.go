@@ -53,9 +53,47 @@ type Config struct {
 	// rate is applied. Zero or less selects sixty, that is about a second.
 	IdleFrames int
 
-	// Frames receives the frame timings. If nil, [Run] creates one; use
-	// [Run]'s Config to pass your own when the measurement has to be read
-	// from outside.
+	// NominalFrameInterval is the interval the display is expected to hold,
+	// for example 16667 microseconds at sixty hertz. Zero or less derives it
+	// from TPS.
+	//
+	// # Why this is a field and not simply TPS
+	//
+	// TPS is the update rate. FrameInterval measures the distance between two
+	// draw callbacks, and Ebitengine draws as often as the display and the
+	// driver allow, which is a different number — the project plan,
+	// section 6, is explicit that several updates may happen between two
+	// frames. Deriving the frame threshold from the tick rate is therefore an
+	// assumption, and it is only correct when the two happen to coincide,
+	// which is the common sixty hertz case and nothing more. Set this field
+	// when they do not, for example on a 50 Hz panel.
+	NominalFrameInterval time.Duration
+
+	// IntervalTolerance is the slack added to the nominal interval before a
+	// frame counts as missed. Zero selects [DefaultIntervalTolerance].
+	//
+	// It exists because the obvious thing is wrong. A strict comparison
+	// against the bare nominal interval reported 50 % of the frames of a
+	// cleanly timed measurement as missed; the project plan, section 13,
+	// therefore binds the threshold at 17.17 ms for sixty hertz, that is
+	// 16.667 plus 0.5. Run used to construct its default timer with the raw
+	// nominal interval, so every consumer that did not bring its own timer
+	// silently measured against the retracted threshold.
+	IntervalTolerance time.Duration
+
+	// WarmupFrames is the number of leading frame intervals to discard. Zero
+	// selects [DefaultWarmupIntervals]; a negative value keeps all of them.
+	//
+	// Opening a window costs a first interval of well over a hundred
+	// milliseconds, and at the default history size a sixty second run can
+	// never evict it again. It is warm-up, not a missed frame, and the
+	// project plan, section 13, judges the scene and not the startup.
+	WarmupFrames int
+
+	// Frames receives the frame timings. If nil, [Run] creates one from the
+	// three fields above; pass your own when the measurement has to be read
+	// from outside. A supplied timer is used unchanged — Run adds no
+	// tolerance to a threshold somebody else already decided.
 	Frames *FrameTimer
 
 	// OnRenderer, if non nil, is called once with the renderer before the
@@ -122,7 +160,16 @@ func Run(app *gift.App, cfg Config) error {
 	}
 	ft := cfg.Frames
 	if ft == nil {
-		ft = NewFrameTimer(time.Second/time.Duration(tps), DefaultFrameHistory)
+		nominal := cfg.NominalFrameInterval
+		if nominal <= 0 {
+			nominal = time.Second / time.Duration(tps)
+		}
+		ft = NewFrameTimerWith(FrameTimerOptions{
+			Nominal:   nominal,
+			Tolerance: cfg.IntervalTolerance,
+			Capacity:  DefaultFrameHistory,
+			Warmup:    cfg.WarmupFrames,
+		})
 	}
 
 	r, err := NewRenderer()

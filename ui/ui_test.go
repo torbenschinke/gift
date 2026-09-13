@@ -247,6 +247,108 @@ func TestDrawOrder(t *testing.T) {
 	})
 }
 
+// TestDrawOrderAllCombinations closes the coverage gap in [TestDrawOrder]:
+// background, border, corner radius and clip were never exercised together.
+//
+// The order was in fact already correct — this is a coverage gap and not a
+// defect — but "somebody ran all sixteen once by hand and it looked right" is
+// not a test. The invariant is: the background comes first and unclipped, the
+// children come next and are clipped exactly when Clip(true) was asked for,
+// and the border comes last and unclipped.
+func TestDrawOrderAllCombinations(t *testing.T) {
+	bg := ui.RGB(1, 2, 3)
+	bd := ui.Border{Width: 2, Color: ui.RGB(4, 5, 6)}
+
+	for mask := range 16 {
+		hasBg := mask&1 != 0
+		hasBorder := mask&2 != 0
+		hasRadius := mask&4 != 0
+		hasClip := mask&8 != 0
+
+		name := ""
+		for i, on := range []bool{hasBg, hasBorder, hasRadius, hasClip} {
+			if on {
+				name += [...]string{"background+", "border+", "radius+", "clip+"}[i]
+			}
+		}
+		if name == "" {
+			name = "bare"
+		}
+
+		t.Run(name, func(t *testing.T) {
+			v := ui.VStack(probe(10, 10))
+			if hasBg {
+				v = v.Background(bg)
+			}
+			if hasBorder {
+				v = v.Border(bd)
+			}
+			if hasRadius {
+				v = v.CornerRadius(5)
+			}
+			if hasClip {
+				v = v.Clip(true)
+			}
+			l := run(t, v, geom.Sz(100, 100))
+			ops := l.Ops()
+
+			want := 1 // the child
+			if hasBg {
+				want++
+			}
+			if hasBorder {
+				want++
+			}
+			if len(ops) != want {
+				t.Fatalf("painted %d ops, want %d: %v", len(ops), want, ops)
+			}
+
+			i := 0
+			if hasBg {
+				wantKind := render.OpFillRect
+				if hasRadius {
+					wantKind = render.OpFillRoundRect
+				}
+				if ops[i].Kind != wantKind {
+					t.Errorf("ops[%d].Kind = %v, want the background %v", i, ops[i].Kind, wantKind)
+				}
+				if ops[i].Clip != 0 {
+					t.Errorf("the background must be drawn outside the clip, got index %d", ops[i].Clip)
+				}
+				i++
+			}
+			// The child.
+			if ops[i].Kind != render.OpFillRect {
+				t.Errorf("ops[%d].Kind = %v, want the child fill", i, ops[i].Kind)
+			}
+			if clipped := ops[i].Clip != 0; clipped != hasClip {
+				t.Errorf("the child is clipped = %v, want %v", clipped, hasClip)
+			}
+			if hasClip {
+				if got, want := l.Clip(ops[i].Clip), geom.RcXYWH(0, 0, 10, 10); !approxRect(got, want) {
+					t.Errorf("clip rect = %v, want the full bounds %v", got, want)
+				}
+			}
+			i++
+			if hasBorder {
+				if ops[i].Kind != render.OpStrokeRoundRect {
+					t.Errorf("ops[%d].Kind = %v, want the border last", i, ops[i].Kind)
+				}
+				if ops[i].Clip != 0 {
+					t.Errorf("the border must be drawn outside the clip, got index %d", ops[i].Clip)
+				}
+				wantRadius := float32(0)
+				if hasRadius {
+					wantRadius = 5
+				}
+				if ops[i].CornerRadius != wantRadius {
+					t.Errorf("border radius = %v, want %v", ops[i].CornerRadius, wantRadius)
+				}
+			}
+		})
+	}
+}
+
 // TestNilPainterFastPath is the ui side of the core change: a container
 // without style must not install a painter at all, so that gift takes its fast
 // path and the display list contains nothing but the children.

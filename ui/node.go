@@ -63,13 +63,13 @@ func (n *node) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 	n.ctx = ctx
 	cc := n.fr.apply(c)
 
-	var size geom.Size
+	var res layout.Result
 	switch n.kind {
 	case kindStack:
 		for i := range k {
 			n.items[i].Flex = ctx.ChildFlex(i)
 		}
-		size = layout.Stack(n.spec, cc, k, n, n.items, n.origins)
+		res = layout.Stack(n.spec, cc, k, n, n.items, n.origins)
 	case kindBox:
 		// A Box has no content, so it is greedy: it takes the whole extent
 		// on every axis that is bounded, and collapses to its padding on an
@@ -85,30 +85,39 @@ func (n *node) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 		// silently dropped such backgrounds, which cost real debugging time
 		// during WU-D.
 		//
-		// A stack measures an inflexible child with an unbounded main axis,
-		// so a Box in a VStack still collapses on the main axis. Give it a
-		// height with Frame or MinHeight, or a share with Flex.
+		// A stack measures an inflexible child with an unbounded main axis —
+		// see the project plan, section 7, "Overflow-Modell", rule 1 — so a
+		// Box in a VStack collapses on the main axis and fills the cross
+		// axis. Give it a height with Frame or MinHeight, or a share of the
+		// leftover space with Flex.
 		pad := n.spec.Padding
-		size = geom.Sz(pad.Horizontal(), pad.Vertical())
+		size := geom.Sz(pad.Horizontal(), pad.Vertical())
 		if cc.HasBoundedWidth() {
 			size.W = cc.Max.W
 		}
 		if cc.HasBoundedHeight() {
 			size.H = cc.Max.H
 		}
-		size = cc.Constrain(size)
+		// A Box has no children, so it cannot overflow: it never asks for
+		// more than the constraints offer.
+		res.Size = cc.Constrain(size)
 	default:
-		size = layout.Overlay(n.spec.Padding, n.spec.Alignment, cc, k, n, n.items, n.origins)
+		res = layout.Overlay(n.spec.Padding, n.spec.Alignment, cc, k, n, n.items, n.origins)
 	}
 
 	for i := range k {
 		ctx.Place(i, n.origins[i])
 	}
+	// Overflow is reported, never hidden. The children above keep the origins
+	// the algorithm gave them even when they do not fit; the project plan,
+	// section 7, "Overflow-Modell", rules out clipping them silently, and
+	// rule 3 requires the excess to be visible in gift.Diagnostics.
+	ctx.ReportOverflow(res.Overflow)
 	// Cleared without a defer: a closure would be the only allocation in
 	// this function, and a layouter that panics has already put the App into
 	// the state the application is expected to report and restart from.
 	n.ctx = nil
-	return size
+	return res.Size
 }
 
 // Paint draws the node in the fixed order of the project plan, section 8.

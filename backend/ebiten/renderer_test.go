@@ -139,16 +139,30 @@ func TestRadiusAndStrokeAreClamped(t *testing.T) {
 	}
 }
 
+// TestInvisibleOpsAreSkipped also pins which reason each case is attributed
+// to. One conflated Skipped counter is what let a collapsed container hide
+// behind "the application asked for something invisible"; see [RendererStats].
 func TestInvisibleOpsAreSkipped(t *testing.T) {
 	cases := []struct {
-		name string
-		op   render.Op
+		name   string
+		op     render.Op
+		reason func(RendererStats) uint64
 	}{
-		{"none", render.Op{Kind: render.OpNone, Bounds: geom.Rc(0, 0, 10, 10), Color: render.RGB(255, 0, 0)}},
-		{"transparent", render.Op{Kind: render.OpFillRect, Bounds: geom.Rc(0, 0, 10, 10)}},
-		{"empty bounds", render.Op{Kind: render.OpFillRect, Bounds: geom.Rc(10, 10, 10, 10), Color: render.RGB(255, 0, 0)}},
-		{"zero stroke", render.Op{Kind: render.OpStrokeRoundRect, Bounds: geom.Rc(0, 0, 10, 10), Color: render.RGB(255, 0, 0)}},
-		{"unknown kind", render.Op{Kind: render.OpKind(200), Bounds: geom.Rc(0, 0, 10, 10), Color: render.RGB(255, 0, 0)}},
+		{"none",
+			render.Op{Kind: render.OpNone, Bounds: geom.Rc(0, 0, 10, 10), Color: render.RGB(255, 0, 0)},
+			func(s RendererStats) uint64 { return s.SkippedNone }},
+		{"transparent",
+			render.Op{Kind: render.OpFillRect, Bounds: geom.Rc(0, 0, 10, 10)},
+			func(s RendererStats) uint64 { return s.SkippedTransparent }},
+		{"empty bounds",
+			render.Op{Kind: render.OpFillRect, Bounds: geom.Rc(10, 10, 10, 10), Color: render.RGB(255, 0, 0)},
+			func(s RendererStats) uint64 { return s.SkippedEmptyBounds }},
+		{"zero stroke",
+			render.Op{Kind: render.OpStrokeRoundRect, Bounds: geom.Rc(0, 0, 10, 10), Color: render.RGB(255, 0, 0)},
+			func(s RendererStats) uint64 { return s.SkippedZeroStroke }},
+		{"unknown kind",
+			render.Op{Kind: render.OpKind(200), Bounds: geom.Rc(0, 0, 10, 10), Color: render.RGB(255, 0, 0)},
+			func(s RendererStats) uint64 { return s.UnknownKinds }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -162,7 +176,56 @@ func TestInvisibleOpsAreSkipped(t *testing.T) {
 			if c.batches != 0 {
 				t.Fatalf("issued %d draw calls, want none", c.batches)
 			}
+			s := r.Stats()
+			if got := tc.reason(s); got != 1 {
+				t.Errorf("the op was not attributed to its own reason: %+v", s)
+			}
+			if s.Accounted() != 1 {
+				t.Errorf("Accounted() = %d, want the 1 submitted op: %+v", s.Accounted(), s)
+			}
 		})
+	}
+}
+
+// TestSkipAccountingIsTotal is the property the OpNone hole violated:
+// Ops + Skipped + UnknownKinds must equal the number of operations submitted,
+// whatever the mix.
+func TestSkipAccountingIsTotal(t *testing.T) {
+	r, _ := newHeadlessRenderer(t)
+	var l render.List
+	l.Reset()
+	ops := []render.Op{
+		{Kind: render.OpFillRect, Bounds: geom.Rc(0, 0, 10, 10), Color: render.RGB(255, 0, 0)},
+		{Kind: render.OpNone},
+		{Kind: render.OpNone},
+		{Kind: render.OpFillRect, Bounds: geom.Rc(0, 0, 10, 10)},
+		{Kind: render.OpFillRect, Bounds: geom.Rc(5, 5, 5, 5), Color: render.RGB(1, 2, 3)},
+		{Kind: render.OpStrokeRoundRect, Bounds: geom.Rc(0, 0, 10, 10), Color: render.RGB(1, 2, 3)},
+		{Kind: render.OpKind(99)},
+	}
+	clip := l.PushClip(geom.Rc(500, 500, 600, 600))
+	ops = append(ops, render.Op{Kind: render.OpFillRect, Bounds: geom.Rc(0, 0, 10, 10), Color: render.RGB(1, 2, 3), Clip: clip})
+	for _, op := range ops {
+		l.Add(op)
+	}
+	l.PopClip()
+
+	r.BeginFrame(geom.Sz(100, 100))
+	r.Submit(&l)
+	r.EndFrame()
+
+	s := r.Stats()
+	if got, want := s.Accounted(), uint64(len(l.Ops())); got != want {
+		t.Fatalf("Accounted() = %d, want %d: %+v", got, want, s)
+	}
+	if s.SkippedNone != 2 {
+		t.Errorf("SkippedNone = %d, want 2; OpNone used to be dropped without a counter", s.SkippedNone)
+	}
+	if s.SkippedOutsideClip != 1 {
+		t.Errorf("SkippedOutsideClip = %d, want 1: %+v", s.SkippedOutsideClip, s)
+	}
+	if s.SkippedEmptyBounds != 1 {
+		t.Errorf("SkippedEmptyBounds = %d, want 1: %+v", s.SkippedEmptyBounds, s)
 	}
 }
 
@@ -368,8 +431,11 @@ func TestStatsCountSkips(t *testing.T) {
 	r.EndFrame()
 
 	s := r.Stats()
-	if s.Frames != 1 || s.Batches != 1 || s.Ops != 1 || s.Skipped != 1 || s.UnknownKinds != 1 {
+	if s.Frames != 1 || s.Batches != 1 || s.Ops != 1 || s.Skipped() != 1 || s.UnknownKinds != 1 {
 		t.Fatalf("Stats() = %+v", s)
+	}
+	if s.SkippedTransparent != 1 {
+		t.Fatalf("the transparent op was attributed to the wrong reason: %+v", s)
 	}
 }
 

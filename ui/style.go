@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+
 	"github.com/torbenschinke/gift"
 	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/render"
@@ -46,11 +48,30 @@ func (s styleSpec) needsPainter() bool {
 //
 // # Precedence
 //
-// Frame is applied first and makes the axis tight. Min and Max are applied
-// afterwards and therefore win: Frame(200, 100).MaxWidth(50) is 50 wide, not
-// 200. That order is the useful one — Max is a clamp, and a clamp that a
-// fixed size can escape is not a clamp — and it is the one thing about this
-// combination worth remembering.
+// The modifiers are fields, not wrappers, so the order in which they are
+// called is irrelevant. What matters is the order in which they are applied,
+// and that order is fixed:
+//
+//  1. Frame makes the axis tight.
+//  2. MaxWidth and MaxHeight are applied and lower both ends of the range.
+//  3. MinWidth and MinHeight are applied and raise both ends of the range.
+//
+// Two consequences, both deliberate:
+//
+//   - Max beats Frame. Frame(200, 100).MaxWidth(50) is 50 wide. A clamp that a
+//     fixed size can escape is not a clamp.
+//   - Min beats everything, including Max. Frame(20, 20).MinWidth(80) is 80
+//     wide and MinWidth(80).MaxWidth(40) is 80 wide. This is the rule CSS and
+//     Flutter both use, and it is the only one under which a minimum cannot be
+//     silently lost: a minimum usually exists because the content below it
+//     cannot be rendered any smaller, and clamping it away produces an
+//     unreadable node instead of an honest overflow.
+//
+// The previous implementation contradicted its own documentation here. It
+// raised the minimum and then normalised it straight back down to the maximum,
+// so Frame(20, 20).MinWidth(80) came out 20 wide and the minimum vanished
+// without a trace. Each step below therefore moves both ends of the range, so
+// the result is normalised by construction rather than by a repair pass.
 type frameSpec struct {
 	w, h       float32
 	hasW, hasH bool
@@ -70,27 +91,44 @@ func (f frameSpec) apply(c geom.Constraints) geom.Constraints {
 	if f.hasH {
 		out.Min.H, out.Max.H = f.h, f.h
 	}
-	if f.hasMaxW && f.maxW < out.Max.W {
-		out.Max.W = f.maxW
+	if f.hasMaxW {
+		out.Min.W, out.Max.W = lowerTo(out.Min.W, out.Max.W, f.maxW)
 	}
-	if f.hasMaxH && f.maxH < out.Max.H {
-		out.Max.H = f.maxH
+	if f.hasMaxH {
+		out.Min.H, out.Max.H = lowerTo(out.Min.H, out.Max.H, f.maxH)
 	}
-	if f.hasMinW && f.minW > out.Min.W {
-		out.Min.W = f.minW
+	if f.hasMinW {
+		out.Min.W, out.Max.W = raiseTo(out.Min.W, out.Max.W, f.minW)
 	}
-	if f.hasMinH && f.minH > out.Min.H {
-		out.Min.H = f.minH
-	}
-	// Keep the result normalised: a minimum above the maximum would make
-	// geom.Constrain return the minimum and silently break the clamp.
-	if out.Min.W > out.Max.W {
-		out.Min.W = out.Max.W
-	}
-	if out.Min.H > out.Max.H {
-		out.Min.H = out.Max.H
+	if f.hasMinH {
+		out.Min.H, out.Max.H = raiseTo(out.Min.H, out.Max.H, f.minH)
 	}
 	return out
+}
+
+// lowerTo applies a maximum to a range. It pulls the upper end down to v and
+// the lower end with it, so the range stays normalised without a repair pass
+// that would silently undo a minimum.
+func lowerTo(lo, hi, v float32) (float32, float32) {
+	if v < hi {
+		hi = v
+	}
+	if v < lo {
+		lo = v
+	}
+	return lo, hi
+}
+
+// raiseTo applies a minimum to a range, pushing the upper end up with it. This
+// is where Min beats Max; see the precedence section of [frameSpec].
+func raiseTo(lo, hi, v float32) (float32, float32) {
+	if v > lo {
+		lo = v
+	}
+	if v > hi {
+		hi = v
+	}
+	return lo, hi
 }
 
 // base holds the modifier fields every styled view shares.
@@ -108,15 +146,69 @@ type base struct {
 	style styleSpec
 }
 
-func (b *base) setKey(v string)                { b.key = v }
-func (b *base) setFlex(v float32)              { b.flex = v }
-func (b *base) setPadding(v float32)           { b.pad = geom.InsetsAll(v) }
-func (b *base) setPaddingInsets(v geom.Insets) { b.pad = v }
-func (b *base) setAlign(v geom.Alignment)      { b.align = v }
-func (b *base) setBackground(v Color)          { b.style.background = v }
-func (b *base) setBorder(v Border)             { b.style.border = v }
-func (b *base) setCornerRadius(v float32)      { b.style.radius = v }
-func (b *base) setClip(v bool)                 { b.style.clip = v }
+func (b *base) setKey(v string)           { b.key = v }
+func (b *base) setFlex(v float32)         { b.flex = checkFlex(v) }
+func (b *base) setAlign(v geom.Alignment) { b.align = v }
+
+func (b *base) setPadding(v float32) { b.pad = geom.InsetsAll(checkPadding("Padding", v)) }
+
+func (b *base) setPaddingInsets(v geom.Insets) {
+	checkPadding("PaddingInsets.Top", v.Top)
+	checkPadding("PaddingInsets.Right", v.Right)
+	checkPadding("PaddingInsets.Bottom", v.Bottom)
+	checkPadding("PaddingInsets.Left", v.Left)
+	b.pad = v
+}
+
+// checkGap rejects a gap that is not a finite number.
+//
+// A negative gap is legal and documented: it overlaps adjacent children, which
+// is occasionally what a design calls for and which the stack algorithm
+// handles without a special case. A non finite one is not legal in any sense —
+// [geom.Unbounded] as a gap produces infinite child origins, infinite bounds
+// and NaN vertex positions, and the failure surfaces as an empty window three
+// layers below the mistake. Rejecting it at the call site costs one comparison
+// during build, which is outside the frame path.
+func checkGap(v float32) float32 {
+	if !isFinite(v) {
+		panic(fmt.Sprintf(
+			"gift/ui: Gap(%v) is not a finite number; a negative gap is allowed and overlaps children, "+
+				"but an infinite or NaN gap produces infinite origins and NaN vertex positions", v))
+	}
+	return v
+}
+
+// checkPadding rejects padding that is negative or not finite.
+//
+// Negative padding is rejected rather than defined, and the reason is that it
+// has no single sensible meaning here: the constraints handed to the children
+// are deflated by the padding and clamped at zero, while the resulting size is
+// outset by it, so a negative inset would enlarge the children's room on one
+// side of the arithmetic and shrink the container on the other. A modifier
+// whose two halves disagree is worse than one that is absent; a caller who
+// wants overlap has a negative Gap, and a caller who wants a larger container
+// has Frame or MinWidth.
+func checkPadding(what string, v float32) float32 {
+	if !isFinite(v) || v < 0 {
+		panic(fmt.Sprintf(
+			"gift/ui: %s(%v) must be a finite, non negative number; "+
+				"for deliberately overlapping children use a negative Gap instead", what, v))
+	}
+	return v
+}
+
+// checkFlex rejects a flex that is not a finite number. A negative or zero
+// flex means inflexible, which is the documented default and not an error.
+func checkFlex(v float32) float32 {
+	if !isFinite(v) {
+		panic(fmt.Sprintf("gift/ui: Flex(%v) is not a finite number", v))
+	}
+	return v
+}
+func (b *base) setBackground(v Color)     { b.style.background = v }
+func (b *base) setBorder(v Border)        { b.style.border = v }
+func (b *base) setCornerRadius(v float32) { b.style.radius = v }
+func (b *base) setClip(v bool)            { b.style.clip = v }
 
 // setFrame makes both axes tight. An axis given as [geom.Unbounded] is left
 // free, which is how a caller fixes one axis only.
@@ -125,8 +217,11 @@ func (b *base) setFrame(w, h float32) {
 	b.frame.hasH, b.frame.h = isFinite(h), h
 }
 
-func (b *base) setMinWidth(v float32)  { b.frame.hasMinW, b.frame.minW = true, v }
-func (b *base) setMinHeight(v float32) { b.frame.hasMinH, b.frame.minH = true, v }
+// setMinWidth and setMinHeight ignore a non finite value the same way the Max
+// setters do. An infinite minimum would make every size infinite and every
+// derived origin a NaN, which is not a layout, it is a corrupted frame.
+func (b *base) setMinWidth(v float32)  { b.frame.hasMinW, b.frame.minW = isFinite(v), v }
+func (b *base) setMinHeight(v float32) { b.frame.hasMinH, b.frame.minH = isFinite(v), v }
 func (b *base) setMaxWidth(v float32)  { b.frame.hasMaxW, b.frame.maxW = isFinite(v), v }
 func (b *base) setMaxHeight(v float32) { b.frame.hasMaxH, b.frame.maxH = isFinite(v), v }
 

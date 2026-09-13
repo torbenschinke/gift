@@ -131,7 +131,10 @@ func (a *App) paintNode(h scene.Handle) {
 			a.paintNode(c)
 		}
 		a.paintDepth--
-		a.diag.PaintedNodes++
+		// Deliberately not counted. PaintedNodes means "a painter ran", and
+		// this branch is the one where none did; counting it made the
+		// counter equal to the number of visited nodes and hid the nil
+		// painter fast path from every measurement.
 		return
 	}
 

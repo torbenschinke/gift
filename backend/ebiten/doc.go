@@ -42,6 +42,24 @@
 // exercised end to end against a GPU. It is implemented anyway, because
 // scrolling will need it.
 //
+// # Measurement
+//
+// [FrameTimer] records the three timings the project plan, sections 11 and 13,
+// insist on keeping apart: CPU time in the update callback, CPU time in the
+// draw callback and the wall clock distance between two draw callbacks. None
+// of them is a GPU time.
+//
+// Two things are excluded from the interval series and reported separately,
+// because including them answers a different question than the one the plan
+// asks. The first [DefaultWarmupIntervals] intervals are warm-up: opening a
+// window costs an interval of well over a hundred milliseconds, and the
+// default history is large enough that a sixty second run can never evict it.
+// Intervals at or below [DefaultMinInterval] are two draw callbacks back to
+// back rather than two presentations. An interval counts as missed when it
+// exceeds the nominal interval plus [DefaultIntervalTolerance]; the plan,
+// section 13, binds that at 0.5 ms, giving 17.17 ms at sixty hertz, after a
+// strict comparison reported half of a cleanly timed measurement as missed.
+//
 // # Testability
 //
 // Everything except the draw call itself runs without a graphics context:

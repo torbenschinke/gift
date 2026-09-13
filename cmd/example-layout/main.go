@@ -51,6 +51,7 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"strconv"
 	"time"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
@@ -69,13 +70,18 @@ func main() {
 		fps       = flag.Int("fps", 60, "target tick rate and the interval frame times are measured against")
 		tolerance = flag.Duration("interval-tolerance", 500*time.Microsecond,
 			"slack added to the nominal interval before a frame counts as missed; "+
-				"a display is never exactly at its nominal rate, and a zero tolerance flags every frame")
+				"the project plan, section 13, binds this at 0.5 ms, which gives a threshold of 17.17 ms "+
+				"at sixty hertz; pass a negative value for a strict comparison and expect it to report "+
+				"about half of a cleanly timed measurement as missed")
 		measure = flag.Bool("measure", true, "print a machine readable measurement line on exit")
 		every   = flag.Duration("measure-interval", 0, "also print a measurement line this often; zero prints only on exit")
 		idleTPS = flag.Int("idle-tps", 0, "tick rate to fall back to while nothing changes, against Pi thermal throttling; "+
 			"zero, the default, disables the idle policy because it changes what is being measured")
-		width   = flag.Int("width", 1280, "window width in logical pixels")
-		height  = flag.Int("height", 720, "window height in logical pixels")
+		width  = flag.Int("width", 1280, "window width in logical pixels")
+		height = flag.Int("height", 720, "window height in logical pixels")
+		warmup = flag.Int("warmup-frames", backend.DefaultWarmupIntervals,
+			"number of leading frame intervals to discard; opening a window costs well over a hundred "+
+				"milliseconds and the ring is too large to ever evict it in a sixty second run")
 		verbose = flag.Bool("v", false, "log lifecycle events to stderr")
 	)
 	flag.Parse()
@@ -94,20 +100,24 @@ func main() {
 		log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}
 
-	sc := &scene{rows: *rows, cells: *cells}
+	sc := newScene(*rows, *cells)
 	app := gift.New(gift.Options{Logger: log, Root: sc.root})
 
 	target := targetInterval(*fps)
-	frames := backend.NewFrameTimer(target+*tolerance, backend.DefaultFrameHistory)
+	frames := backend.NewFrameTimerWith(backend.FrameTimerOptions{
+		Nominal:   target,
+		Tolerance: *tolerance,
+		Capacity:  backend.DefaultFrameHistory,
+		Warmup:    *warmup,
+	})
 
 	rep := &reporter{
-		app:     app,
-		frames:  frames,
-		scene:   sc,
-		every:   *every,
-		enable:  *measure,
-		nominal: target,
-		enc:     json.NewEncoder(os.Stdout),
+		app:    app,
+		frames: frames,
+		scene:  sc,
+		every:  *every,
+		enable: *measure,
+		enc:    json.NewEncoder(os.Stdout),
 	}
 
 	cfg := backend.Config{
@@ -145,14 +155,19 @@ func main() {
 
 // --- the scene --------------------------------------------------------------
 
-// targetInterval is the frame interval a tick rate is measured against,
-// rounded up to ten microseconds.
+// targetInterval is the nominal frame interval a tick rate implies, rounded up
+// to ten microseconds: 16.67 ms for sixty.
 //
-// The rounding is not cosmetic. A sixtieth of a second is 16.6666 ms, an
-// actual sixty hertz frame lands a few hundred nanoseconds above that, and
-// comparing against the exact quotient would report almost every perfectly
-// timed frame as missed. The project plan, section 13, states the threshold as
-// 16.67 ms, which is exactly what this produces for sixty.
+// It is the nominal value only. What an interval is actually compared against
+// is this plus the tolerance of -interval-tolerance, which the project plan,
+// section 13, binds at 0.5 ms and which gives 17.17 ms at sixty hertz. Both
+// numbers and their sum are printed in every measurement line, because a
+// threshold whose derivation is not visible cannot be checked.
+//
+// Note also what this is not: the tick rate is the update rate, and the frame
+// interval is the distance between two draw callbacks. They coincide on a
+// sixty hertz display driven at sixty ticks and not otherwise; see
+// backend.Config.NominalFrameInterval.
 func targetInterval(fps int) time.Duration {
 	if fps <= 0 {
 		fps = 60
@@ -171,9 +186,22 @@ func targetInterval(fps int) time.Duration {
 type scene struct {
 	rows, cells int
 
+	// keys are the per row reconciliation keys, formatted once in newScene so
+	// that a build does not produce one string per row per frame.
+	keys []string
+
 	frame     int
 	highlight *gift.State[int]
 	presses   *gift.State[int]
+}
+
+// newScene precomputes everything about the scene that does not change.
+func newScene(rows, cells int) *scene {
+	s := &scene{rows: rows, cells: cells, keys: make([]string, rows)}
+	for i := range s.keys {
+		s.keys[i] = "row" + strconv.Itoa(i)
+	}
+	return s
 }
 
 // tick advances the highlighted row once a second.
@@ -218,7 +246,15 @@ func (s *scene) root(ctx *gift.Context) gift.View {
 	for i := 0; i < s.rows; i++ {
 		// The props are an explicit comparable value, so a row whose index
 		// and highlight state did not change is not rebuilt at all.
-		body = append(body, gift.Memo("row", rowProps{
+		//
+		// The key is per row and not the constant "row". Sibling keys have to
+		// be unique — the project plan, section 5, asks for stable model keys
+		// and a giftdebug build rejects duplicates — because the matcher
+		// otherwise falls back to matching the duplicates by their position
+		// among each other, which is the positional identity the keys were
+		// there to remove. The bug was invisible until this command got tests
+		// of its own, since nothing here ever reorders the rows.
+		body = append(body, gift.Memo(s.keys[i], rowProps{
 			Index: i,
 			Cells: s.cells,
 			Hot:   i == hot,
@@ -245,10 +281,12 @@ func (s *scene) root(ctx *gift.Context) gift.View {
 // header is a ZStack: a bar with a title block on the left, a spacer and a
 // stateful badge on the right, on an accent coloured plate.
 //
-// The plate is the ZStack's own Background and not a child Box. A Box without
-// a frame sizes itself to the minimum of its constraints, which inside a
-// ZStack is zero, so the obvious spelling ZStack(Box().Background(c), content)
-// draws nothing at all. See [ui.BoxView].
+// The plate is the ZStack's own Background and not a child Box, which is a
+// matter of taste and not of necessity: since WU-D a Box is greedy on every
+// bounded axis, and a ZStack bounds both, so ZStack(Box().Background(c),
+// content) paints the plate behind the content just as well. See [ui.BoxView].
+// The comment that used to stand here claimed the opposite and had been wrong
+// for a work unit.
 func (s *scene) header() gift.View {
 	return ui.ZStack(
 		ui.HStack(
@@ -373,10 +411,9 @@ type reporter struct {
 	renderer *backend.Renderer
 	scene    *scene
 
-	every   time.Duration
-	enable  bool
-	nominal time.Duration
-	enc     *json.Encoder
+	every  time.Duration
+	enable bool
+	enc    *json.Encoder
 
 	start time.Time
 	last  time.Time
@@ -420,6 +457,7 @@ type statsMillis struct {
 	P50   float64 `json:"p50_ms"`
 	P95   float64 `json:"p95_ms"`
 	P99   float64 `json:"p99_ms"`
+	P999  float64 `json:"p999_ms"`
 	Max   float64 `json:"max_ms"`
 }
 
@@ -428,7 +466,7 @@ func ms(s backend.Stats) statsMillis {
 	return statsMillis{
 		Count: s.Count,
 		Min:   f(s.Min), Mean: f(s.Mean), P50: f(s.P50),
-		P95: f(s.P95), P99: f(s.P99), Max: f(s.Max),
+		P95: f(s.P95), P99: f(s.P99), P999: f(s.P999), Max: f(s.Max),
 	}
 }
 
@@ -452,14 +490,37 @@ type measurement struct {
 		PaintedNodes uint64 `json:"painted_nodes"`
 		PaintedOps   uint64 `json:"painted_ops"`
 		LiveScopes   uint64 `json:"live_scopes"`
+
+		// OverflowNodes and OverflowExtent are the overflow model of the
+		// project plan, section 7, made measurable. In this scene both must
+		// be zero: every row has a frame and the panel that holds them is
+		// flexible, so nothing here is supposed to exceed its container. A
+		// non zero value is the signature of the defect this scene was used
+		// to reproduce — rows collapsing to zero and piling up.
+		OverflowNodes  uint64  `json:"overflow_nodes"`
+		OverflowExtent float32 `json:"overflow_extent_px"`
 	} `json:"gift"`
 
+	// Renderer carries the skip counters one per reason. A single conflated
+	// number answered "the application asked for something invisible" and "a
+	// container collapsed" with the same integer, which is how the collapse
+	// stayed invisible for a work unit. skipped_empty_bounds is the one to
+	// watch: it is a node that reported a zero extent.
 	Renderer struct {
-		Frames       uint64 `json:"frames"`
-		DrawCalls    uint64 `json:"draw_calls"`
-		Ops          uint64 `json:"ops"`
-		Skipped      uint64 `json:"skipped_ops"`
-		UnknownKinds uint64 `json:"unknown_kinds"`
+		Frames             uint64 `json:"frames"`
+		DrawCalls          uint64 `json:"draw_calls"`
+		Ops                uint64 `json:"ops"`
+		Skipped            uint64 `json:"skipped_ops"`
+		SkippedNone        uint64 `json:"skipped_none"`
+		SkippedTransparent uint64 `json:"skipped_transparent"`
+		SkippedEmptyBounds uint64 `json:"skipped_empty_bounds"`
+		SkippedEmptyClip   uint64 `json:"skipped_empty_clip"`
+		SkippedOutsideClip uint64 `json:"skipped_outside_clip"`
+		SkippedZeroStroke  uint64 `json:"skipped_zero_stroke"`
+		UnknownKinds       uint64 `json:"unknown_kinds"`
+		// Accounted is Ops + Skipped + UnknownKinds and must equal the number
+		// of operations submitted, which is painted_ops above.
+		Accounted uint64 `json:"accounted_ops"`
 	} `json:"renderer"`
 
 	UpdateCPU     statsMillis `json:"update_cpu"`
@@ -473,11 +534,22 @@ type measurement struct {
 	// comparing against the bare quotient reports every well timed frame as
 	// missed.
 	NominalIntervalMs float64 `json:"nominal_interval_ms"`
+	ToleranceMs       float64 `json:"interval_tolerance_ms"`
 	MissedThresholdMs float64 `json:"missed_threshold_ms"`
 	MissedIntervals   int     `json:"missed_intervals"`
 	MissedRatio       float64 `json:"missed_ratio"`
-	Updates           uint64  `json:"updates"`
-	Draws             uint64  `json:"draws"`
+
+	// WarmupFrames intervals were discarded before the window started, and
+	// SubFrameIntervals draw-to-draw distances were shorter than
+	// MinIntervalMs and are not treated as frames. Both are printed because
+	// missed_ratio is only interpretable next to what was excluded from it.
+	WarmupFrames      int     `json:"warmup_frames"`
+	WarmupDropped     uint64  `json:"warmup_dropped"`
+	MinIntervalMs     float64 `json:"min_interval_ms"`
+	SubFrameIntervals uint64  `json:"sub_frame_intervals"`
+
+	Updates uint64 `json:"updates"`
+	Draws   uint64 `json:"draws"`
 
 	Mem struct {
 		HeapAllocBytes uint64 `json:"heap_alloc_bytes"`
@@ -504,23 +576,37 @@ func (r *reporter) emit(kind string) {
 	m.Gift.PaintedNodes = d.PaintedNodes
 	m.Gift.PaintedOps = d.PaintedOps
 	m.Gift.LiveScopes = d.LiveScopes
+	m.Gift.OverflowNodes = d.OverflowNodes
+	m.Gift.OverflowExtent = d.OverflowExtent
 
 	if r.renderer != nil {
 		rs := r.renderer.Stats()
 		m.Renderer.Frames = rs.Frames
 		m.Renderer.DrawCalls = rs.Batches
 		m.Renderer.Ops = rs.Ops
-		m.Renderer.Skipped = rs.Skipped
+		m.Renderer.Skipped = rs.Skipped()
+		m.Renderer.SkippedNone = rs.SkippedNone
+		m.Renderer.SkippedTransparent = rs.SkippedTransparent
+		m.Renderer.SkippedEmptyBounds = rs.SkippedEmptyBounds
+		m.Renderer.SkippedEmptyClip = rs.SkippedEmptyClip
+		m.Renderer.SkippedOutsideClip = rs.SkippedOutsideClip
+		m.Renderer.SkippedZeroStroke = rs.SkippedZeroStroke
 		m.Renderer.UnknownKinds = rs.UnknownKinds
+		m.Renderer.Accounted = rs.Accounted()
 	}
 
 	m.UpdateCPU = ms(ft.UpdateCPU)
 	m.DrawCPU = ms(ft.DrawCPU)
 	m.FrameInterval = ms(ft.FrameInterval)
-	m.NominalIntervalMs = float64(r.nominal) / float64(time.Millisecond)
+	m.NominalIntervalMs = float64(ft.NominalInterval) / float64(time.Millisecond)
+	m.ToleranceMs = float64(ft.Tolerance) / float64(time.Millisecond)
 	m.MissedThresholdMs = float64(ft.TargetInterval) / float64(time.Millisecond)
 	m.MissedIntervals = ft.MissedIntervals
 	m.MissedRatio = ft.MissedRatio
+	m.WarmupFrames = ft.Warmup
+	m.WarmupDropped = ft.WarmupDropped
+	m.MinIntervalMs = float64(ft.MinInterval) / float64(time.Millisecond)
+	m.SubFrameIntervals = ft.SubFrameIntervals
 	m.Updates = ft.Updates
 	m.Draws = ft.Draws
 

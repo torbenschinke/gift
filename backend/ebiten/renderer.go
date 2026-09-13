@@ -68,13 +68,24 @@ type Renderer struct {
 	// adds at most one vertex per plane.
 	poly [2][8]clipVertex
 
-	size     geom.Size
-	inFrame  bool
-	drawn    uint64
-	batches  uint64
-	skipped  uint64
-	emitted  uint64
-	unknowns uint64
+	inFrame bool
+	drawn   uint64
+	batches uint64
+	emitted uint64
+
+	// The skip counters, one per reason. They used to be a single number,
+	// which conflated "the application asked for something invisible" with
+	// "a container collapsed to nothing". The second is a layout defect and
+	// the first is not, and merging them is why a stack that starved thirty
+	// of forty rows produced nothing but a slightly larger skip count that
+	// nobody could interpret. See [RendererStats].
+	skipNone        uint64
+	skipTransparent uint64
+	skipEmptyBounds uint64
+	skipEmptyClip   uint64
+	skipOutsideClip uint64
+	skipZeroStroke  uint64
+	unknowns        uint64
 }
 
 // NewRenderer compiles the shape shader and returns a renderer.
@@ -100,12 +111,20 @@ func NewRenderer() (*Renderer, error) {
 func (r *Renderer) SetTarget(dst *eb.Image) { r.dst = dst }
 
 // BeginFrame implements [render.Backend].
-func (r *Renderer) BeginFrame(size geom.Size) {
+//
+// The size is not retained. It was, in a field that nothing ever read, and the
+// obvious use for it — culling operations against the screen rectangle — is
+// deliberately not implemented: every operation is already clipped against its
+// clip rectangle, so a screen cull would save nothing but a few vertices while
+// giving a collapsed container a second place to disappear quietly. The
+// project plan, section 7, wants overflow visible, and the honest counter for
+// "this was outside the visible area" is SkippedOutsideClip, which is about
+// clips the application asked for rather than about the window.
+func (r *Renderer) BeginFrame(geom.Size) {
 	if r.inFrame {
 		panic("gift/backend/ebiten: BeginFrame without a matching EndFrame")
 	}
 	r.inFrame = true
-	r.size = size
 	r.verts = r.verts[:0]
 	r.idx = r.idx[:0]
 }
@@ -147,6 +166,10 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 	var radius, stroke float32
 	switch op.Kind {
 	case render.OpNone:
+		// Counted, not silently dropped: Ops + Skipped + UnknownKinds has to
+		// equal the length of the list, or the accounting cannot be used to
+		// check anything.
+		r.skipNone++
 		return
 	case render.OpFillRect:
 		// radius and stroke stay zero.
@@ -156,7 +179,7 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 		radius = op.CornerRadius
 		stroke = op.StrokeWidth
 		if stroke <= 0 {
-			r.skipped++
+			r.skipZeroStroke++
 			return
 		}
 	default:
@@ -167,17 +190,17 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 	}
 
 	if op.Color.IsTransparent() {
-		r.skipped++
+		r.skipTransparent++
 		return
 	}
 	b := op.Bounds
 	if b.IsEmpty() {
-		r.skipped++
+		r.skipEmptyBounds++
 		return
 	}
 	clip := l.Clip(op.Clip)
 	if clip.IsEmpty() {
-		r.skipped++
+		r.skipEmptyClip++
 		return
 	}
 
@@ -255,7 +278,7 @@ func (r *Renderer) appendAxisAligned(quad, clip geom.Rect, xf geom.Affine2D, sh 
 	dev := xf.TransformRect(quad).Canon()
 	vis := dev.Intersect(clip)
 	if vis.IsEmpty() {
-		r.skipped++
+		r.skipOutsideClip++
 		return
 	}
 
@@ -318,7 +341,7 @@ func (r *Renderer) appendTransformed(quad, clip geom.Rect, xf geom.Affine2D, sh 
 	src, dstBuf = dstBuf, src
 
 	if n < 3 {
-		r.skipped++
+		r.skipOutsideClip++
 		return
 	}
 	base := uint32(len(r.verts))
@@ -453,6 +476,24 @@ func (r *Renderer) flush() {
 
 // RendererStats are the counters of the renderer. Like [gift.Diagnostics]
 // they are plain numbers written in the frame path and read out of band.
+//
+// # The accounting is total
+//
+// For every submitted list, Ops + Skipped() + UnknownKinds equals the number
+// of operations in it. Nothing falls off the edge — [render.OpNone] used to,
+// which meant the three numbers did not add up and no consumer could tell
+// whether a discrepancy was a dropped no-op or a defect.
+//
+// # Why the skip reasons are separate
+//
+// There used to be one Skipped counter, and it answered two questions that
+// have nothing to do with each other: "the application asked for something
+// invisible", which is normal, and "a container collapsed and its content
+// disappeared", which is a layout defect. A stack that starved thirty of forty
+// rows showed up as a slightly larger number in a field whose documentation
+// said "transparent, empty, or entirely outside their clip", and the defect
+// survived a whole work unit. Separated, SkippedEmptyBounds rising is a
+// question worth asking and SkippedTransparent rising is not.
 type RendererStats struct {
 	// Frames is the number of completed frames.
 	Frames uint64
@@ -460,12 +501,47 @@ type RendererStats struct {
 	Batches uint64
 	// Ops is the number of operations that produced geometry.
 	Ops uint64
-	// Skipped is the number of operations dropped as invisible: fully
-	// transparent, empty, or entirely outside their clip.
-	Skipped uint64
+
+	// SkippedNone counts [render.OpNone], the explicit no-op.
+	SkippedNone uint64
+	// SkippedTransparent counts operations with a fully transparent colour.
+	// This is normal: it is how a view says "no background".
+	SkippedTransparent uint64
+	// SkippedEmptyBounds counts operations whose own bounds are empty.
+	//
+	// This is the interesting one. A node that reports a zero extent on an
+	// axis lands here, and in a scene where every node is supposed to have a
+	// size, a non zero value is a layout defect rather than a saving. An
+	// unframed Box on the main axis of a stack legitimately produces these,
+	// which is documented on [ui.Box].
+	SkippedEmptyBounds uint64
+	// SkippedEmptyClip counts operations under a clip rectangle that is
+	// itself empty, so nothing below it could be visible.
+	SkippedEmptyClip uint64
+	// SkippedOutsideClip counts operations that are non empty but lie
+	// entirely outside their clip rectangle. This is the counter that a
+	// scrolled or deliberately clipped overflow produces.
+	SkippedOutsideClip uint64
+	// SkippedZeroStroke counts strokes with a width of zero or less.
+	SkippedZeroStroke uint64
+
 	// UnknownKinds is the number of operations whose kind this backend does
 	// not know.
 	UnknownKinds uint64
+}
+
+// Skipped is the total number of operations that produced no geometry. It is
+// the sum of the six reasons above and exists so that the total accounting is
+// one expression.
+func (s RendererStats) Skipped() uint64 {
+	return s.SkippedNone + s.SkippedTransparent + s.SkippedEmptyBounds +
+		s.SkippedEmptyClip + s.SkippedOutsideClip + s.SkippedZeroStroke
+}
+
+// Accounted is Ops + Skipped + UnknownKinds. It must equal the total number of
+// operations submitted.
+func (s RendererStats) Accounted() uint64 {
+	return s.Ops + s.Skipped() + s.UnknownKinds
 }
 
 // Stats returns the renderer counters. It is not synchronised and belongs to
@@ -473,10 +549,15 @@ type RendererStats struct {
 // [FrameTimer] instead.
 func (r *Renderer) Stats() RendererStats {
 	return RendererStats{
-		Frames:       r.drawn,
-		Batches:      r.batches,
-		Ops:          r.emitted,
-		Skipped:      r.skipped,
-		UnknownKinds: r.unknowns,
+		Frames:             r.drawn,
+		Batches:            r.batches,
+		Ops:                r.emitted,
+		SkippedNone:        r.skipNone,
+		SkippedTransparent: r.skipTransparent,
+		SkippedEmptyBounds: r.skipEmptyBounds,
+		SkippedEmptyClip:   r.skipEmptyClip,
+		SkippedOutsideClip: r.skipOutsideClip,
+		SkippedZeroStroke:  r.skipZeroStroke,
+		UnknownKinds:       r.unknowns,
 	}
 }

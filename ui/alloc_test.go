@@ -1,6 +1,8 @@
 package ui_test
 
 import (
+	"io"
+	"log/slog"
 	"strconv"
 	"testing"
 
@@ -43,6 +45,43 @@ func tree(*gift.Context) gift.View {
 		Clip(true)
 }
 
+// flexTree is the same shape as [tree], but every leaf is flexible instead of
+// fixed size.
+//
+// It exists because of the overflow model of the project plan, section 7: a
+// stack measures an inflexible child with an unbounded main axis, so a fixed
+// size box sees the very same constraints no matter how wide the window is and
+// is legitimately answered from the layout cache. That is the caching working,
+// not a defect — but it means [tree] cannot be used to exercise a relayout that
+// reaches the leaves. A flexible child's main extent is derived from the free
+// space, so here a resize really does invalidate all 221 nodes.
+func flexTree(*gift.Context) gift.View {
+	rows := make([]gift.View, 0, 20)
+	for r := range 20 {
+		cols := make([]gift.View, 0, 10)
+		for c := range 9 {
+			b := ui.Box().
+				Flex(float32(1 + c%3)).
+				MinHeight(12).
+				Background(ui.RGB(uint8(c*20), 40, 60)).
+				Key(strconv.Itoa(c))
+			if c == 4 {
+				b = b.CornerRadius(3).Border(ui.Border{Width: 1, Color: ui.RGB(255, 255, 255)})
+			}
+			cols = append(cols, b)
+			if c == 4 {
+				cols = append(cols, ui.Spacer().Key("gap"))
+			}
+		}
+		rows = append(rows, ui.HStack(cols...).Gap(2).Align(geom.Center).Key(strconv.Itoa(r)))
+	}
+	return ui.VStack(rows...).
+		Gap(4).
+		Padding(8).
+		Background(ui.RGBA(0, 0, 0, 40)).
+		Clip(true)
+}
+
 // TestFramePathIsAllocationFree is go/no-go criterion 3 of the project plan,
 // section 12, measured through the public ui API: after warmup, neither an
 // idle frame nor a full relayout may allocate.
@@ -67,7 +106,7 @@ func TestFramePathIsAllocationFree(t *testing.T) {
 	})
 
 	t.Run("full relayout", func(t *testing.T) {
-		a := gift.New(gift.Options{Root: tree})
+		a := gift.New(gift.Options{Root: flexTree})
 		w := float32(800)
 		step := func() {
 			if w == 800 {
@@ -97,6 +136,63 @@ func TestFramePathIsAllocationFree(t *testing.T) {
 			t.Fatalf("full relayout plus paint allocated %v times per run, want 0", got)
 		}
 	})
+}
+
+// TestFramePathIsAllocationFreeWithDebugLogger is the ui side of the last row
+// of the build checks in the project plan, section 13: "Allokationsbenchmark
+// des Frame-Pfads mit aktivem Debug-Level-Logger: 0 B/op".
+//
+// It existed only in the root package, which does not prove anything about the
+// ui layer: ui is where the overflow diagnosis, the style painters and the
+// stack layouters live, and any of them could reach for the logger. An slog
+// handler at debug level accepts everything, so a single stray log call in the
+// frame path shows up here as an allocation.
+func TestFramePathIsAllocationFreeWithDebugLogger(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	for _, tc := range []struct {
+		name string
+		root func(*gift.Context) gift.View
+	}{
+		{"fits", tree},
+		{"overflowing", overflowingTree},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := gift.New(gift.Options{Logger: log, Root: tc.root})
+			w := float32(800)
+			step := func() {
+				if w == 800 {
+					w = 801
+				} else {
+					w = 800
+				}
+				if err := a.Update(geom.Sz(w, 600)); err != nil {
+					t.Fatal(err)
+				}
+				a.Paint()
+			}
+			for range 16 {
+				step()
+			}
+			if got := testing.AllocsPerRun(200, step); got != 0 {
+				t.Fatalf("frame path with an active debug logger allocated %v times per run, want 0", got)
+			}
+		})
+	}
+}
+
+// overflowingTree is deliberately too tall for the viewport the tests use. The
+// overflow accounting runs on every layout of it, so it must not allocate
+// either — including in a giftdebug build, where the diagnosis is emitted once
+// on the transition and never again while the state is unchanged.
+func overflowingTree(*gift.Context) gift.View {
+	rows := make([]gift.View, 0, 40)
+	for r := range 40 {
+		rows = append(rows, ui.Box().
+			Frame(100, 40).
+			Background(ui.RGB(uint8(r*5), 40, 60)).
+			Key(strconv.Itoa(r)))
+	}
+	return ui.VStack(rows...).Gap(8).Frame(200, 300)
 }
 
 func BenchmarkUITreeIdle(b *testing.B) {

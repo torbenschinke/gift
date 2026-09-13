@@ -1,7 +1,8 @@
 package ebiten
 
 import (
-	"sort"
+	"math"
+	"slices"
 	"sync"
 	"time"
 )
@@ -23,8 +24,21 @@ type Stats struct {
 	Min time.Duration
 	// Mean is the arithmetic mean of the window.
 	Mean time.Duration
-	// P50, P95 and P99 are the nearest rank percentiles of the window.
-	P50, P95, P99 time.Duration
+	// P50, P95, P99 and P999 are the nearest rank percentiles of the window.
+	//
+	// Nearest rank means ceil(n*p), not round(n*p). The difference is not
+	// cosmetic: with the round variant that stood here before, a probe over
+	// n in 1..300 and p in {0.50, 0.95, 0.99} disagreed with the definition
+	// in 282 of 900 cases, always one sample low. Being systematically
+	// optimistic at the tail is the single worst property a tool can have
+	// when it is the thing deciding a p99 gate.
+	//
+	// P999 exists because the project plan, section 13, judges the cold cache
+	// scenario on "p99,9 < 33 ms". A window of 4096 samples resolves it to
+	// the fourth largest sample, which is coarse but is what the plan asks
+	// for; below about a thousand samples it degenerates into the maximum and
+	// should be read as such.
+	P50, P95, P99, P999 time.Duration
 	// Max is the largest sample in the window.
 	Max time.Duration
 }
@@ -58,15 +72,51 @@ type FrameTimes struct {
 	// as Ebitengine's loop exposes them.
 	FrameInterval Stats
 
-	// TargetInterval is the interval FrameInterval samples are compared
-	// against.
-	TargetInterval time.Duration
+	// NominalInterval is the interval the display is expected to hold, for
+	// example 16.667 ms at sixty hertz. Tolerance is the slack added to it.
+	// TargetInterval is their sum and is the value samples are actually
+	// compared against.
+	//
+	// All three are carried in every snapshot because the project plan,
+	// section 13, requires it: a strict comparison against the bare nominal
+	// interval reported 50 % of the frames of a cleanly timed measurement as
+	// missed, so the binding threshold is 17.17 ms, and a number that is not
+	// printed next to its threshold cannot be checked by anybody.
+	NominalInterval time.Duration
+	Tolerance       time.Duration
+	TargetInterval  time.Duration
+
 	// MissedIntervals is the number of FrameInterval samples in the window
 	// that exceeded TargetInterval.
 	MissedIntervals int
 	// MissedRatio is MissedIntervals divided by FrameInterval.Count, or zero
 	// when there are no samples.
 	MissedRatio float64
+
+	// Warmup is the number of leading intervals that are discarded, and
+	// WarmupDropped is how many of them have been seen so far.
+	//
+	// Opening a window is not a frame. Real runs show a first interval of
+	// 123 to 148 ms while the driver, the swap chain and the shader upload
+	// settle. At 4096 samples the ring covers about 68 seconds, so a sixty
+	// second scenario can never evict that outlier: it sits in the window for
+	// the whole measurement, owns the maximum, and pushes the tail
+	// percentiles and the missed ratio away from what the scene actually did.
+	Warmup        int
+	WarmupDropped uint64
+
+	// MinInterval is the shortest distance between two draw callbacks that is
+	// still treated as a frame, and SubFrameIntervals counts the ones that
+	// were not.
+	//
+	// Ebitengine sometimes issues two Draw callbacks back to back, microseconds
+	// apart. Those are not two presentations, and counting them as frames
+	// deflates every percentile and dilutes the missed ratio with samples that
+	// no display ever showed. They are discarded and counted separately rather
+	// than silently averaged in; discarding without saying so would be the
+	// same kind of quiet optimism as the round-rank percentile.
+	MinInterval       time.Duration
+	SubFrameIntervals uint64
 
 	// Updates and Draws are the total numbers of callbacks since the timer
 	// was created. Unlike the series above they are not windowed, so
@@ -131,36 +181,135 @@ func (r *ring) appendTo(dst []time.Duration) []time.Duration {
 // Recording allocates nothing and logs nothing, as required by the project
 // plan, section 15: the frame path writes numbers, never log records.
 type FrameTimer struct {
-	mu             sync.Mutex
-	update         ring
-	draw           ring
-	interval       ring
-	scratch        []time.Duration
-	target         time.Duration
+	mu       sync.Mutex
+	update   ring
+	draw     ring
+	interval ring
+	scratch  []time.Duration
+
+	nominal   time.Duration
+	tolerance time.Duration
+	target    time.Duration
+
+	warmup      int
+	warmupSeen  uint64
+	minInterval time.Duration
+	subFrames   uint64
+
 	updates, draws uint64
 }
 
-// NewFrameTimer returns a timer that keeps capacity samples per series and
-// compares frame intervals against target.
-//
-// A capacity of zero or less selects [DefaultFrameHistory]. A target of zero
-// or less selects 16667 microseconds, the interval of a sixty hertz display
-// and the threshold of the project plan, section 13.
-func NewFrameTimer(target time.Duration, capacity int) *FrameTimer {
-	if capacity <= 0 {
-		capacity = DefaultFrameHistory
+// DefaultWarmupIntervals is the number of leading frame intervals a timer
+// discards by default. At sixty hertz it is the first second, which comfortably
+// covers the 123 to 148 ms startup interval that every real run shows.
+const DefaultWarmupIntervals = 60
+
+// DefaultMinInterval is the shortest distance between two draw callbacks that
+// is still counted as a frame. Anything at or below it is a pair of back to
+// back callbacks, not two presentations.
+const DefaultMinInterval = time.Millisecond
+
+// FrameTimerOptions configures a [FrameTimer] in full. It is the constructor to
+// use when the defaults are not good enough, in particular when the display is
+// not at sixty hertz.
+type FrameTimerOptions struct {
+	// Nominal is the interval the display is expected to hold. Zero or less
+	// selects 16667 microseconds, that is sixty hertz.
+	Nominal time.Duration
+	// Tolerance is the slack added to Nominal before an interval counts as
+	// missed. Zero selects [DefaultIntervalTolerance], the 0.5 ms the project
+	// plan, section 13, makes binding. A negative value means no tolerance at
+	// all; expect a strict comparison to report well timed frames as missed,
+	// which is the measurement the plan retracted.
+	Tolerance time.Duration
+	// Capacity is the number of samples kept per series. Zero or less selects
+	// [DefaultFrameHistory].
+	Capacity int
+	// Warmup is the number of leading frame intervals to discard. Zero or
+	// less selects [DefaultWarmupIntervals]; pass a negative value to keep
+	// every sample, which is what a test that wants exact arithmetic does.
+	Warmup int
+	// MinInterval is the shortest interval still treated as a frame. Zero
+	// selects [DefaultMinInterval]; a negative value keeps everything.
+	MinInterval time.Duration
+}
+
+// NewFrameTimerWith returns a timer configured by o.
+func NewFrameTimerWith(o FrameTimerOptions) *FrameTimer {
+	if o.Nominal <= 0 {
+		o.Nominal = 16667 * time.Microsecond
 	}
-	if target <= 0 {
-		target = 16667 * time.Microsecond
+	switch {
+	case o.Tolerance < 0:
+		o.Tolerance = 0
+	case o.Tolerance == 0:
+		o.Tolerance = DefaultIntervalTolerance
+	}
+	if o.Capacity <= 0 {
+		o.Capacity = DefaultFrameHistory
+	}
+	switch {
+	case o.Warmup < 0:
+		o.Warmup = 0
+	case o.Warmup == 0:
+		o.Warmup = DefaultWarmupIntervals
+	}
+	switch {
+	case o.MinInterval < 0:
+		o.MinInterval = 0
+	case o.MinInterval == 0:
+		o.MinInterval = DefaultMinInterval
 	}
 	return &FrameTimer{
-		update:   newRing(capacity),
-		draw:     newRing(capacity),
-		interval: newRing(capacity),
-		scratch:  make([]time.Duration, 0, capacity),
-		target:   target,
+		update:      newRing(o.Capacity),
+		draw:        newRing(o.Capacity),
+		interval:    newRing(o.Capacity),
+		scratch:     make([]time.Duration, 0, o.Capacity),
+		nominal:     o.Nominal,
+		tolerance:   o.Tolerance,
+		target:      o.Nominal + o.Tolerance,
+		warmup:      o.Warmup,
+		minInterval: o.MinInterval,
 	}
 }
+
+// NewFrameTimer returns a timer that keeps capacity samples per series and
+// treats a frame interval above target as missed.
+//
+// target is the complete threshold, tolerance included; the timer does not add
+// anything to it. A capacity of zero or less selects [DefaultFrameHistory]. A
+// target of zero or less selects 17167 microseconds, which is the 16.667 ms of
+// a sixty hertz display plus the 0.5 ms tolerance that the project plan,
+// section 13, makes binding.
+//
+// The godoc here used to name 16667 microseconds as "the threshold of the
+// project plan, section 13". That threshold has been retracted: a strict
+// comparison against the bare nominal interval reported half the frames of a
+// cleanly timed measurement as missed. Use [NewFrameTimerWith] to state the
+// nominal interval and the tolerance separately, which is what a display that
+// is not at sixty hertz needs.
+//
+// Warm-up exclusion and the sub frame filter are on with their defaults; see
+// [FrameTimerOptions] to turn them off.
+func NewFrameTimer(target time.Duration, capacity int) *FrameTimer {
+	o := FrameTimerOptions{Capacity: capacity}
+	if target > 0 {
+		// The caller stated a finished threshold. Present it as nominal with
+		// no tolerance, so that the three numbers in the snapshot still add
+		// up and nothing is invented on the caller's behalf.
+		o.Nominal, o.Tolerance = target, -1
+	}
+	return NewFrameTimerWith(o)
+}
+
+// DefaultIntervalTolerance is the slack added to the nominal frame interval
+// before an interval counts as missed.
+//
+// The project plan, section 13, fixes it at 0.5 ms and records why: a strict
+// comparison against 16.67 ms reported 50 % of the frames of a well timed
+// measurement as missed, because no display runs at exactly its nominal rate.
+// 16.667 + 0.5 = 17.167 ms is the binding threshold at sixty hertz.
+const DefaultIntervalTolerance = 500 * time.Microsecond
 
 // RecordUpdate records the CPU time of one update callback.
 func (f *FrameTimer) RecordUpdate(d time.Duration) {
@@ -180,9 +329,21 @@ func (f *FrameTimer) RecordDraw(d time.Duration) {
 }
 
 // RecordInterval records the wall clock distance to the previous drawn frame.
+//
+// Two classes of sample are counted but not recorded: the first Warmup
+// intervals, which contain window creation and shader upload, and any interval
+// at or below MinInterval, which is two draw callbacks back to back rather
+// than two presentations. Both counts are in the snapshot; see [FrameTimes].
 func (f *FrameTimer) RecordInterval(d time.Duration) {
 	f.mu.Lock()
-	f.interval.add(d)
+	switch {
+	case f.warmupSeen < uint64(f.warmup):
+		f.warmupSeen++
+	case d <= f.minInterval:
+		f.subFrames++
+	default:
+		f.interval.add(d)
+	}
 	f.mu.Unlock()
 }
 
@@ -196,9 +357,15 @@ func (f *FrameTimer) Snapshot() FrameTimes {
 	defer f.mu.Unlock()
 
 	out := FrameTimes{
-		TargetInterval: f.target,
-		Updates:        f.updates,
-		Draws:          f.draws,
+		NominalInterval:   f.nominal,
+		Tolerance:         f.tolerance,
+		TargetInterval:    f.target,
+		Warmup:            f.warmup,
+		WarmupDropped:     f.warmupSeen,
+		MinInterval:       f.minInterval,
+		SubFrameIntervals: f.subFrames,
+		Updates:           f.updates,
+		Draws:             f.draws,
 	}
 	out.UpdateCPU = f.statsLocked(&f.update)
 	out.DrawCPU = f.statsLocked(&f.draw)
@@ -227,7 +394,7 @@ func (f *FrameTimer) statsLocked(r *ring) Stats {
 	for _, d := range s {
 		sum += d
 	}
-	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	slices.Sort(s)
 	return Stats{
 		Count: len(s),
 		Min:   s[0],
@@ -235,16 +402,23 @@ func (f *FrameTimer) statsLocked(r *ring) Stats {
 		P50:   percentile(s, 0.50),
 		P95:   percentile(s, 0.95),
 		P99:   percentile(s, 0.99),
+		P999:  percentile(s, 0.999),
 		Max:   s[len(s)-1],
 	}
 }
 
 // percentile returns the nearest rank percentile of the sorted slice s.
+//
+// Nearest rank is ceil(n*p), and the implementation says so. The previous
+// version rounded — int(n*p+0.5) — which is a different definition and is the
+// smaller of the two whenever the fractional part is below a half, that is
+// roughly a third of all n for the percentiles this tool reports. It was
+// therefore biased towards reporting a better tail than the samples support.
 func percentile(s []time.Duration, p float64) time.Duration {
 	if len(s) == 0 {
 		return 0
 	}
-	i := int(float64(len(s))*p+0.5) - 1
+	i := int(math.Ceil(float64(len(s))*p)) - 1
 	if i < 0 {
 		i = 0
 	}

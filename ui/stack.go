@@ -54,11 +54,18 @@ func (s Stack) Build(*gift.BuildContext) gift.Element {
 }
 
 // Gap sets the space inserted between two adjacent children. It is never
-// added before the first or after the last child.
-func (s Stack) Gap(v float32) Stack { s.gap = v; return s }
+// added before the first or after the last child, so n children have n-1 gaps.
+//
+// A negative gap is legal and overlaps adjacent children by that much; the
+// gaps are counted into the content extent either way, so an overlapping stack
+// is smaller, not larger. A gap that is not a finite number panics: it would
+// produce infinite child origins and NaN vertex positions far away from the
+// call that caused it.
+func (s Stack) Gap(v float32) Stack { s.gap = checkGap(v); return s }
 
 // Padding sets the same padding on all four edges, replacing any previous
-// padding.
+// padding. It must be finite and non negative; anything else panics, see
+// checkPadding.
 func (s Stack) Padding(v float32) Stack { s.setPadding(v); return s }
 
 // PaddingInsets sets the padding per edge, replacing any previous padding.
@@ -71,21 +78,26 @@ func (s Stack) Align(v geom.Alignment) Stack { s.setAlign(v); return s }
 // Frame fixes both axes. Pass [geom.Unbounded] for an axis that should stay
 // free.
 //
-// Precedence: Frame is applied first, the Min and Max modifiers afterwards,
-// so Frame(200, 100).MaxWidth(50) is 50 wide. A clamp that a fixed size can
-// escape would not be a clamp.
+// Precedence: Frame is applied first, then Max, then Min, and the call order
+// of the modifiers does not matter. Frame(200, 100).MaxWidth(50) is 50 wide
+// and Frame(20, 20).MinWidth(80) is 80 wide; see [frameSpec].
 func (s Stack) Frame(w, h float32) Stack { s.setFrame(w, h); return s }
 
-// MinWidth raises the minimum width of the node.
+// MinWidth raises the minimum width of the node. It also raises the maximum
+// if that is lower: a minimum wins over a Frame and over a MaxWidth. See
+// [frameSpec] for the full precedence rule.
 func (s Stack) MinWidth(v float32) Stack { s.setMinWidth(v); return s }
 
-// MinHeight raises the minimum height of the node.
+// MinHeight raises the minimum height of the node, and the maximum with it if
+// that is lower; see [frameSpec].
 func (s Stack) MinHeight(v float32) Stack { s.setMinHeight(v); return s }
 
-// MaxWidth lowers the maximum width of the node.
+// MaxWidth lowers the maximum width of the node, and the minimum with it if
+// that is higher. A MinWidth applied on top of it still wins; see [frameSpec].
 func (s Stack) MaxWidth(v float32) Stack { s.setMaxWidth(v); return s }
 
-// MaxHeight lowers the maximum height of the node.
+// MaxHeight lowers the maximum height of the node, and the minimum with it if
+// that is higher; see [frameSpec].
 func (s Stack) MaxHeight(v float32) Stack { s.setMaxHeight(v); return s }
 
 // Background fills the bounds behind the children. A fully transparent colour
