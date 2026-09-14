@@ -39,10 +39,21 @@ func RGB(r, g, b uint8) Color { return render.RGB(r, g, b) }
 // plan, section 8, defines the drawing order over exactly these names.
 type styleSpec struct {
 	background Color
-	border     Border
-	shadow     Shadow
-	radius     float32
-	clip       bool
+	// material is the resolved backdrop dependent background, or the zero
+	// value when the background is a plain colour.
+	//
+	// The two are mutually exclusive and the last [base.setBackgroundSpec]
+	// wins, which is the "Wiederholtes Setzen ersetzt den jeweiligen
+	// Style-Wert" of the project plan, section 8, applied to a field that now
+	// has two possible types. Keeping them in one field pair rather than
+	// letting both be set at once matters: a colour under a glass pane would
+	// be a second, invisible way of tinting it, and it would make the
+	// backdrop of the glass contain the node's own background.
+	material render.Material
+	border   Border
+	shadow   Shadow
+	radius   float32
+	clip     bool
 }
 
 // needsPainter reports whether the node has anything to draw or clip.
@@ -52,8 +63,8 @@ type styleSpec struct {
 // node. Allocating a painter that only forwards to its children would cost an
 // interface call and a heap object per structural container.
 func (s styleSpec) needsPainter() bool {
-	return !s.background.IsTransparent() || s.border.IsVisible() ||
-		s.shadow.IsVisible() || s.clip
+	return !s.background.IsTransparent() || s.material.IsVisible() ||
+		s.border.IsVisible() || s.shadow.IsVisible() || s.clip
 }
 
 // frameSpec is the size contract a node imposes on itself.
@@ -243,7 +254,29 @@ func checkFlex(v float32) float32 {
 	}
 	return v
 }
-func (b *base) setBackground(v Color)     { b.style.background = v }
+func (b *base) setBackground(v Color) { b.style.background, b.style.material = v, render.Material{} }
+
+// setBackgroundSpec accepts either of the two things a background can be.
+//
+// The type switch is here, once, rather than in eight view types. A nil
+// Background clears the background, which is what ".Background(nil)" ought to
+// mean and is better than a panic for a value the compiler cannot reject.
+func (b *base) setBackgroundSpec(v Background) {
+	switch t := v.(type) {
+	case nil:
+		b.style.background, b.style.material = Color{}, render.Material{}
+	case Color:
+		b.setBackground(t)
+	case GlassMaterial:
+		b.style.background, b.style.material = Color{}, t.Material()
+	default:
+		// Unreachable: render.Background has an unexported method and
+		// exactly two implementations. The panic is here so that adding a
+		// third one without coming back here is loud rather than silent.
+		panic(fmt.Sprintf("gift/ui: Background of unknown type %T", v))
+	}
+}
+
 func (b *base) setBorder(v Border)        { b.style.border = v }
 func (b *base) setShadow(v Shadow)        { b.style.shadow = checkShadow(v) }
 func (b *base) setCornerRadius(v float32) { b.style.radius = v }
@@ -323,6 +356,26 @@ func paintBackground(ctx *gift.PaintContext, st styleSpec, b geom.Rect) {
 			op.CornerRadius = st.radius
 		}
 		ctx.Add(op)
+	}
+
+	// The material step, and it is deliberately the *same* step as the plain
+	// background rather than one after it: the two are mutually exclusive in
+	// [styleSpec], so at most one of these two blocks runs.
+	//
+	// It has to be here, before PaintChildren, and not merely by convention.
+	// A material reads whatever is already in the display list — see
+	// [render.OpMaterial] — so emitting it after the content would hand the
+	// glass a backdrop containing the node's own children, and nothing
+	// downstream could tell that from the intended picture. The drawing order
+	// of the project plan, section 8, is the correctness condition here and
+	// not just a look.
+	if st.material.IsVisible() {
+		ctx.Add(render.Op{
+			Kind:         render.OpMaterial,
+			Bounds:       b,
+			CornerRadius: st.radius,
+			Material:     ctx.AddMaterial(st.material),
+		})
 	}
 }
 

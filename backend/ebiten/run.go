@@ -10,6 +10,7 @@ import (
 	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/internal/text"
 	"github.com/torbenschinke/gift/metrics"
+	"github.com/torbenschinke/gift/render"
 )
 
 // Config configures the window and the frame loop of [Run].
@@ -136,6 +137,17 @@ type Config struct {
 	//	}
 	AssetStats func() metrics.AssetStats
 
+	// GlassQuality pins the glass material's quality level for the whole run.
+	// The zero value is [render.Adaptive], which is the measurement based
+	// policy of the project plan, section 8.
+	//
+	// Pin it for anything that is meant to be compared with anything else.
+	// Section 13 does not treat that as advice: an adaptive run changes how
+	// much work it does part way through, so its frame time distribution is
+	// two distributions with a seam in the middle, and the seam moves with
+	// the machine.
+	GlassQuality render.GlassQuality
+
 	// NoInput disables the input bridge. It exists for a measurement run that
 	// must not be perturbed by a cursor that happens to rest over a button,
 	// and for a test harness that dispatches events into [gift.App] itself.
@@ -196,6 +208,7 @@ func Run(app *gift.App, cfg Config) error {
 	// The one route from a painter in ui to a texture in this package. gift
 	// carries the service and never uses it; see [gift.App.SetImages].
 	app.SetImages(r.Images())
+	r.PinGlassQuality(cfg.GlassQuality)
 	if cfg.OnRenderer != nil {
 		cfg.OnRenderer(r)
 	}
@@ -219,7 +232,8 @@ func Run(app *gift.App, cfg Config) error {
 			},
 			Core: func() metrics.CoreStats { return coreMetrics(app) },
 			Renderer: func() metrics.RendererStats {
-				return rendererMetrics(r.Stats(), r.Atlas().Stats(), r.Textures().Stats())
+				return rendererMetrics(r.Stats(), r.Atlas().Stats(), r.Textures().Stats(),
+					r.Targets().Stats(), r.GlassPolicy().Stats())
 			},
 			// The shaper is the process wide one of internal/text, which is
 			// what ui.Text measures through. The backend may not import ui —
@@ -412,8 +426,25 @@ func (g *game) Draw(screen *eb.Image) {
 //
 // The conversion sits here and not there on purpose: metrics must not import
 // a backend, or the backend could not call into it. See [metrics.RendererStats].
-func rendererMetrics(s RendererStats, a AtlasStats, t TextureStats) metrics.RendererStats {
+func rendererMetrics(s RendererStats, a AtlasStats, t TextureStats,
+	g TargetStats, p GlassPolicyStats) metrics.RendererStats {
 	return metrics.RendererStats{
+		GlassOps:          s.GlassOps,
+		GlassReducedOps:   s.GlassReducedOps,
+		GlassFullOps:      s.GlassFullOps,
+		GlassFallbacks:    s.GlassFallbacks,
+		GlassPasses:       s.GlassPasses,
+		GlassDrawCalls:    s.GlassDrawCalls,
+		GlassLevel:        s.GlassLevel.String(),
+		GlassPinned:       s.GlassPinned,
+		GlassLevelChanges: p.Changes,
+		Targets: metrics.TargetStats{
+			Leases: g.Leases, Reuses: g.Reuses,
+			Allocations: g.Allocations, Deallocations: g.Deallocations,
+			Evictions: g.Evictions, AgeEvictions: g.AgeEvictions,
+			Rejected: g.Rejected,
+			Targets:  g.Targets, Bytes: g.Bytes, PeakBytes: g.PeakBytes,
+		},
 		Frames:             s.Frames,
 		DrawCalls:          s.Batches,
 		Ops:                s.Ops,

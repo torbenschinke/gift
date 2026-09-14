@@ -475,19 +475,60 @@ unabhaengige Gruende:
 
 Grund 2 laesst sich weitgehend aufloesen: **Downsampling ist der Blur.** Bei
 1/8 Aufloesung wirkt ein 4-Tap-Kernel wie Radius 24 im Vollbild. Mit Dual-Kawase
-(4 Taps je Pass, Down- und Up-Kette) kostet die gesamte Kette unter 1,5x der
-Flaeche der **Materialregion**, nicht des Bildschirms. Fuer ein 1920x200-Panel
-sind das rund 0,6 MPixel statt 66 Taps auf 0,38 MPixel.
+bleibt die Kette auf die **Materialregion** begrenzt statt auf den Bildschirm.
+Fuer ein 1920x200-Panel sind das rund 0,6 MPixel statt 66 Taps auf 0,38 MPixel.
+
+Zwei Korrekturen aus WU-S:
+
+- **"Unter 1,5x" ist arithmetisch unerreichbar** und widersprach dem eigenen
+  Rechenbeispiel oben. Die Down-Kette schreibt 1/4 + 1/16 + 1/64, die Up-Kette
+  dasselbe rueckwaerts **plus die volle Region**. Bei drei Stufen, was dem
+  Standardradius entspricht, sind das 0,33 + 1,31 = **1,64x der Region**. Die
+  genannten 0,6 MPixel auf 0,384 MPixel Region sind selbst 1,56x. Verbindlich
+  ist die Arithmetik, nicht der Satz. Mit Kopie und Composite kostet das ganze
+  Material rund 3,6x die Region.
+- **Ebitengine filtert fuer Kage-Shader immer nearest.** `DrawTrianglesShaderOptions`
+  hat kein Filter-Feld, und `internal/graphicsdriver/opengl/context.go:232`
+  setzt `GL_NEAREST` fest; lineare Filterung wird nur in den eingebauten Shader
+  hineingeneriert. "Downsampling ist der Blur" stuetzt sich aber auf die
+  bilineare Mittelung, die ein eigener Shader damit nicht bekommt. Ein
+  lehrbuchmaessiger 5-Tap-Down-Pass verwirft gegen einen Nearest-Sampler die
+  Haelfte der Quelle und kriecht, sobald der Inhalt scrollt. Down- und Up-Pass
+  muessen die Mittelung selbst bilden und kosten deshalb acht Fetches statt
+  fuenf.
 
 Grund 1 laesst sich nicht aufloesen, aber auf genau ein Extra-Target begrenzen:
 kopiert wird nur die Materialregion.
 
+**Korrektur aus WU-S, in der Quelle geprueft.** Der letzte Satz stimmt so nicht.
+Ebitengine laesst den Screen gar nicht als Shader-Quelle zu:
+`internal/atlas/image.go:732` panickt mit "atlas: a screen image cannot be
+created as a source". Die Regionskopie braucht also eine Quelle, die es erst
+zu erzeugen gilt. Gift rendert einen Frame, der ein Material enthaelt, in ein
+bildschirmgrosses Offscreen und blittet es. Das kostet **ein
+bildschirmgrosses Target, ein Clear und ein Blit je Frame**, und zwar nur
+solange ein Material sichtbar ist. Abschnitt 11s "Keine Vollbild-Textur pro
+Widget" gilt weiterhin - es ist eine je Fenster, nicht je Widget -, aber das
+Kostenmodell dieses Abschnitts war zu guenstig und ist hiermit korrigiert.
+
 ### Die zwei Qualitaetsstufen
 
-**Reduced, Standard:** ein einziger Shader-Pass, kein Extra-Target, kein Blur.
-Tint, Fresnel-artige Kantenaufhellung, Specular-Highlight und eine leichte,
-normalenbasierte Brechungsverschiebung auf dem ungeblurrten Hintergrund. Optisch
-ueberraschend nah an Glas und praktisch gratis. Das ist der Default auf Pi 4.
+**Reduced, Standard:** kein Blur. Tint, Fresnel-artige Kantenaufhellung,
+Specular-Highlight und eine leichte, normalenbasierte Brechungsverschiebung auf
+dem ungeblurrten Hintergrund. Das ist der Default auf Pi 4.
+
+**Korrektur aus WU-S: "ein einziger Shader-Pass, kein Extra-Target" war
+widerspruechlich.** Die Brechung tastet den Hintergrund ab, und das setzt
+voraus, dass er als Textur vorliegt - was Grund 1 oben selbst feststellt.
+Reduced kostet daher eine Regionskopie und einen Composite-Pass. Ohne Brechung
+waere es ein Pass, saehe aber nicht nach Glas aus.
+
+Und zur Wirkung, ehrlicher als die Vorgaenger-Revision: Reduced liest sich als
+Glas, **weil sich der Hintergrund am Rand biegt**, nicht wegen des Tints. Ueber
+einem flachen Hintergrund ist es ein leicht getoentes Rechteck mit hellen
+Kanten, weil nichts da ist, was sich biegen koennte. Das behebt kein Shader.
+Die Formulierung "optisch ueberraschend nah an Glas" wird auf diesen Befund
+zurueckgenommen.
 
 **Full, experimentell:** Regionskopie, Dual-Kawase-Kette auf der Region,
 Composite-Pass mit Tint, Brechung, Highlight und Grain. Drei Stufen, alle auf die

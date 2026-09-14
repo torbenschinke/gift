@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"math"
+	"time"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
 	"github.com/torbenschinke/gift/geom"
@@ -13,11 +14,30 @@ import (
 //go:embed shape.kage
 var shapeShaderSrc []byte
 
+//go:embed glass.kage
+var glassShaderSrc []byte
+
+//go:embed kawase_down.kage
+var kawaseDownSrc []byte
+
+//go:embed kawase_up.kage
+var kawaseUpSrc []byte
+
 // ShapeShaderSource returns the Kage source of the shared shape shader.
 //
 // It is exported so that a test can compile it without a window;
 // [eb.NewShader] needs no graphics context.
 func ShapeShaderSource() []byte { return shapeShaderSrc }
+
+// GlassShaderSource returns the Kage source of the glass composite shader, and
+// KawaseShaderSources the two blur passes, under the same rule as
+// [ShapeShaderSource]: compiling them is a CPU operation and a test may do it
+// headless.
+func GlassShaderSource() []byte { return glassShaderSrc }
+
+// KawaseShaderSources returns the downsample and upsample shaders of the
+// dual-Kawase chain.
+func KawaseShaderSources() (down, up []byte) { return kawaseDownSrc, kawaseUpSrc }
 
 // aaPad is how far the geometry of an antialiased shape is grown beyond its
 // bounds, in device pixels. It is converted to local units per axis by
@@ -49,6 +69,53 @@ const maxBatchVertices = 1 << 16
 type Renderer struct {
 	shader *eb.Shader
 	opts   eb.DrawTrianglesShaderOptions
+
+	// The glass material of the project plan, section 8. glassShader is the
+	// composite pass of both quality levels; downShader and upShader are the
+	// dual-Kawase chain of the Full level. They are separate shaders and
+	// therefore separate materials, which is why a material region is a
+	// batching barrier; see [Renderer.appendMaterial].
+	glassShader, downShader, upShader *eb.Shader
+	glassOpts                         eb.DrawTrianglesShaderOptions
+	blurOpts                          eb.DrawTrianglesShaderOptions
+	// copyOpts replace the destination instead of blending into it. Used for
+	// the region copy and for the final scene to screen blit, both of which
+	// are copies and not composites.
+	copyOpts eb.DrawTrianglesOptions
+
+	// targets owns the intermediate render targets. See [TargetPool].
+	targets *TargetPool
+	// policy chooses between Reduced and Full. See [GlassPolicy].
+	policy *GlassPolicy
+	// frameQuality is the level [GlassPolicy.BeginFrame] chose for the frame
+	// in progress, so that two panels of one frame cannot differ.
+	frameQuality render.GlassQuality
+
+	// scene is the offscreen the frame is drawn into when it contains a
+	// material, and nil otherwise. See [Renderer.Submit] for why it has to
+	// exist at all.
+	scene          *eb.Image
+	sceneW, sceneH int
+	// screen is what [Renderer.SetTarget] was given: the real destination,
+	// which scene is blitted to in EndFrame.
+	screen *eb.Image
+	// lastDraw is the timestamp of the previous BeginFrame, which is what
+	// feeds the interval window of the policy.
+	lastDraw time.Time
+
+	// passVerts and passIdx are the four vertex scratch of the material
+	// passes. They are separate from verts and idx because a pass is issued
+	// immediately rather than batched, and reusing the batch buffers would
+	// mean a pass could not happen while one is being built — which is true
+	// today, because a material flushes first, and would be a trap the moment
+	// it stopped being true.
+	passVerts []eb.Vertex
+	passIdx   []uint32
+
+	// passFn, if non nil, receives every material pass in order. It is what
+	// lets a headless test assert the shape of the chain — copy, down, down,
+	// up, up, composite — without a graphics context.
+	passFn func(glassPass)
 
 	// textures is the image resource cache: residency, the per drawn frame
 	// upload budget and eviction with an explicit Deallocate. It is the
@@ -110,6 +177,9 @@ type Renderer struct {
 	drawn   uint64
 	batches uint64
 	emitted uint64
+	// frameSize is the drawable size of the frame in progress, for the
+	// material area budget of the glass policy.
+	frameSize geom.Size
 
 	// The skip counters, one per reason. They used to be a single number,
 	// which conflated "the application asked for something invisible" with
@@ -140,6 +210,19 @@ type Renderer struct {
 	// evict. See the shadow section of the package documentation.
 	shadowOps      uint64
 	shadowSharpOps uint64
+
+	// The glass counters. See [RendererStats].
+	glassOps        uint64
+	glassReducedOps uint64
+	glassFullOps    uint64
+	glassFallbacks  uint64
+	glassPasses     uint64
+	glassBatches    uint64
+	glassLate       uint64
+	// frameBatches is the number of draw calls issued in the frame in
+	// progress. It is how [Renderer.Submit] knows whether it is still early
+	// enough to redirect the frame into the scene target.
+	frameBatches uint64
 }
 
 // Material is what a batch is drawn with. A batch ends where the material
@@ -159,6 +242,10 @@ const (
 	// pictures are two materials, which is the honest cost of not packing
 	// thumbnails into an atlas of our own; see [TextureCache].
 	MaterialImage
+	// MaterialGlass is the composite pass of a glass material. It is never
+	// batched with anything: a material region is a barrier, so it is always
+	// a batch of exactly one quad. See [Renderer.appendMaterial].
+	MaterialGlass
 )
 
 // String makes a failing test readable.
@@ -170,6 +257,8 @@ func (m Material) String() string {
 		return "glyph"
 	case MaterialImage:
 		return "image"
+	case MaterialGlass:
+		return "glass"
 	default:
 		return "none"
 	}
@@ -185,14 +274,45 @@ func NewRenderer() (*Renderer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gift/backend/ebiten: compiling the shape shader: %w", err)
 	}
+	gl, err := eb.NewShader(glassShaderSrc)
+	if err != nil {
+		return nil, fmt.Errorf("gift/backend/ebiten: compiling the glass shader: %w", err)
+	}
+	down, err := eb.NewShader(kawaseDownSrc)
+	if err != nil {
+		return nil, fmt.Errorf("gift/backend/ebiten: compiling the Kawase downsample shader: %w", err)
+	}
+	up, err := eb.NewShader(kawaseUpSrc)
+	if err != nil {
+		return nil, fmt.Errorf("gift/backend/ebiten: compiling the Kawase upsample shader: %w", err)
+	}
 	r := &Renderer{
-		shader:   sh,
-		atlas:    NewGlyphAtlas(AtlasConfig{}),
-		textures: NewTextureCache(TextureConfig{}),
+		shader:      sh,
+		glassShader: gl,
+		downShader:  down,
+		upShader:    up,
+		atlas:       NewGlyphAtlas(AtlasConfig{}),
+		textures:    NewTextureCache(TextureConfig{}),
+		targets:     NewTargetPool(TargetConfig{}),
+		policy:      NewGlassPolicy(GlassPolicyConfig{}),
 	}
 	r.glyphOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
 	r.imageOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
 	r.imageOpts.Filter = eb.FilterLinear
+	// A copy and not a composite: the region copy of a backdrop and the final
+	// scene to screen blit both want the destination replaced. Blending a
+	// premultiplied copy over an already cleared target would give the same
+	// answer and cost a read of the destination for every pixel of the
+	// screen, every frame a material is on it.
+	r.copyOpts.Blend = eb.BlendCopy
+	r.copyOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
+	r.copyOpts.Filter = eb.FilterNearest
+	// A blur pass replaces its target rather than blending into it. There is
+	// deliberately no Filter here and there could not be one:
+	// DrawTrianglesShaderOptions has no such field, because Ebitengine samples
+	// nearest for a Kage shader and the blur shaders do their own filtering.
+	// See kawase_down.kage.
+	r.blurOpts.Blend = eb.BlendCopy
 	// Set explicitly. It was already nearest, but only because
 	// eb.FilterNearest happens to be the zero value of eb.Filter, and a
 	// comment two fields up claimed the choice was deliberate. One of those
@@ -202,12 +322,51 @@ func NewRenderer() (*Renderer, error) {
 	// limit; a larger scene grows them on its first frames and never again.
 	r.verts = make([]eb.Vertex, 0, 4096)
 	r.idx = make([]uint32, 0, 6144)
+	// Exactly one quad, forever: every material pass is four vertices.
+	r.passVerts = make([]eb.Vertex, 0, 4)
+	r.passIdx = make([]uint32, 0, 6)
 	return r, nil
 }
 
 // SetTarget selects the image the next frame is drawn into. The backend does
 // not own it and never keeps it beyond [Renderer.EndFrame].
-func (r *Renderer) SetTarget(dst *eb.Image) { r.dst = dst }
+func (r *Renderer) SetTarget(dst *eb.Image) { r.screen, r.dst = dst, dst }
+
+// Targets returns the intermediate render target pool, for [TargetStats] and
+// for a test that wants a small budget in order to observe reuse, rejection
+// and release.
+func (r *Renderer) Targets() *TargetPool { return r.targets }
+
+// SetTargets replaces the target pool. It is for tests.
+func (r *Renderer) SetTargets(p *TargetPool) { r.targets = p }
+
+// GlassPolicy returns the adaptive quality policy. See [GlassPolicy].
+func (r *Renderer) GlassPolicy() *GlassPolicy { return r.policy }
+
+// SetGlassPolicy replaces the policy. It is for tests and for an application
+// that wants different thresholds.
+func (r *Renderer) SetGlassPolicy(p *GlassPolicy) { r.policy = p }
+
+// PinGlassQuality fixes the effective glass level, or returns to the adaptive
+// policy when given [render.Adaptive].
+//
+// The project plan, section 13, makes this mandatory for any measurement that
+// is to be compared with another one, because an adaptive level changes what
+// is being measured half way through the run.
+func (r *Renderer) PinGlassQuality(q render.GlassQuality) {
+	if r.policy != nil {
+		r.policy.Pin(q)
+	}
+}
+
+// GlassLevel returns the level the last drawn frame actually used. It is never
+// [render.Adaptive].
+func (r *Renderer) GlassLevel() render.GlassQuality {
+	if r.policy == nil {
+		return render.Reduced
+	}
+	return r.policy.Level()
+}
 
 // BeginFrame implements [render.Backend].
 //
@@ -219,7 +378,7 @@ func (r *Renderer) SetTarget(dst *eb.Image) { r.dst = dst }
 // project plan, section 7, wants overflow visible, and the honest counter for
 // "this was outside the visible area" is SkippedOutsideClip, which is about
 // clips the application asked for rather than about the window.
-func (r *Renderer) BeginFrame(geom.Size) {
+func (r *Renderer) BeginFrame(size geom.Size) {
 	if r.inFrame {
 		panic("gift/backend/ebiten: BeginFrame without a matching EndFrame")
 	}
@@ -227,6 +386,26 @@ func (r *Renderer) BeginFrame(geom.Size) {
 	r.verts = r.verts[:0]
 	r.idx = r.idx[:0]
 	r.curMat, r.curPage = MaterialNone, nil
+	r.frameBatches = 0
+	r.frameSize = size
+
+	// The glass level of the frame is decided here, once, from the intervals
+	// of the frames already drawn and the material area of the previous one.
+	// Deciding per material would give two panels of one frame different
+	// appearances; deciding in Update would decide several times for one
+	// drawn frame, which is the same mistake the upload budget avoids. See
+	// the project plan, sections 6 and 8.
+	if r.policy != nil {
+		now := time.Now()
+		if !r.lastDraw.IsZero() {
+			r.policy.RecordInterval(now.Sub(r.lastDraw))
+		}
+		r.lastDraw = now
+		r.frameQuality = r.policy.BeginFrame(float64(size.W) * float64(size.H))
+	} else {
+		r.frameQuality = render.Reduced
+	}
+
 	// The upload budget is per *drawn* frame, and this is the only callback
 	// that happens once per drawn frame. Resetting it in an update instead
 	// would hand the same budget out several times for one frame, because
@@ -274,6 +453,7 @@ func (r *Renderer) Submit(l *render.List) {
 	if l == nil {
 		return
 	}
+	r.ensureScene(l)
 	for _, op := range l.Ops() {
 		r.appendOp(l, op)
 		if len(r.verts) >= maxBatchVertices {
@@ -282,14 +462,120 @@ func (r *Renderer) Submit(l *render.List) {
 	}
 }
 
+// ensureScene redirects the frame into an offscreen when the list contains a
+// material, because on Ebitengine a backdrop cannot be read from the screen.
+//
+// # The one place this implementation departs from section 8
+//
+// The project plan, section 8, says the glass backdrop is a "Regionskopie" and
+// limits the extra cost to one target holding the material region. That is not
+// implementable against Ebitengine's screen image, and the reason is in the
+// pinned source rather than in an opinion: internal/atlas's (*Image).allocate
+// panics with "atlas: a screen image cannot be created as a source" the moment
+// a screen image is used as a draw source. Kage has no framebuffer fetch
+// either — that is section 8's own first reason — so there are exactly two
+// ways to obtain the pixels underneath a material, and reading the screen is
+// not one of them. The other is to draw the frame somewhere that *can* be a
+// source.
+//
+// So gift renders the whole frame into one screen sized offscreen and blits it
+// to the screen in [Renderer.EndFrame]. The costs, stated rather than buried:
+//
+//   - One screen sized target, 8 MiB of logical pixel bytes at 1080p. It is
+//     one per window and not one per widget, which is the thing the project
+//     plan, section 11, actually forbids, and it is leased from the same
+//     bounded pool as everything else.
+//   - One full screen blit per frame, plus one full screen clear. On a fill
+//     rate bound GPU that is two extra passes over the framebuffer.
+//   - Both are paid only while a material is on screen. A frame with no
+//     material never allocates the target and never blits; the pool ages it
+//     out two seconds after the last glass panel disappears.
+//
+// The region copy itself is still a region copy, and the blur chain is still
+// confined to the region. What section 8 could not have known is that the
+// *source* of that copy has to be manufactured first.
+//
+// # Why the decision is taken here and not in BeginFrame
+//
+// Because BeginFrame has no list. The scan is one pass over the operations
+// comparing a byte, which is cheap next to translating them, and it happens
+// before any of them is drawn.
+//
+// A material in a *second* list, submitted after something has already been
+// drawn, is too late: the pixels are on the screen and the screen cannot be
+// read. Such a material degrades to the fallback and is counted in
+// [RendererStats.GlassLate]. gift submits one list per frame, so the counter
+// is expected to stay at zero; it exists because "expected to" is not the same
+// as "does".
+func (r *Renderer) ensureScene(l *render.List) {
+	if r.scene != nil || r.screen == nil || r.targets == nil {
+		return
+	}
+	if !listHasMaterial(l) {
+		return
+	}
+	if r.frameBatches != 0 || len(r.idx) != 0 {
+		r.glassLate++
+		return
+	}
+	b := r.screen.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 {
+		return
+	}
+	img := r.targets.Acquire(w, h)
+	if img == nil {
+		// The pool refused. Every material of this frame takes the fallback
+		// path and TargetStats.Rejected says why.
+		return
+	}
+	// The target is bucketed up to a multiple of 64 and may still hold the
+	// previous frame's content, and unlike the screen nothing clears it for
+	// us. Ebitengine clears the screen every frame — the project plan,
+	// section 6, notes there is no partial repaint — so the scene has to look
+	// the same.
+	if r.drawFn == nil {
+		img.Clear()
+	}
+	r.scene, r.sceneW, r.sceneH = img, w, h
+	r.dst = img
+}
+
+// listHasMaterial reports whether l contains an operation that needs a
+// backdrop.
+func listHasMaterial(l *render.List) bool {
+	if l.MaterialsLen() <= 1 {
+		// The side table holds nothing but its sentinel, so no painter added
+		// a material. One integer compare for the overwhelmingly common case.
+		return false
+	}
+	for _, op := range l.Ops() {
+		if op.Kind == render.OpMaterial && op.Material != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // EndFrame implements [render.Backend].
 func (r *Renderer) EndFrame() {
 	if !r.inFrame {
 		panic("gift/backend/ebiten: EndFrame without a matching BeginFrame")
 	}
 	r.flush()
+	// The scene to screen blit. It happens after the last batch and before
+	// anything is released, which is the only order in which the frame is
+	// complete and the target is still alive.
+	if r.scene != nil {
+		if r.screen != nil {
+			r.glassPass(glassPassScene)
+			r.blitCopy(r.screen, r.scene, geom.Rc(0, 0, float32(r.sceneW), float32(r.sceneH)), 0, 0)
+		}
+		r.targets.Release(r.scene)
+		r.scene = nil
+	}
 	r.inFrame = false
-	r.dst = nil
+	r.dst, r.screen = nil, nil
 	r.drawn++
 	// Once per drawn frame, not once per update: the atlas budget is a per
 	// frame budget and Ebitengine may update several times between two
@@ -301,6 +587,18 @@ func (r *Renderer) EndFrame() {
 	// "referenced by the frame in progress" stops being true of any texture.
 	if r.textures != nil {
 		r.textures.Tick()
+	}
+	if r.targets != nil {
+		if n := r.targets.Leased(); n != 0 {
+			// A leaked lease is a pooled target nothing will ever hand back,
+			// and the symptom a frame or two later is a glass panel showing
+			// the backdrop of an older frame. Loud here, where the cause is
+			// one function away, rather than quiet and visual.
+			panic(fmt.Sprintf(
+				"gift/backend/ebiten: %d render targets still leased at EndFrame; "+
+					"every material pass must release what it acquired", n))
+		}
+		r.targets.Tick()
 	}
 }
 
@@ -340,6 +638,9 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 		return
 	case render.OpImage:
 		r.appendImage(l, op)
+		return
+	case render.OpMaterial:
+		r.appendMaterial(l, op)
 		return
 	default:
 		// An unknown kind is skipped rather than fatal, as [render.OpKind]
@@ -1006,6 +1307,7 @@ func (r *Renderer) flush() {
 		r.dst.DrawTrianglesShader32(r.verts, r.idx, r.shader, &r.opts)
 	}
 	r.batches++
+	r.frameBatches++
 	switch r.curMat {
 	case MaterialGlyph:
 		r.glyphBatches++
@@ -1091,6 +1393,48 @@ type RendererStats struct {
 	// blur, not to look for a cache. ShadowOps times the extent of the
 	// operations is the whole cost model.
 	ShadowOps, ShadowSharpOps uint64
+
+	// GlassOps is the number of material regions that produced passes, and
+	// GlassReducedOps and GlassFullOps split them by the level each was
+	// actually drawn at. GlassFallbacks is the number drawn as a plain tinted
+	// rounded rectangle because no backdrop could be obtained.
+	//
+	// The three add up to GlassOps. A non zero GlassFallbacks on a machine
+	// with a window means either the target budget refused a lease — see
+	// [TargetStats.Rejected] — or a material region larger than the screen.
+	GlassOps, GlassReducedOps, GlassFullOps, GlassFallbacks uint64
+	// GlassPasses is the number of material pass stages executed: one copy,
+	// two per blur level at Full, and one composite. A Reduced panel is two,
+	// a Full panel with three levels is eight.
+	GlassPasses uint64
+	// GlassDrawCalls is the number of draw calls the material passes issued,
+	// including the scene to screen blit. It is part of DrawCalls.
+	//
+	// # What a material does to the draw call count
+	//
+	// A material region is a batching barrier: everything before it has to
+	// reach the target before its backdrop can be copied. So a frame that
+	// used to be one shape batch becomes, with one glass panel in the middle
+	// of it: the shape batch before the panel, the region copy, the blur
+	// passes, the composite, and the shape batch after the panel — plus the
+	// scene blit at the end of the frame, which is paid once however many
+	// panels there are.
+	//
+	// That is the honest number and it is not small in relative terms. What
+	// it is not is proportional to the scene: a panel costs the same handful
+	// of calls over a gallery of sixty tiles as over an empty window.
+	GlassDrawCalls uint64
+	// GlassLate is the number of frames in which a material was found after
+	// something had already been drawn to the screen, so the frame could not
+	// be redirected into the scene target any more. gift submits one list per
+	// frame, so this is expected to stay at zero; see [Renderer.ensureScene].
+	GlassLate uint64
+	// GlassLevel is the level the last drawn frame used and GlassPinned
+	// whether the application fixed it. The project plan, section 8, requires
+	// the effective level to be visible in the diagnostics.
+	GlassLevel  render.GlassQuality
+	GlassPinned bool
+
 	// Ops is the number of operations that produced geometry.
 	Ops uint64
 
@@ -1153,7 +1497,7 @@ func (s RendererStats) Accounted() uint64 {
 // the UI executor; the frame timings, which another goroutine may read, are in
 // [FrameTimer] instead.
 func (r *Renderer) Stats() RendererStats {
-	return RendererStats{
+	s := RendererStats{
 		Frames:             r.drawn,
 		Batches:            r.batches,
 		Ops:                r.emitted,
@@ -1173,5 +1517,17 @@ func (r *Renderer) Stats() RendererStats {
 		GlyphQuads:         r.glyphQuads,
 		ShadowOps:          r.shadowOps,
 		ShadowSharpOps:     r.shadowSharpOps,
+		GlassOps:           r.glassOps,
+		GlassReducedOps:    r.glassReducedOps,
+		GlassFullOps:       r.glassFullOps,
+		GlassFallbacks:     r.glassFallbacks,
+		GlassPasses:        r.glassPasses,
+		GlassDrawCalls:     r.glassBatches,
+		GlassLate:          r.glassLate,
 	}
+	if r.policy != nil {
+		s.GlassLevel = r.policy.Level()
+		s.GlassPinned = r.policy.IsPinned()
+	}
+	return s
 }

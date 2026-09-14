@@ -71,7 +71,7 @@ func (o Overlay) MaxWidth(v float32) Overlay { o.setMaxWidth(v); return o }
 func (o Overlay) MaxHeight(v float32) Overlay { o.setMaxHeight(v); return o }
 
 // Background fills the bounds behind the children.
-func (o Overlay) Background(v Color) Overlay { o.setBackground(v); return o }
+func (o Overlay) Background(v Background) Overlay { o.setBackgroundSpec(v); return o }
 
 // Border strokes the inside of the bounds after the children were drawn.
 func (o Overlay) Border(v Border) Overlay { o.setBorder(v); return o }

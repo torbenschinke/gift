@@ -26,6 +26,9 @@ type List struct {
 	clips  []geom.Rect
 	xforms []geom.Affine2D
 	glyphs []Glyph
+	// materials is the side table of [OpMaterial]. Index 0 is a reserved
+	// sentinel meaning "no material", like index 0 of clips and xforms.
+	materials []Material
 	// clipStack holds indices into clips. Its first element is always 0,
 	// the unbounded sentinel, so the stack is never empty.
 	clipStack []uint32
@@ -37,6 +40,9 @@ func (l *List) ensure() {
 	}
 	if len(l.xforms) == 0 {
 		l.xforms = append(l.xforms, geom.Identity())
+	}
+	if len(l.materials) == 0 {
+		l.materials = append(l.materials, Material{})
 	}
 	if len(l.clipStack) == 0 {
 		l.clipStack = append(l.clipStack, 0)
@@ -54,6 +60,7 @@ func (l *List) Reset() {
 	l.clips = l.clips[:0]
 	l.xforms = l.xforms[:0]
 	l.glyphs = l.glyphs[:0]
+	l.materials = l.materials[:0]
 	l.clipStack = l.clipStack[:0]
 	l.ensure()
 }
@@ -128,6 +135,46 @@ func (l *List) Clip(i uint32) geom.Rect {
 func (l *List) Xform(i uint32) geom.Affine2D {
 	l.ensure()
 	return l.xforms[i]
+}
+
+// AddMaterial appends m to the material side table and returns its index.
+//
+// Materials are not deduplicated. A frame with two glass panels of identical
+// parameters therefore holds two entries, which costs fifty-six bytes of a
+// reused slice and saves a comparison in the paint path that would have run
+// for every styled node in the scene in order to find the one in a hundred
+// that has a material at all.
+//
+// A material with [MaterialNone] returns index 0 without appending, so a
+// painter may call this unconditionally.
+func (l *List) AddMaterial(m Material) uint32 {
+	l.ensure()
+	if !m.IsVisible() {
+		return 0
+	}
+	l.materials = append(l.materials, m)
+	return uint32(len(l.materials) - 1)
+}
+
+// Material returns the material with index i. Index 0 is the sentinel, whose
+// Kind is [MaterialNone].
+//
+// An out of range index returns the sentinel rather than panicking, under the
+// same rule as [List.Glyphs]: a backend reading a malformed list draws nothing
+// instead of taking the process down.
+func (l *List) Material(i uint32) Material {
+	l.ensure()
+	if int(i) >= len(l.materials) {
+		return Material{}
+	}
+	return l.materials[i]
+}
+
+// MaterialsLen returns the number of entries in the material side table,
+// including the sentinel at index 0.
+func (l *List) MaterialsLen() int {
+	l.ensure()
+	return len(l.materials)
 }
 
 // Len returns the number of operations in the list.

@@ -211,8 +211,48 @@ type rendererCounters struct {
 	ShadowOps      uint64 `json:"shadow_ops"`
 	ShadowSharpOps uint64 `json:"shadow_sharp_ops"`
 
+	Glass    glassCounters   `json:"glass"`
 	Atlas    atlasCounters   `json:"atlas"`
 	Textures textureCounters `json:"textures"`
+	Targets  targetCounters  `json:"targets"`
+}
+
+// glassCounters are the material numbers of the project plan, section 8.
+//
+// level and pinned are the two fields that decide whether this report may be
+// compared with another one at all. Section 13 makes a fixed quality level a
+// precondition of a comparable measurement, so a report from an adaptive run
+// says so instead of quietly averaging two different amounts of work.
+type glassCounters struct {
+	Ops        uint64 `json:"ops"`
+	ReducedOps uint64 `json:"reduced_ops"`
+	FullOps    uint64 `json:"full_ops"`
+	// Fallbacks is the number of materials drawn as a plain tint because no
+	// backdrop could be obtained. Non zero means glass degraded on screen.
+	Fallbacks uint64 `json:"fallbacks"`
+	Passes    uint64 `json:"passes"`
+	DrawCalls uint64 `json:"draw_calls"`
+	Level     string `json:"level"`
+	Pinned    bool   `json:"pinned"`
+	// LevelChanges over the whole run. In an adaptive run a large number is
+	// the flicker the hysteresis exists to prevent.
+	LevelChanges uint64 `json:"level_changes"`
+}
+
+// targetCounters are the intermediate render target numbers; see
+// [TargetStats]. Bytes is logical pixel bytes, with the same warning as the
+// texture numbers carry.
+type targetCounters struct {
+	Leases        uint64 `json:"leases"`
+	Reuses        uint64 `json:"reuses"`
+	Allocations   uint64 `json:"allocations"`
+	Deallocations uint64 `json:"deallocations"`
+	Evictions     uint64 `json:"evictions"`
+	AgeEvictions  uint64 `json:"age_evictions"`
+	Rejected      uint64 `json:"rejected"`
+	Targets       int    `json:"targets"`
+	Bytes         int64  `json:"bytes"`
+	PeakBytes     int64  `json:"peak_bytes"`
 }
 
 // textureCounters are the GPU image residency numbers; see [TextureStats].
@@ -387,6 +427,21 @@ func (r *Recorder) emit(kind string) {
 			ImageOps:           rs.ImageOps,
 			ShadowOps:          rs.ShadowOps,
 			ShadowSharpOps:     rs.ShadowSharpOps,
+			Glass: glassCounters{
+				Ops: rs.GlassOps, ReducedOps: rs.GlassReducedOps,
+				FullOps: rs.GlassFullOps, Fallbacks: rs.GlassFallbacks,
+				Passes: rs.GlassPasses, DrawCalls: rs.GlassDrawCalls,
+				Level: rs.GlassLevel, Pinned: rs.GlassPinned,
+				LevelChanges: rs.GlassLevelChanges,
+			},
+			Targets: targetCounters{
+				Leases: rs.Targets.Leases, Reuses: rs.Targets.Reuses,
+				Allocations: rs.Targets.Allocations, Deallocations: rs.Targets.Deallocations,
+				Evictions: rs.Targets.Evictions, AgeEvictions: rs.Targets.AgeEvictions,
+				Rejected: rs.Targets.Rejected,
+				Targets:  rs.Targets.Targets, Bytes: rs.Targets.Bytes,
+				PeakBytes: rs.Targets.PeakBytes,
+			},
 			Atlas: atlasCounters{
 				Hits: rs.Atlas.Hits, Misses: rs.Atlas.Misses,
 				Rasterised: rs.Atlas.Rasterised, UploadedBytes: rs.Atlas.UploadedBytes,

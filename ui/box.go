@@ -87,7 +87,7 @@ func (b BoxView) MaxHeight(v float32) BoxView { b.setMaxHeight(v); return b }
 
 // Background fills the bounds. Without it, and without a border, a Box draws
 // nothing and needs no painter.
-func (b BoxView) Background(v Color) BoxView { b.setBackground(v); return b }
+func (b BoxView) Background(v Background) BoxView { b.setBackgroundSpec(v); return b }
 
 // Border strokes the inside of the bounds.
 func (b BoxView) Border(v Border) BoxView { b.setBorder(v); return b }

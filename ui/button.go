@@ -449,7 +449,11 @@ func (b ButtonView) MaxHeight(v float32) ButtonView { b.setMaxHeight(v); return 
 
 // Background fills the bounds in the normal state. Use [ButtonView.HoverStyle]
 // and friends for the other states.
-func (b ButtonView) Background(v Color) ButtonView { b.setBackground(v); b.hasStyle = true; return b }
+func (b ButtonView) Background(v Background) ButtonView {
+	b.setBackgroundSpec(v)
+	b.hasStyle = true
+	return b
+}
 
 // Border strokes the inside of the bounds in the normal state.
 func (b ButtonView) Border(v Border) ButtonView { b.setBorder(v); b.hasStyle = true; return b }

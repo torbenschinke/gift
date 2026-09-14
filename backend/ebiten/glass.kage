@@ -1,0 +1,181 @@
+//kage:unit pixels
+
+package main
+
+// The glass composite shader of gift.
+//
+// This is the last pass of both quality levels of the project plan,
+// section 8. Source 0 is the backdrop of the material region: for [Reduced] an
+// unblurred copy of it, for [Full] the output of the dual-Kawase chain. The
+// shader itself cannot tell the two apart and does not need to, which is why
+// there is one composite and not two.
+//
+// # Vertex layout
+//
+//	dstPos   device position of the quad corner
+//	src0Pos  position inside the backdrop target, plus the target's atlas
+//	         origin, which Ebitengine adds on the way in
+//	color    premultiplied tint
+//	custom.x half width of the material region, device pixels
+//	custom.y half height, device pixels
+//	custom.z corner radius, device pixels, already clamped by the CPU side
+//	custom.w the three remaining style scalars, packed; see unpack below
+//
+// Everything is in vertex attributes and nothing is in a uniform, for the
+// reason shape.kage already states: Ebitengine's Uniforms is a map[string]any,
+// and both the map write and the boxing of a float32 into an any allocate once
+// per draw. The project plan, section 11, does not allow that in the frame
+// path, and a material is in the frame path.
+//
+// # Why three scalars are packed into one attribute
+//
+// A vertex has exactly four custom attributes and glass needs seven numbers
+// that do not vary across the quad: two half extents, a radius, a refraction
+// distance, a highlight strength, a grain strength and — implicitly — the
+// region size, which is twice the half extents. Four slots, seven numbers.
+//
+// The tint takes the vertex colour, which is four more floats and is free.
+// That leaves six for four slots, so three of them share the last one.
+// Refraction, highlight and grain are quantised to eight bits each and packed
+// as r*65536 + h*256 + g. The largest packed value is 16777215, which is
+// 2^24-1 and therefore the last integer a float32 represents exactly; one bit
+// more and the unpacking below would start returning neighbours. That is why
+// render.Glass clamps refraction at 63 and the other two at 1 before they get
+// here: a silently wrapped value would be a bright streak in a corner with
+// nothing in the code to explain it.
+//
+// The quantisation is lossy and the loss is stated rather than hidden.
+// Refraction lands on whole device pixels, which is below what the eye
+// resolves in a displacement that is itself a few pixels. Highlight and grain
+// get 1/255 steps, which is one step of an eight bit channel.
+//
+// # No screen space derivatives
+//
+// Same as shape.kage: every geometric value arrives in device pixels, so the
+// antialiasing band is the constant one pixel and this shader needs no fwidth.
+
+// sdRoundBox is the signed distance from p to a rounded box centred at the
+// origin with half extents b and corner radius r. Negative inside. It is the
+// same function shape.kage uses; Kage has no cross-shader includes, and two
+// copies of six lines were preferred to one shader that does everything.
+func sdRoundBox(p vec2, b vec2, r float) float {
+	q := abs(p) - b + vec2(r)
+	return length(max(q, vec2(0))) + min(max(q.x, q.y), 0.0) - r
+}
+
+// roundBoxNormal is the outward gradient of that distance field: the surface
+// normal of the pane, projected onto the screen.
+//
+// This is what makes the refraction look like thickness rather than like a
+// blur that slid sideways. Away from the corners it is an axis direction; in a
+// corner it is the direction out of the corner arc. It is exact for the
+// straight edges and exact for the arcs, and undefined only at the centre,
+// where the caller multiplies it by an edge factor of zero anyway.
+func roundBoxNormal(p vec2, b vec2, r float) vec2 {
+	q := abs(p) - b + vec2(r)
+	s := sign(p)
+	if max(q.x, q.y) > 0.0 {
+		m := max(q, vec2(0))
+		l := length(m)
+		if l > 0.0001 {
+			return s * (m / l)
+		}
+	}
+	if q.x > q.y {
+		return vec2(s.x, 0)
+	}
+	return vec2(0, s.y)
+}
+
+// hash21 is a cheap value noise for the grain of the Full level. It is the
+// usual sin-fract hash; it is not a good random number generator and does not
+// have to be, because the eye is looking at whether the surface has texture
+// and not at whether the texture is uncorrelated.
+func hash21(p vec2) float {
+	return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453)
+}
+
+func Fragment(dstPos vec4, src0Pos vec2, color vec4, custom vec4) vec4 {
+	origin := imageSrc0Origin()
+	half := custom.xy
+	radius := custom.z
+
+	// Unpack the three quantised scalars. floor and one multiply-subtract per
+	// field; all values are exact integers below 2^24, so this is exact.
+	packed := custom.w
+	rq := floor(packed / 65536.0)
+	rest := packed - rq*65536.0
+	hq := floor(rest / 256.0)
+	gq := rest - hq*256.0
+	refraction := rq
+	highlight := hq / 255.0
+	grain := gq / 255.0
+
+	// The position arrives as 0..size, like in shape.kage, so that no vertex
+	// attribute is ever negative. The distance field wants it centred.
+	local := src0Pos - origin
+	p := local - half
+
+	d := sdRoundBox(p, half, radius)
+	cov := clamp(0.5-d, 0.0, 1.0)
+	if cov <= 0.0 {
+		return vec4(0)
+	}
+
+	// The edge factor: zero in the middle of the pane, one at the rim, over a
+	// band whose width is the corner radius or eight pixels, whichever is
+	// larger. Squaring it keeps the middle flat, which is what stops the whole
+	// pane from looking uniformly bright.
+	band := max(radius, 8.0)
+	e := clamp(1.0+d/band, 0.0, 1.0)
+	e = e * e
+
+	n := roundBoxNormal(p, half, radius)
+
+	// Refraction. The sample is displaced outward along the surface normal,
+	// scaled by the edge factor, so the middle of the pane shows the backdrop
+	// undisplaced and the rim bends it. Clamping to the valid area of the
+	// backdrop target matters twice over: the target is bucketed to a size at
+	// least as large as the region, so the pixels beyond the region belong to
+	// whatever used the target last, and a displaced sample near the rim would
+	// otherwise reach them.
+	size := half * 2.0
+	uv := clamp(local+n*(refraction*e), vec2(0.5), size-vec2(0.5)) + origin
+	back := imageSrc0At(uv)
+
+	// Tint over backdrop, source over, both premultiplied.
+	out := color + back*(1.0-color.a)
+
+	// Fresnel-like rim brightening. It is not a physical Fresnel term — there
+	// is no view vector here and a flat pane has no varying incidence angle —
+	// it is the edge factor used as one, which is what every screen space
+	// glass effect does and what section 8 calls "Fresnel-artige
+	// Kantenaufhellung".
+	rim := e * highlight * 0.35
+
+	// The specular streak: a light from the upper left, so the rim that faces
+	// it lights up and the opposite rim does not. This is the one term that
+	// makes the shape read as a solid object rather than as a blurred hole.
+	l := vec2(-0.7071, -0.7071)
+	sp := max(dot(n, l), 0.0)
+	sp = sp * sp
+	sp = sp * sp
+	spec := sp * e * highlight * 0.55
+
+	k := rim + spec
+	// Premultiplied white: adding (k, k, k, k) is adding white at alpha k.
+	out += vec4(k, k, k, k)
+
+	if grain > 0.0 {
+		// Signed noise, so grain darkens as well as lightens and the mean
+		// brightness of the pane does not move. Scaled by the alpha so the
+		// result stays premultiplied.
+		g := (hash21(dstPos.xy) - 0.5) * grain * 0.25 * out.a
+		out += vec4(g, g, g, 0)
+	}
+
+	out.a = min(out.a, 1.0)
+	out = vec4(min(out.rgb, vec3(out.a)), out.a)
+	out = vec4(max(out.rgb, vec3(0)), out.a)
+	return out * cov
+}

@@ -140,7 +140,7 @@ func (s Stack) MaxHeight(v float32) Stack { s.setMaxHeight(v); return s }
 // Background fills the bounds behind the children. A fully transparent colour
 // means no background at all, and a node without background, border and clip
 // needs no painter.
-func (s Stack) Background(v Color) Stack { s.setBackground(v); return s }
+func (s Stack) Background(v Background) Stack { s.setBackgroundSpec(v); return s }
 
 // Border strokes the inside of the bounds after the children were drawn. It
 // does not change the layout.

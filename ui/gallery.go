@@ -1199,7 +1199,7 @@ func (v GalleryView) MaxWidth(f float32) GalleryView { v.setMaxWidth(f); return 
 func (v GalleryView) MaxHeight(f float32) GalleryView { v.setMaxHeight(f); return v }
 
 // Background fills the viewport behind the tiles. It does not scroll.
-func (v GalleryView) Background(c Color) GalleryView { v.setBackground(c); return v }
+func (v GalleryView) Background(c Background) GalleryView { v.setBackgroundSpec(c); return v }
 
 // Border strokes the inside of the viewport bounds after the tiles were drawn.
 func (v GalleryView) Border(b Border) GalleryView { v.setBorder(b); return v }

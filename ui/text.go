@@ -395,7 +395,7 @@ func (t TextView) MaxWidth(v float32) TextView { t.setMaxWidth(v); return t }
 func (t TextView) MaxHeight(v float32) TextView { t.setMaxHeight(v); return t }
 
 // Background fills the bounds behind the glyphs.
-func (t TextView) Background(v Color) TextView { t.setBackground(v); return t }
+func (t TextView) Background(v Background) TextView { t.setBackgroundSpec(v); return t }
 
 // Border strokes the inside of the bounds after the glyphs were drawn. It does
 // not change the layout.

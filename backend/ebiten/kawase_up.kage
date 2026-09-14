@@ -1,0 +1,59 @@
+//kage:unit pixels
+
+package main
+
+// The dual-Kawase upsample pass of the Full glass level.
+//
+// # The centre tap is a hand written bilinear fetch
+//
+// For the reason kawase_down.kage sets out at length: Ebitengine's Kage
+// shaders sample nearest and there is no option to change it. On the way down
+// that cost four fetches instead of one and bought exactness. On the way up it
+// is not optional at all — a destination texel centre maps to a quarter texel
+// offset in the source, so a nearest fetch replicates every source texel into
+// a 2x2 block and the final level hands the composite a visibly blocky
+// backdrop. The four diagonal taps stay nearest: they carry an eighth of the
+// weight each and are averaged over four destination texels anyway.
+//
+// Eight fetches, same as the downsample.
+//
+// # Vertex layout
+//
+// Identical to kawase_down.kage, and the clamping is there for the same
+// reason: pooled targets are bucketed larger than the level written into them.
+//
+//	src0Pos  source position plus the source target's atlas origin
+//	custom.x tap scale, normally 1
+//	custom.y valid source width  in pixels
+//	custom.z valid source height in pixels
+//	custom.w unused
+
+func tap(p vec2, origin vec2, size vec2) vec4 {
+	return imageSrc0At(clamp(p, vec2(0.5), size-vec2(0.5)) + origin)
+}
+
+// bil is a bilinear fetch built from four nearest ones.
+func bil(p vec2, origin vec2, size vec2) vec4 {
+	q := p - vec2(0.5)
+	b := floor(q) + vec2(0.5)
+	f := q - floor(q)
+	c00 := tap(b, origin, size)
+	c10 := tap(b+vec2(1, 0), origin, size)
+	c01 := tap(b+vec2(0, 1), origin, size)
+	c11 := tap(b+vec2(1, 1), origin, size)
+	return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y)
+}
+
+func Fragment(dstPos vec4, src0Pos vec2, color vec4, custom vec4) vec4 {
+	origin := imageSrc0Origin()
+	o := custom.x
+	size := custom.yz
+	p := src0Pos - origin
+
+	sum := bil(p, origin, size) * 4.0
+	sum += tap(p+vec2(-o, -o), origin, size)
+	sum += tap(p+vec2(o, -o), origin, size)
+	sum += tap(p+vec2(-o, o), origin, size)
+	sum += tap(p+vec2(o, o), origin, size)
+	return sum / 8.0
+}

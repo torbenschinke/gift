@@ -88,6 +88,19 @@ func (p *PaintContext) Add(op render.Op) {
 	p.app.diag.PaintedOps++
 }
 
+// AddMaterial appends a material to the side table of the display list and
+// returns its index, for [render.Op.Material].
+//
+// The usual sequence is one call immediately before the [render.OpMaterial]
+// that references it, at the point of the node's drawing order where the
+// background belongs — which is after the shadow and before the content. A
+// material reads the backdrop, and the backdrop is whatever is already in the
+// list; emitting it after the children would hand it a picture of them. See
+// [render.OpMaterial].
+func (p *PaintContext) AddMaterial(m render.Material) uint32 {
+	return p.list.AddMaterial(m)
+}
+
 // PushClip intersects r, which is in device space, with the active clip and
 // makes the result active for all following operations until the matching
 // [PaintContext.PopClip].

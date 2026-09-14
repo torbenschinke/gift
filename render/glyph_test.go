@@ -18,9 +18,10 @@ func TestOpIsStillPlainOldData(t *testing.T) {
 	// fields with the documented alignment, which a pointer field would
 	// change.
 	// 52 before OpGlyphs, 60 after, 64 since OpShadow added Blur, 68 since
-	// OpImage added Image. The growth is deliberate and argued on Op; the
-	// point of this assertion is that it is never accidental.
-	const want = 68
+	// OpImage added Image, 72 since OpMaterial added Material. The growth is
+	// deliberate and argued on Op; the point of this assertion is that it is
+	// never accidental.
+	const want = 72
 	if got := unsafe.Sizeof(Op{}); got != want {
 		t.Errorf("sizeof(Op) = %d, want %d; if this grew on purpose, update the number and the note on Op", got, want)
 	}

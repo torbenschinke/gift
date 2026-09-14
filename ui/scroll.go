@@ -205,7 +205,7 @@ func (s ScrollView) MaxHeight(v float32) ScrollView { s.setMaxHeight(v); return 
 
 // Background fills the viewport behind the content. It does not scroll: it is
 // drawn by the container, which does not move.
-func (s ScrollView) Background(v Color) ScrollView { s.setBackground(v); return s }
+func (s ScrollView) Background(v Background) ScrollView { s.setBackgroundSpec(v); return s }
 
 // Border strokes the inside of the viewport bounds after the content was
 // drawn, so the content scrolls underneath it.

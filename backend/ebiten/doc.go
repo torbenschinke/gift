@@ -132,6 +132,47 @@
 // internal/text to rasterise at that size; see [Renderer.appendTexturedQuad],
 // where the note sits next to the code that would have to change.
 //
+// # Glass, and the one place Ebitengine forced a departure from the plan
+//
+// The material of the project plan, section 8, is here: [render.OpMaterial] is
+// a region whose appearance depends on what was drawn under it, and this
+// package turns it into passes. [Reduced] is a region copy and one composite
+// pass; [Full] adds a dual-Kawase down and up chain, confined to the region.
+// [GlassPolicy] chooses between them from frame intervals and material area,
+// because Ebitengine exposes no capability to ask.
+//
+// Section 8 gives two reasons why one shader pass cannot do it, and both hold
+// in the pinned source. There is no framebuffer fetch and no programmable
+// blending in Kage. And a wide convolution is unaffordable at 1080p, which
+// downsampling defuses.
+//
+// What section 8 could not have known is that the *source* of its
+// "Regionskopie" has to be manufactured. Ebitengine's internal/atlas panics
+// with "atlas: a screen image cannot be created as a source" the moment the
+// screen image is used as a draw source, so the pixels under a material cannot
+// be copied off the screen at all. gift therefore renders a frame that
+// contains a material into one screen sized offscreen and blits that to the
+// screen at the end. The costs — one screen sized target, one clear and one
+// blit, all of them only while a material is on screen — are stated on
+// [Renderer.ensureScene] rather than buried. The region copy is still a region
+// copy and the blur chain is still confined to the region.
+//
+// Two more numbers worth knowing before using it. A material region is a
+// *batching barrier*: everything before it has to reach the target before its
+// backdrop can be copied, so a frame that was one shape draw call becomes five
+// with a Reduced panel in the middle of it and eleven with a Full one, whatever
+// the rest of the scene contains. And section 8's claim that the chain costs
+// "unter 1,5x der Flaeche der Materialregion" is not reachable by a chain that
+// ends at the region's resolution; see TestBlurChainStaysInsideTheRegion, which
+// works the arithmetic out and asserts the number this implementation actually
+// achieves.
+//
+// The intermediate targets live in [TargetPool]: bucketed, reused across
+// frames and across panels, bounded by bytes, and released with an explicit
+// Deallocate exactly as [TextureCache] releases a picture. There is no target
+// per widget, and [Renderer.EndFrame] panics rather than continuing if a pass
+// chain leaked a lease.
+//
 // # Measurement
 //
 // Measurement lives in the metrics package and not here. This package is the
@@ -141,7 +182,8 @@
 // What remains here is the wiring. [Run] starts a [metrics.Recorder], times
 // the two callbacks, records the interval between drawn frames and hands the
 // renderer counters, the glyph atlas counters and the shaping cache counters
-// of internal/text over as [metrics.RendererStats] and [metrics.ShaperStats]. Every one of those steps
+// of internal/text over as [metrics.RendererStats] and [metrics.ShaperStats],
+// together with the glass and render target counters. Every one of those steps
 // is behind metrics.Enabled, which is a compile time constant false without
 // the giftmetrics build tag, so an ordinary build does not even call
 // time.Now. An application therefore gets a measurement by rebuilding with

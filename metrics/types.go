@@ -204,6 +204,30 @@ type RendererStats struct {
 	// proposed a cached shape mask instead; see the backend's package
 	// documentation for why that was not built.
 	ShadowOps, ShadowSharpOps uint64
+	// GlassOps is the number of material regions drawn, split by the level
+	// each was actually drawn at, plus the ones that degraded to a plain tint
+	// because no backdrop could be obtained.
+	GlassOps, GlassReducedOps, GlassFullOps, GlassFallbacks uint64
+	// GlassPasses is the number of material pass stages executed and
+	// GlassDrawCalls the draw calls they issued, including the scene to
+	// screen blit. GlassDrawCalls is part of DrawCalls.
+	GlassPasses, GlassDrawCalls uint64
+	// GlassLevel is the effective quality level of the last drawn frame,
+	// "reduced" or "full", and GlassPinned whether the application fixed it.
+	//
+	// The project plan, section 8, requires the effective level to be visible
+	// in the diagnostics, and section 13 requires a measurement that is to be
+	// compared with another one to pin it — so a report that does not say
+	// which level it measured is not a comparable measurement. Both fields
+	// are here so that the report can say so.
+	GlassLevel  string
+	GlassPinned bool
+	// GlassLevelChanges is how often the adaptive policy switched over the
+	// whole run. In a pinned run it is zero or one; in an adaptive run a
+	// large number is the flicker the hysteresis exists to prevent.
+	GlassLevelChanges uint64
+	// Targets are the intermediate render target counters.
+	Targets TargetStats
 	// Ops is the number of operations that produced geometry.
 	Ops uint64
 
@@ -431,4 +455,34 @@ type AssetStats struct {
 	// persistent one, against DiskBudget.
 	CacheEntries          int
 	DiskBytes, DiskBudget int64
+}
+
+// TargetStats are the intermediate render target counters of the backend.
+//
+// These are the render targets of the glass material of the project plan,
+// section 8, plus the one screen sized scene target a material forces. They
+// are the only images gift allocates that are neither a glyph atlas page nor a
+// picture, so they get their own block in the report rather than being folded
+// into the texture numbers.
+type TargetStats struct {
+	// Leases is the number of targets handed out and Reuses the subset served
+	// from the pool without allocating. In a steady scene with glass on
+	// screen the two grow together; a rising Allocations means something
+	// changes size every frame.
+	Leases, Reuses uint64
+	// Allocations and Deallocations are the explicit create and release
+	// calls. A gap that only grows is a leak.
+	Allocations, Deallocations uint64
+	// Evictions is the number released under budget pressure and
+	// AgeEvictions the subset released for going unused.
+	Evictions, AgeEvictions uint64
+	// Rejected is the number of leases the budget refused, which means glass
+	// degraded on screen. The project plan, section 13, forbids hiding that.
+	Rejected uint64
+	// Targets and Bytes are the current residency and PeakBytes the high
+	// water mark, in logical pixel bytes with the same warning as
+	// [TextureStats.Bytes].
+	Targets   int
+	Bytes     int64
+	PeakBytes int64
 }

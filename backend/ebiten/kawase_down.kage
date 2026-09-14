@@ -1,0 +1,87 @@
+//kage:unit pixels
+
+package main
+
+// The dual-Kawase downsample pass of the Full glass level.
+//
+// # Why downsampling is the blur
+//
+// The project plan, section 8, makes the argument and this shader is it: a
+// Gaussian of radius 16 needs 33 taps, separated 2x33, and at 1080p that is
+// not affordable on a VideoCore VI. At 1/8 resolution a small kernel behaves
+// like a large radius at full resolution, because each level has already
+// averaged everything between its taps. Dual-Kawase spends a handful of taps
+// per level over a chain whose total area is a fraction of the material
+// region — not of the screen.
+//
+// # Ebitengine samples nearest, always, and that changes the kernel
+//
+// The textbook dual-Kawase down pass is five taps and leans on the bilinear
+// filter to average the four texels each of them lands between. Ebitengine
+// does not offer that to a Kage shader. Its OpenGL backend sets
+// GL_TEXTURE_MIN_FILTER and GL_TEXTURE_MAG_FILTER to GL_NEAREST once, in
+// internal/graphicsdriver/opengl/context.go, and never changes them;
+// DrawTrianglesShaderOptions has no Filter field at all, because linear
+// filtering for the built-in draw path is generated into the built-in shader
+// rather than configured on the sampler. So imageSrc0At is a texel fetch.
+//
+// Written against a nearest sampler, the five tap kernel silently throws half
+// the source away: the centre tap of a two-to-one downsample lands exactly on
+// the boundary between two texels, and which one it picks is up to the driver.
+// The result aliases on any high contrast edge, and it aliases *differently*
+// depending on the level, which is the worst kind of blur artefact because it
+// crawls when the content scrolls.
+//
+// So the centre tap here is written out as the 2x2 box it was always supposed
+// to be — four fetches at the four texel centres the destination texel covers,
+// which is exactly what a bilinear fetch at the boundary would have returned
+// and is exact rather than approximate. The four diagonal taps stay single
+// fetches at texel centres two texels out. Eight fetches, no aliasing, and no
+// dependency on a sampler state this package cannot set.
+//
+// # Vertex layout
+//
+//	src0Pos  source position plus the source target's atlas origin
+//	custom.x tap scale, normally 1
+//	custom.y valid source width  in pixels
+//	custom.z valid source height in pixels
+//	custom.w unused
+//
+// No uniforms, for the reason glass.kage states at length.
+//
+// # Why every tap is clamped
+//
+// The intermediate targets are pooled and bucketed to a multiple of 64 pixels,
+// so a target is normally larger than the level written into it and the
+// surplus holds whatever the previous tenant left there. An unclamped tap at
+// the right hand edge would drag that in, and it would look exactly like a
+// real artefact of the blur.
+
+func tap(p vec2, origin vec2, size vec2) vec4 {
+	return imageSrc0At(clamp(p, vec2(0.5), size-vec2(0.5)) + origin)
+}
+
+func Fragment(dstPos vec4, src0Pos vec2, color vec4, custom vec4) vec4 {
+	origin := imageSrc0Origin()
+	o := custom.x
+	size := custom.yz
+	// The destination texel centre maps to an even source coordinate, which
+	// is the corner of the 2x2 block it covers.
+	p := src0Pos - origin
+
+	box := tap(p+vec2(-0.5, -0.5), origin, size)
+	box += tap(p+vec2(0.5, -0.5), origin, size)
+	box += tap(p+vec2(-0.5, 0.5), origin, size)
+	box += tap(p+vec2(0.5, 0.5), origin, size)
+
+	d := 2.5 * o
+	diag := tap(p+vec2(-d, -d), origin, size)
+	diag += tap(p+vec2(d, -d), origin, size)
+	diag += tap(p+vec2(-d, d), origin, size)
+	diag += tap(p+vec2(d, d), origin, size)
+
+	// box is a sum of four, so box/4 is the centre value and the classic
+	// weighting of four for the centre against one each for the diagonals is
+	// box + diag over eight.
+	return (box + diag) / 8.0
+}

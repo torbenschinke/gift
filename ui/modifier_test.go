@@ -99,7 +99,7 @@ var styledModifiers = []struct {
 	{"MinHeight", []reflect.Type{float32Type}},
 	{"MaxWidth", []reflect.Type{float32Type}},
 	{"MaxHeight", []reflect.Type{float32Type}},
-	{"Background", []reflect.Type{colorType}},
+	{"Background", []reflect.Type{backgroundType}},
 	{"Border", []reflect.Type{borderType}},
 	{"Shadow", []reflect.Type{shadowType}},
 	{"CornerRadius", []reflect.Type{float32Type}},
@@ -112,8 +112,14 @@ var (
 	boolType    = reflect.TypeOf(false)
 	insetsType  = reflect.TypeOf(geom.Insets{})
 	colorType   = reflect.TypeOf(ui.Color{})
-	borderType  = reflect.TypeOf(ui.Border{})
-	shadowType  = reflect.TypeOf(ui.Shadow{})
+	// Background takes an interface and not a Color, because the project
+	// plan, section 8, spells a material as
+	// ".Background(ui.Glass().Quality(ui.Adaptive))" and Go has no
+	// overloading. ui.Color still satisfies it, so ".Background(ui.RGB(...))"
+	// is unchanged; TestBackgroundAcceptsBothKinds pins that.
+	backgroundType = reflect.TypeOf((*ui.Background)(nil)).Elem()
+	borderType     = reflect.TypeOf(ui.Border{})
+	shadowType     = reflect.TypeOf(ui.Shadow{})
 )
 
 func TestViewsCarryTheSharedModifierSet(t *testing.T) {

@@ -524,7 +524,7 @@ func (v ImageView) MaxWidth(f float32) ImageView { v.setMaxWidth(f); return v }
 func (v ImageView) MaxHeight(f float32) ImageView { v.setMaxHeight(f); return v }
 
 // Background fills the bounds behind the picture and behind the placeholder.
-func (v ImageView) Background(c Color) ImageView { v.setBackground(c); return v }
+func (v ImageView) Background(c Background) ImageView { v.setBackgroundSpec(c); return v }
 
 // Border strokes the inside of the bounds after the picture was drawn.
 func (v ImageView) Border(b Border) ImageView { v.setBorder(b); return v }
