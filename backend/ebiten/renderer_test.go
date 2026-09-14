@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
 	"github.com/torbenschinke/gift/geom"
@@ -647,4 +648,20 @@ func TestSubmitOutsideFramePanics(t *testing.T) {
 	var l render.List
 	l.Reset()
 	r.Submit(&l)
+}
+
+// TestNominalForIsThePlansNumber: the project plan, section 13, states the
+// nominal interval of a sixty hertz display as 16.667 ms and the missed
+// threshold as 17.167 ms. The bare quotient is 16.666666 ms, which would put a
+// threshold in every report that does not match the one in the plan.
+func TestNominalForIsThePlansNumber(t *testing.T) {
+	if got := nominalFor(60); got != 16667*time.Microsecond {
+		t.Fatalf("nominalFor(60) = %v, want 16.667ms", got)
+	}
+	if got := nominalFor(0); got != 16667*time.Microsecond {
+		t.Fatalf("nominalFor(0) = %v, want the sixty hertz default", got)
+	}
+	if got := nominalFor(50); got != 20*time.Millisecond {
+		t.Fatalf("nominalFor(50) = %v, want 20ms", got)
+	}
 }

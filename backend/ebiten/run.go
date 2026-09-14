@@ -2,11 +2,13 @@ package ebiten
 
 import (
 	"log/slog"
+	"math"
 	"time"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
 	"github.com/torbenschinke/gift"
 	"github.com/torbenschinke/gift/geom"
+	"github.com/torbenschinke/gift/metrics"
 )
 
 // Config configures the window and the frame loop of [Run].
@@ -70,7 +72,8 @@ type Config struct {
 	NominalFrameInterval time.Duration
 
 	// IntervalTolerance is the slack added to the nominal interval before a
-	// frame counts as missed. Zero selects [DefaultIntervalTolerance].
+	// frame counts as missed. Zero selects
+	// [metrics.DefaultIntervalTolerance].
 	//
 	// It exists because the obvious thing is wrong. A strict comparison
 	// against the bare nominal interval reported 50 % of the frames of a
@@ -82,19 +85,14 @@ type Config struct {
 	IntervalTolerance time.Duration
 
 	// WarmupFrames is the number of leading frame intervals to discard. Zero
-	// selects [DefaultWarmupIntervals]; a negative value keeps all of them.
+	// selects [metrics.DefaultWarmupIntervals]; a negative value keeps all of
+	// them.
 	//
 	// Opening a window costs a first interval of well over a hundred
 	// milliseconds, and at the default history size a sixty second run can
 	// never evict it again. It is warm-up, not a missed frame, and the
 	// project plan, section 13, judges the scene and not the startup.
 	WarmupFrames int
-
-	// Frames receives the frame timings. If nil, [Run] creates one from the
-	// three fields above; pass your own when the measurement has to be read
-	// from outside. A supplied timer is used unchanged — Run adds no
-	// tolerance to a threshold somebody else already decided.
-	Frames *FrameTimer
 
 	// OnRenderer, if non nil, is called once with the renderer before the
 	// window opens. It is how an application reaches [RendererStats].
@@ -158,19 +156,6 @@ func Run(app *gift.App, cfg Config) error {
 	if idleAfter <= 0 {
 		idleAfter = 60
 	}
-	ft := cfg.Frames
-	if ft == nil {
-		nominal := cfg.NominalFrameInterval
-		if nominal <= 0 {
-			nominal = time.Second / time.Duration(tps)
-		}
-		ft = NewFrameTimerWith(FrameTimerOptions{
-			Nominal:   nominal,
-			Tolerance: cfg.IntervalTolerance,
-			Capacity:  DefaultFrameHistory,
-			Warmup:    cfg.WarmupFrames,
-		})
-	}
 
 	r, err := NewRenderer()
 	if err != nil {
@@ -180,10 +165,35 @@ func Run(app *gift.App, cfg Config) error {
 		cfg.OnRenderer(r)
 	}
 
+	// Measurement. Enabled is a compile time constant false without the
+	// giftmetrics tag, so in an ordinary build this whole block, the closure
+	// and every recording call below is dead code that the compiler removes.
+	// With the tag it still does nothing unless GIFT_METRICS says otherwise.
+	var rec *metrics.Recorder
+	if metrics.Enabled() {
+		nominal := cfg.NominalFrameInterval
+		if nominal <= 0 {
+			nominal = nominalFor(tps)
+		}
+		rec = metrics.Start(metrics.Options{
+			Timer: metrics.FrameTimerOptions{
+				Nominal:   nominal,
+				Tolerance: cfg.IntervalTolerance,
+				Capacity:  metrics.DefaultFrameHistory,
+				Warmup:    cfg.WarmupFrames,
+			},
+			App:      app,
+			Renderer: func() metrics.RendererStats { return rendererMetrics(r.Stats()) },
+			// Shaper stays nil. Nothing in a running application owns a
+			// text shaper yet; see metrics.ShaperStats for the seam.
+		})
+		defer func() { _ = rec.Close() }()
+	}
+
 	g := &game{
 		app:       app,
 		r:         r,
-		ft:        ft,
+		rec:       rec,
 		log:       cfg.Logger,
 		onUpdate:  cfg.OnUpdate,
 		activeTPS: tps,
@@ -214,11 +224,28 @@ func Run(app *gift.App, cfg Config) error {
 	return err
 }
 
+// nominalFor is the nominal frame interval a tick rate implies, rounded up to
+// a microsecond: 16.667 ms for sixty, which is the number the project plan,
+// section 13, states and the one the tolerance of 0.5 ms is added to. The bare
+// quotient is 16.666666 ms, and printing a threshold of 17.166666 ms next to a
+// plan that binds 17.167 ms invites the reader to wonder which of the two the
+// tool actually used.
+//
+// It is only the nominal value. What an interval is compared against is this
+// plus [Config.IntervalTolerance]; both and their sum are in every report.
+func nominalFor(tps int) time.Duration {
+	if tps <= 0 {
+		tps = 60
+	}
+	const step = float64(time.Microsecond)
+	return time.Duration(math.Ceil(float64(time.Second)/float64(tps)/step) * step)
+}
+
 // game is the Ebitengine side of the frame loop.
 type game struct {
 	app *gift.App
 	r   *Renderer
-	ft  *FrameTimer
+	rec *metrics.Recorder
 	log *slog.Logger
 
 	onUpdate func() error
@@ -245,7 +272,10 @@ func (g *game) Layout(outsideWidth, outsideHeight int) (int, int) {
 // violation that the core rejects with a panic, and it would also be wrong
 // arithmetic: several updates may precede one drawn frame.
 func (g *game) Update() error {
-	start := time.Now()
+	var start time.Time
+	if metrics.Enabled() {
+		start = time.Now()
+	}
 
 	if g.onUpdate != nil {
 		if err := g.onUpdate(); err != nil {
@@ -263,7 +293,10 @@ func (g *game) Update() error {
 		g.applyIdlePolicy(g.app.NeedsPaint())
 	}
 
-	g.ft.RecordUpdate(time.Since(start))
+	if metrics.Enabled() {
+		g.rec.RecordUpdate(time.Since(start))
+		g.rec.Tick()
+	}
 	return err
 }
 
@@ -292,11 +325,14 @@ func (g *game) applyIdlePolicy(changed bool) {
 // Everything the project plan, section 11, budgets per drawn frame is counted
 // here and not in Update, because Update runs at a different rate.
 func (g *game) Draw(screen *eb.Image) {
-	start := time.Now()
-	if !g.lastDraw.IsZero() {
-		g.ft.RecordInterval(start.Sub(g.lastDraw))
+	var start time.Time
+	if metrics.Enabled() {
+		start = time.Now()
+		if !g.lastDraw.IsZero() {
+			g.rec.RecordInterval(start.Sub(g.lastDraw))
+		}
+		g.lastDraw = start
 	}
-	g.lastDraw = start
 
 	b := screen.Bounds()
 	size := geom.Sz(float32(b.Dx()), float32(b.Dy()))
@@ -306,5 +342,27 @@ func (g *game) Draw(screen *eb.Image) {
 	g.r.Submit(g.app.Paint())
 	g.r.EndFrame()
 
-	g.ft.RecordDraw(time.Since(start))
+	if metrics.Enabled() {
+		g.rec.RecordDraw(time.Since(start))
+	}
+}
+
+// rendererMetrics converts the backend's own counters into the plain struct
+// the metrics package defines.
+//
+// The conversion sits here and not there on purpose: metrics must not import
+// a backend, or the backend could not call into it. See [metrics.RendererStats].
+func rendererMetrics(s RendererStats) metrics.RendererStats {
+	return metrics.RendererStats{
+		Frames:             s.Frames,
+		DrawCalls:          s.Batches,
+		Ops:                s.Ops,
+		SkippedNone:        s.SkippedNone,
+		SkippedTransparent: s.SkippedTransparent,
+		SkippedEmptyBounds: s.SkippedEmptyBounds,
+		SkippedEmptyClip:   s.SkippedEmptyClip,
+		SkippedOutsideClip: s.SkippedOutsideClip,
+		SkippedZeroStroke:  s.SkippedZeroStroke,
+		UnknownKinds:       s.UnknownKinds,
+	}
 }

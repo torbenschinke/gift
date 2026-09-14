@@ -1,0 +1,264 @@
+package metrics
+
+import (
+	"time"
+
+	"github.com/torbenschinke/gift"
+)
+
+// DefaultFrameHistory is the number of samples a [FrameTimer] keeps per
+// series. At sixty frames per second it covers a little over a minute, which
+// is the length of the scroll scenarios in the project plan, section 13.
+const DefaultFrameHistory = 4096
+
+// DefaultWarmupIntervals is the number of leading frame intervals a timer
+// discards by default. At sixty hertz it is the first second, which comfortably
+// covers the 123 to 148 ms startup interval that every real run shows.
+const DefaultWarmupIntervals = 60
+
+// DefaultMinInterval is the shortest distance between two draw callbacks that
+// is still counted as a frame. Anything at or below it is a pair of back to
+// back callbacks, not two presentations.
+const DefaultMinInterval = time.Millisecond
+
+// DefaultIntervalTolerance is the slack added to the nominal frame interval
+// before an interval counts as missed.
+//
+// The project plan, section 13, fixes it at 0.5 ms and records why: a strict
+// comparison against 16.67 ms reported 50 % of the frames of a well timed
+// measurement as missed, because no display runs at exactly its nominal rate.
+// 16.667 + 0.5 = 17.167 ms is the binding threshold at sixty hertz.
+const DefaultIntervalTolerance = 500 * time.Microsecond
+
+// DefaultNominalInterval is the interval a sixty hertz display is expected to
+// hold.
+const DefaultNominalInterval = 16667 * time.Microsecond
+
+// Stats is the distribution of one series of durations.
+//
+// Count is the number of samples the distribution was computed from, which is
+// at most the capacity of the underlying ring buffer. A series that never
+// received a sample has a Count of zero and zero valued durations.
+type Stats struct {
+	// Count is the number of samples in the window.
+	Count int
+	// Min is the smallest sample in the window.
+	Min time.Duration
+	// Mean is the arithmetic mean of the window.
+	Mean time.Duration
+	// P50, P95, P99 and P999 are the nearest rank percentiles of the window.
+	//
+	// Nearest rank means ceil(n*p), not round(n*p). The difference is not
+	// cosmetic: with the round variant that stood here before, a probe over
+	// n in 1..300 and p in {0.50, 0.95, 0.99} disagreed with the definition
+	// in 282 of 900 cases, always one sample low. Being systematically
+	// optimistic at the tail is the single worst property a tool can have
+	// when it is the thing deciding a p99 gate.
+	//
+	// P999 exists because the project plan, section 13, judges the cold cache
+	// scenario on "p99,9 < 33 ms". A window of 4096 samples resolves it to
+	// the fourth largest sample, which is coarse but is what the plan asks
+	// for; below about a thousand samples it degenerates into the maximum and
+	// should be read as such.
+	P50, P95, P99, P999 time.Duration
+	// Max is the largest sample in the window.
+	Max time.Duration
+}
+
+// FrameTimes is a snapshot of the three series a [FrameTimer] records.
+//
+// # What is and is not measured
+//
+// All three series are wall clock measurements taken on the CPU, around the
+// backend's callbacks. None of them is a GPU time measurement. Issuing a
+// draw call returns as soon as the command is queued; the driver executes it
+// later and the backend presents the result later still. The project plan,
+// section 11, says so explicitly, and the field names here keep the three
+// apart rather than adding them up into a single misleading "frame time".
+type FrameTimes struct {
+	// UpdateCPU is the time spent inside the update callback: input,
+	// build, reconciliation and layout. It is recorded per backend
+	// update, of which several may happen between two drawn frames.
+	UpdateCPU Stats
+
+	// DrawCPU is the time spent inside the draw callback: producing the
+	// display list and translating it into draw calls. It ends when the last
+	// command has been queued, not when the GPU has executed it and not when
+	// the frame has been presented.
+	DrawCPU Stats
+
+	// FrameInterval is the wall clock distance between the entry of two
+	// consecutive draw callbacks. This is the series that answers "did we
+	// hold sixty frames per second", because it contains everything the
+	// other two do not: GPU execution, the swap and the vsync wait, as far
+	// as the backend's loop exposes them.
+	FrameInterval Stats
+
+	// NominalInterval is the interval the display is expected to hold, for
+	// example 16.667 ms at sixty hertz. Tolerance is the slack added to it.
+	// TargetInterval is their sum and is the value samples are actually
+	// compared against.
+	//
+	// All three are carried in every snapshot because the project plan,
+	// section 13, requires it: a strict comparison against the bare nominal
+	// interval reported 50 % of the frames of a cleanly timed measurement as
+	// missed, so the binding threshold is 17.17 ms, and a number that is not
+	// printed next to its threshold cannot be checked by anybody.
+	NominalInterval time.Duration
+	Tolerance       time.Duration
+	TargetInterval  time.Duration
+
+	// MissedIntervals is the number of FrameInterval samples in the window
+	// that exceeded TargetInterval.
+	MissedIntervals int
+	// MissedRatio is MissedIntervals divided by FrameInterval.Count, or zero
+	// when there are no samples.
+	MissedRatio float64
+
+	// Warmup is the number of leading intervals that are discarded, and
+	// WarmupDropped is how many of them have been seen so far.
+	//
+	// Opening a window is not a frame. Real runs show a first interval of
+	// 123 to 148 ms while the driver, the swap chain and the shader upload
+	// settle. At 4096 samples the ring covers about 68 seconds, so a sixty
+	// second scenario can never evict that outlier: it sits in the window for
+	// the whole measurement, owns the maximum, and pushes the tail
+	// percentiles and the missed ratio away from what the scene actually did.
+	Warmup        int
+	WarmupDropped uint64
+
+	// MinInterval is the shortest distance between two draw callbacks that is
+	// still treated as a frame, and SubFrameIntervals counts the ones that
+	// were not.
+	//
+	// Ebitengine sometimes issues two Draw callbacks back to back, microseconds
+	// apart. Those are not two presentations, and counting them as frames
+	// deflates every percentile and dilutes the missed ratio with samples that
+	// no display ever showed. They are discarded and counted separately rather
+	// than silently averaged in; discarding without saying so would be the
+	// same kind of quiet optimism as the round-rank percentile.
+	MinInterval       time.Duration
+	SubFrameIntervals uint64
+
+	// Updates and Draws are the total numbers of callbacks since the timer
+	// was created. Unlike the series above they are not windowed, so
+	// Updates/Draws is the honest ratio of the two, which is the number the
+	// project plan, section 6, warns about.
+	Updates, Draws uint64
+}
+
+// FrameTimerOptions configures a [FrameTimer] in full. It is the constructor to
+// use when the defaults are not good enough, in particular when the display is
+// not at sixty hertz.
+type FrameTimerOptions struct {
+	// Nominal is the interval the display is expected to hold. Zero or less
+	// selects [DefaultNominalInterval], that is sixty hertz.
+	Nominal time.Duration
+	// Tolerance is the slack added to Nominal before an interval counts as
+	// missed. Zero selects [DefaultIntervalTolerance], the 0.5 ms the project
+	// plan, section 13, makes binding. A negative value means no tolerance at
+	// all; expect a strict comparison to report well timed frames as missed,
+	// which is the measurement the plan retracted.
+	Tolerance time.Duration
+	// Capacity is the number of samples kept per series. Zero or less selects
+	// [DefaultFrameHistory].
+	Capacity int
+	// Warmup is the number of leading frame intervals to discard. Zero or
+	// less selects [DefaultWarmupIntervals]; pass a negative value to keep
+	// every sample, which is what a test that wants exact arithmetic does.
+	Warmup int
+	// MinInterval is the shortest interval still treated as a frame. Zero
+	// selects [DefaultMinInterval]; a negative value keeps everything.
+	MinInterval time.Duration
+}
+
+// RendererStats are the renderer side numbers of one report.
+//
+// It is a plain struct and not an interface on purpose. This package must not
+// import a backend — that would be a cycle, since the backend calls in here —
+// so the backend converts its own counters into this shape. The skip reasons
+// are separate fields for the reason the backend keeps them separate: one
+// conflated number answered "the application asked for something invisible"
+// and "a container collapsed and its content vanished" with the same integer,
+// and a real layout defect survived a whole work unit behind it.
+type RendererStats struct {
+	// Frames is the number of completed frames.
+	Frames uint64
+	// DrawCalls is the number of draw calls issued.
+	DrawCalls uint64
+	// Ops is the number of operations that produced geometry.
+	Ops uint64
+
+	SkippedNone        uint64
+	SkippedTransparent uint64
+	// SkippedEmptyBounds is the one to watch: an operation whose own bounds
+	// are empty is a node that reported a zero extent.
+	SkippedEmptyBounds uint64
+	SkippedEmptyClip   uint64
+	SkippedOutsideClip uint64
+	SkippedZeroStroke  uint64
+	UnknownKinds       uint64
+}
+
+// Skipped is the total number of skipped operations.
+func (s RendererStats) Skipped() uint64 {
+	return s.SkippedNone + s.SkippedTransparent + s.SkippedEmptyBounds +
+		s.SkippedEmptyClip + s.SkippedOutsideClip + s.SkippedZeroStroke
+}
+
+// Accounted is Ops + Skipped + UnknownKinds and must equal the number of
+// operations submitted.
+func (s RendererStats) Accounted() uint64 { return s.Ops + s.Skipped() + s.UnknownKinds }
+
+// ShaperStats are the text shaping cache numbers of one report.
+//
+// # This is a seam, not a feature
+//
+// It is deliberately not wired up. internal/text has a Shaper with exactly
+// these counters, but as of WU-G0 nothing outside its own tests constructs
+// one: ui has no Text view yet, so there is no shaper in a running
+// application to take a snapshot of. Reaching into the package to invent one
+// would produce a report field that measures a shaper nobody shapes with.
+//
+// When ui.Text arrives in WU-G, whoever owns the shaper sets
+// [Options.Shaper] and the field starts being filled. Until then Present is
+// false and the field is omitted from the report.
+type ShaperStats struct {
+	// Present says whether a shaper supplied these numbers at all.
+	Present bool
+	// Hits and Misses are the shaping cache outcomes. The project plan,
+	// section 11, makes the distinction binding: layout is allocation free
+	// for text it has already seen, and a miss allocates about five
+	// kilobytes inside harfbuzz.
+	Hits, Misses uint64
+	// Evictions is the number of entries dropped by the byte budget.
+	Evictions uint64
+	// Bytes is the current size of the cache.
+	Bytes uint64
+}
+
+// Options configures a [Recorder].
+//
+// Everything in here is supplied by the backend, which knows the display and
+// owns the renderer. Whether a report is produced at all, how often and
+// where it goes is not in here: that is read from the environment, because a
+// library must not take command line flags away from its host program. See
+// the package documentation.
+type Options struct {
+	// Timer configures the frame timer.
+	Timer FrameTimerOptions
+
+	// App supplies [gift.Diagnostics]. It may be nil.
+	App *gift.App
+
+	// Renderer supplies the renderer counters. It may be nil.
+	//
+	// It is a function and not a struct because the counters are read at
+	// report time, out of band, and the backend is the only thing that
+	// knows how to reach them safely.
+	Renderer func() RendererStats
+
+	// Shaper supplies the text shaping counters. It may be nil, and as of
+	// WU-G0 it always is; see [ShaperStats].
+	Shaper func() ShaperStats
+}

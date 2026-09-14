@@ -1,4 +1,4 @@
-package main
+package stress
 
 import (
 	"testing"
@@ -11,8 +11,8 @@ import (
 
 // rowRects returns the bounds of the row plates of one painted frame.
 //
-// A row plate is the only rounded fill in this scene that carries rowBg or
-// rowHot, so it can be recognised from the display list without the test
+// A row plate is the only rounded fill in this scene that carries RowBg or
+// RowHot, so it can be recognised from the display list without the test
 // knowing anything about the tree.
 func rowRects(l *render.List) []geom.Rect {
 	var out []geom.Rect
@@ -20,7 +20,7 @@ func rowRects(l *render.List) []geom.Rect {
 		if op.Kind != render.OpFillRoundRect {
 			continue
 		}
-		if op.Color != rowBg && op.Color != rowHot {
+		if op.Color != RowBg && op.Color != RowHot {
 			continue
 		}
 		out = append(out, op.Bounds)
@@ -30,8 +30,8 @@ func rowRects(l *render.List) []geom.Rect {
 
 func paintScene(t *testing.T, rows, cells int, size geom.Size) (*gift.App, *render.List) {
 	t.Helper()
-	sc := newScene(rows, cells)
-	a := gift.New(gift.Options{Root: sc.root})
+	sc := New(rows, cells)
+	a := gift.New(gift.Options{Root: sc.Root})
 	if err := a.Update(size); err != nil {
 		t.Fatal(err)
 	}
@@ -43,10 +43,10 @@ func paintScene(t *testing.T, rows, cells int, size geom.Size) (*gift.App, *rend
 // somebody has to eyeball in a window.
 //
 // The defect it pins: a stack handed later children a shrinking remainder as
-// their main axis maximum. At -rows 40 -cells 12 thirty of the forty rows
-// reported a height of zero while their own fixed size cells kept their real
-// extents, so the scene drew ten rows and a hundred and twenty pixel pile of
-// unclipped debris. Forty rows of forty do not fit into this window and are
+// their main axis maximum. At forty rows of twelve cells thirty of the forty
+// rows reported a height of zero while their own fixed size cells kept their
+// real extents, so the scene drew ten rows and a hundred and twenty pixel pile
+// of unclipped debris. Forty rows of forty do not fit into this window and are
 // not supposed to — but they must be forty honest rows in order, not ten.
 func TestRowsNeitherCollapseNorOverlap(t *testing.T) {
 	const rows, cells = 40, 12
@@ -115,9 +115,9 @@ func TestOverflowIsReportedAndOnlyWhereItIsReal(t *testing.T) {
 	}
 }
 
-// TestHeaderPlateSpelling backs the corrected comment on [scene.header]: since
-// WU-D a Box is greedy on every bounded axis, so the spelling the old comment
-// said "draws nothing at all" in fact paints the plate.
+// TestHeaderPlateSpelling backs the comment on Scene.header: since WU-D a Box
+// is greedy on every bounded axis, so the spelling an older comment said
+// "draws nothing at all" in fact paints the plate.
 func TestHeaderPlateSpelling(t *testing.T) {
 	plate := ui.RGB(1, 2, 3)
 	v := ui.ZStack(ui.Box().Background(plate), ui.Box().Frame(10, 10).Background(ui.RGB(9, 9, 9))).
@@ -135,5 +135,52 @@ func TestHeaderPlateSpelling(t *testing.T) {
 	}
 	if got, want := ops[0].Bounds, geom.RcXYWH(0, 0, 200, 60); got != want {
 		t.Fatalf("the plate is %v, want the whole ZStack %v", got, want)
+	}
+}
+
+// TestSceneIsSeveralHundredNodes guards the reason this fixture exists. The
+// project plan, section 12, criterion 2, wants a non trivial scene; a scene
+// that quietly shrank to a dozen nodes would still pass every test above and
+// would measure nothing.
+func TestSceneIsSeveralHundredNodes(t *testing.T) {
+	a, _ := paintScene(t, 12, 14, geom.Sz(1280, 720))
+	if n := a.Diagnostics().LiveNodes; n < 300 {
+		t.Fatalf("LiveNodes = %d at the default parameters, want several hundred", n)
+	}
+}
+
+// BenchmarkPaint is the frame path without a build: the display list of an
+// unchanged tree. The project plan, section 12, criterion 3, wants 0 B/op
+// here after warm-up.
+func BenchmarkPaint(b *testing.B) {
+	sc := New(12, 14)
+	a := gift.New(gift.Options{Root: sc.Root})
+	if err := a.Update(geom.Sz(1280, 720)); err != nil {
+		b.Fatal(err)
+	}
+	a.Paint()
+	b.ReportAllocs()
+	for b.Loop() {
+		a.Paint()
+	}
+}
+
+// BenchmarkUpdatePaint includes the update, which rebuilds only what the tick
+// invalidated. It is the one that shows what the memoised rows buy.
+func BenchmarkUpdatePaint(b *testing.B) {
+	sc := New(12, 14)
+	a := gift.New(gift.Options{Root: sc.Root})
+	size := geom.Sz(1280, 720)
+	if err := a.Update(size); err != nil {
+		b.Fatal(err)
+	}
+	a.Paint()
+	b.ReportAllocs()
+	for b.Loop() {
+		sc.Tick()
+		if err := a.Update(size); err != nil {
+			b.Fatal(err)
+		}
+		a.Paint()
 	}
 }

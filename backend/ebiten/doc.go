@@ -44,21 +44,17 @@
 //
 // # Measurement
 //
-// [FrameTimer] records the three timings the project plan, sections 11 and 13,
-// insist on keeping apart: CPU time in the update callback, CPU time in the
-// draw callback and the wall clock distance between two draw callbacks. None
-// of them is a GPU time.
+// Measurement lives in the metrics package and not here. This package is the
+// Ebitengine adapter; 429 lines of ring buffers and percentiles were not that,
+// and the project plan, section 3, gives this package a different job.
 //
-// Two things are excluded from the interval series and reported separately,
-// because including them answers a different question than the one the plan
-// asks. The first [DefaultWarmupIntervals] intervals are warm-up: opening a
-// window costs an interval of well over a hundred milliseconds, and the
-// default history is large enough that a sixty second run can never evict it.
-// Intervals at or below [DefaultMinInterval] are two draw callbacks back to
-// back rather than two presentations. An interval counts as missed when it
-// exceeds the nominal interval plus [DefaultIntervalTolerance]; the plan,
-// section 13, binds that at 0.5 ms, giving 17.17 ms at sixty hertz, after a
-// strict comparison reported half of a cleanly timed measurement as missed.
+// What remains here is the wiring. [Run] starts a [metrics.Recorder], times
+// the two callbacks, records the interval between drawn frames and hands the
+// renderer counters over as [metrics.RendererStats]. Every one of those steps
+// is behind metrics.Enabled, which is a compile time constant false without
+// the giftmetrics build tag, so an ordinary build does not even call
+// time.Now. An application therefore gets a measurement by rebuilding with
+// -tags giftmetrics and setting GIFT_METRICS=1, and writes no code for it.
 //
 // # Testability
 //

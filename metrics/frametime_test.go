@@ -1,4 +1,6 @@
-package ebiten
+//go:build giftmetrics
+
+package metrics
 
 import (
 	"math"
