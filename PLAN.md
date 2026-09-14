@@ -538,7 +538,7 @@ Materialregion begrenzt.
 | --- | --- | --- |
 | Border / Radius | Analytische Geometrie im gemeinsamen Shape-Shader | Kein Offscreen-Bild pro Widget |
 | Shadow | Wiederverwendbare, gecachte Formmaske; Blur nur bei Form-/Parameterwechsel | Cache nach Bytes, Schattenumfang und Blur-Radius begrenzen |
-| Glass Reduced | Ein Shader-Pass, kein Target | Kein echter Hintergrund-Blur |
+| Glass Reduced | Regionskopie + Composite-Pass | Kein echter Hintergrund-Blur |
 | Glass Full | Regionskopie + Dual-Kawase + Composite | Experimentell, Flaechen- und Speicherbudget je Frame |
 
 Die Display-Liste muss Materialregionen, Z-Reihenfolge und
@@ -783,8 +783,15 @@ Kein globales GC-Abschalten, keine unsafe-Arena als Ausgangspunkt.
   Keine vorsorgliche eigene Atlas-Engine ohne Messung.
 - Keine Vollbild-Textur pro Widget, kein GPU-Readback im Framepfad, kein globales
   Umsortieren transparenter Inhalte nur zur Verringerung von Draw Calls.
-  Die Glass-Regionskopie aus Abschnitt 8 ist die einzige zugelassene Ausnahme
-  und auf die Materialregion begrenzt.
+  **Korrigiert nach WU-S.** Es gibt zwei zugelassene Ausnahmen, nicht eine.
+  Die Regionskopie aus Abschnitt 8 ist auf die Materialregion begrenzt. Dazu
+  kommt ein **bildschirmgrosses Szenen-Target**, weil Ebitengine den Screen
+  nicht als Shader-Quelle zulaesst und die Backdrop-Quelle deshalb erst
+  erzeugt werden muss. Es ist eine Textur **je Fenster**, nicht je Widget, und
+  wird nur bezahlt, solange ein Material sichtbar ist - nicht bloss, solange
+  eines in der Display-Liste steht. Wer diesen Unterschied nicht erzwingt,
+  zahlt bei 1080p acht Megabyte, ein Clear und einen Vollbild-Blit je Frame
+  fuer ein Panel, das niemand sieht.
 - GOMEMLIMIT begrenzt nicht GPU-/Treiber-/Gesamtprozessspeicher. Gerade beim Pi
   konkurrieren CPU und GPU um gemeinsamen physischen Speicher.
 - Vollredraw jedes Frames ist die Basislast. Fuellratenprobleme lassen sich nicht
@@ -860,6 +867,13 @@ gecachte Shadows integrieren; Paint-Bounds und Clip-Semantik testen.
 Ergebnis: example-counter und erweiterte Layout-Demo, einschliesslich
 Tastatur- und Touch-Bedienung. Noch kein Texteditor, kein Bidi, kein
 Font-Fallback.
+
+Praezisierung nach Review-Gate 6: die beiden sind **nicht** zwei Beispiele.
+Der Counter ist das Beispiel und heisst auch so; die belastbare Layout-Demo
+ist `internal/stress` mit `cmd/gift-stress`, wo Parametrisierung der Zweck ist
+und headless-Assertions moeglich sind. Ein zweites Schaubeispiel, das nur
+Rechtecke zeigt, waere fuer einen Leser wertlos gewesen - das war der
+urspruengliche Zustand von `example-layout` und der Grund, es zu ersetzen.
 
 ### Schritt 3: Galerie ohne I/O
 
