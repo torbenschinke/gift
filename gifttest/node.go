@@ -145,6 +145,76 @@ func (n Node) target(what string) Node {
 	return Node{}
 }
 
+// aim returns the point an action on n injects its pointer event at, after
+// checking that a hit test of that point really lands on n.
+//
+// # Why this check exists
+//
+// Without it every action in this package was a lie by omission. The action
+// computes the centre of the intended node, injects a pointer event there and
+// gift dispatches it to whatever its own hit test finds — which, for a node
+// covered by a later sibling, by an overlay, or by a transparent full bleed
+// [ui.Box] somebody put in a ZStack, is a different node entirely. The
+// harness then reported nothing at all: the covering control activated, the
+// assertion about the intended one failed three lines later with "the counter
+// is 0", and the diagnosis pointed at the application instead of at the test.
+//
+// So the aim is verified. The point is hit tested with the very dispatcher
+// [gift.App] uses for a real pointer event, and anything other than the
+// intended node is a failure that names both.
+//
+// # The deliberate opt out
+//
+// Clicking through something on purpose is a real thing to want — asserting
+// that an overlay swallows the click underneath it, for instance. That is what
+// [Harness.ClickAt], [Harness.PressAt], [Harness.ReleaseAt] and
+// [Harness.MoveTo] are for: they take a coordinate, they are documented as the
+// coordinate-is-the-subject escape hatch, and they perform no aim check
+// because there is no intended node to check against. [Harness.At] answers
+// "what is actually at this point" without dispatching anything.
+func (n Node) aim(what string) geom.Point {
+	n.h.t.Helper()
+	p := n.Center()
+	got, ok := n.h.app.HitTest(p)
+	switch {
+	case ok && got == n.ref:
+		return p
+	case !ok:
+		n.h.t.Fatalf("gifttest: %s aimed at %s,\n"+
+			"but a hit test at its centre (%g, %g) reaches no interactive node at all.\n"+
+			"The node is covered by a clip, or an ancestor clips it away; the event would have "+
+			"gone nowhere.\n"+
+			"Use Harness.%s if the coordinate is what the test is about.\n%s",
+			what, n.describe(), p.X, p.Y, coordinateVerb(what), n.h.Dump())
+	default:
+		other := Node{h: n.h, ref: got}
+		n.h.t.Fatalf("gifttest: %s aimed at %s,\n"+
+			"but a hit test at its centre (%g, %g) reaches %s instead.\n"+
+			"The intended node is covered at that point, so the event would have gone to the "+
+			"wrong control and this test would have passed while the application was broken.\n"+
+			"If the click through is the subject, use Harness.%s with an explicit coordinate, or "+
+			"assert on Harness.At(...) directly.\n%s",
+			what, n.describe(), p.X, p.Y, other.describe(),
+			coordinateVerb(what), n.h.dumpMarkedRefs(n.ref, got))
+	}
+	return p
+}
+
+// coordinateVerb names the coordinate taking counterpart of an action, for the
+// opt out sentence of [Node.aim].
+func coordinateVerb(what string) string {
+	switch what {
+	case "Hover":
+		return "MoveTo"
+	case "Press":
+		return "PressAt"
+	case "Drag", "DragTo", "Swipe":
+		return "PressAt/MoveTo/ReleaseAt"
+	default:
+		return "ClickAt"
+	}
+}
+
 // --- pointer actions --------------------------------------------------------
 
 // Click moves the mouse onto the node, presses and releases it.
@@ -156,7 +226,7 @@ func (n Node) target(what string) Node {
 func (n Node) Click() Node {
 	n.h.t.Helper()
 	t := n.target("Click")
-	p := t.Center()
+	p := t.aim("Click")
 	n.h.beginInput()
 	n.h.app.PointerMove(gift.MousePointer, gift.PointerMouse, p)
 	n.h.app.PointerDown(gift.MousePointer, gift.PointerMouse, p)
@@ -174,7 +244,7 @@ func (n Node) Click() Node {
 func (n Node) Press() Node {
 	n.h.t.Helper()
 	t := n.target("Press")
-	p := t.Center()
+	p := t.aim("Press")
 	n.h.beginInput()
 	n.h.app.PointerMove(gift.MousePointer, gift.PointerMouse, p)
 	n.h.app.PointerDown(gift.MousePointer, gift.PointerMouse, p)
@@ -195,7 +265,7 @@ func (n Node) Release() Node {
 func (n Node) Hover() Node {
 	n.h.t.Helper()
 	t := n.target("Hover")
-	n.h.MoveTo(t.Center())
+	n.h.MoveTo(t.aim("Hover"))
 	return n
 }
 
@@ -208,7 +278,7 @@ func (n Node) Hover() Node {
 func (n Node) Tap() Node {
 	n.h.t.Helper()
 	t := n.target("Tap")
-	p := t.Center()
+	p := t.aim("Tap")
 	n.h.beginInput()
 	n.h.app.PointerDown(touchID, gift.PointerTouch, p)
 	n.h.app.PointerUp(touchID, gift.PointerTouch, p)
@@ -229,7 +299,7 @@ func (n Node) Tap() Node {
 func (n Node) LongPress() Node {
 	n.h.t.Helper()
 	t := n.target("LongPress")
-	p := t.Center()
+	p := t.aim("LongPress")
 	n.h.beginInput()
 	n.h.app.PointerDown(touchID, gift.PointerTouch, p)
 	n.h.Settle()
@@ -248,7 +318,11 @@ func (n Node) LongPress() Node {
 func (n Node) Drag(dst Node) Node {
 	n.h.t.Helper()
 	d := dst.target("Drag")
-	return n.DragTo(d.Center())
+	// Both ends are aimed at a node, so both are checked. A drop onto a
+	// covered target is the same defect as a click on a covered button.
+	to := d.aim("Drag")
+	n.h.t.Helper()
+	return n.dragTo("Drag", to)
 }
 
 // DragTo presses the mouse on this node, moves it to the device space point p
@@ -258,8 +332,15 @@ func (n Node) Drag(dst Node) Node {
 // waits for [gift.DragSlop] sees a plausible path rather than a teleport.
 func (n Node) DragTo(p geom.Point) Node {
 	n.h.t.Helper()
-	t := n.target("DragTo")
-	from := t.Center()
+	return n.dragTo("DragTo", p)
+}
+
+// dragTo is the body of [Node.DragTo] and [Node.Drag], parameterised with the
+// name the failures report.
+func (n Node) dragTo(what string, p geom.Point) Node {
+	n.h.t.Helper()
+	t := n.target(what)
+	from := t.aim(what)
 	n.h.beginInput()
 	n.h.app.PointerMove(gift.MousePointer, gift.PointerMouse, from)
 	n.h.app.PointerDown(gift.MousePointer, gift.PointerMouse, from)
@@ -283,7 +364,7 @@ func (n Node) DragTo(p geom.Point) Node {
 func (n Node) Swipe(d geom.Point) Node {
 	n.h.t.Helper()
 	t := n.target("Swipe")
-	from := t.Center()
+	from := t.aim("Swipe")
 	to := from.Add(d)
 	n.h.beginInput()
 	n.h.app.PointerDown(touchID, gift.PointerTouch, from)

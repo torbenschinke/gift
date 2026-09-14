@@ -108,6 +108,166 @@ func TestShadowMatchesTheGaussianItClaimsToBe(t *testing.T) {
 // not the same formula the shader uses.
 func phi(x float64) float64 { return 0.5 * (1 + math.Erf(x/math.Sqrt2)) }
 
+// --- the corner, against a real reference -----------------------------------
+
+// The test above deliberately samples far from the corners, and for a whole
+// work unit that was the entire pixel level evidence for the shadow: the one
+// place the shader is *not* exact was the one place nothing looked. The review
+// convolved the true indicator and found a corner error of up to 0.25 of the
+// shadow alpha where the shader's own comment claimed "roughly two per cent" —
+// wrong by an order of magnitude, and worst exactly where the project plan's
+// own CornerRadius(18).Blur(16) example sits.
+//
+// So the corner gets a reference and a tolerance.
+
+// referenceCoverage is the exact convolution of the indicator function of a
+// rounded box with a 2D Gaussian, at the local point p relative to the centre.
+//
+// The x integral is closed form, because every horizontal row of a rounded box
+// is one interval and the Gaussian integral over an interval is a difference
+// of two Phis. Only the y integral is numeric. That is what makes this
+// accurate to about 1e-4 with a few thousand samples, which is an order of
+// magnitude finer than the error it has to measure.
+func referenceCoverage(px, py float64, half [2]float64, radius, sigma float64) float64 {
+	const n = 8000
+	ext := 6 * sigma
+	h := 2 * ext / n
+	var sum, wsum float64
+	for i := 0; i < n; i++ {
+		qy := py - ext + (float64(i)+0.5)*h
+		d := py - qy
+		w := math.Exp(-d * d / (2 * sigma * sigma))
+		wsum += w
+		hw, ok := rowHalfWidth(qy, half, radius)
+		if !ok {
+			continue
+		}
+		sum += w * (phi((hw-px)/sigma) + phi((hw+px)/sigma) - 1)
+	}
+	return sum / wsum
+}
+
+// rowHalfWidth is the half extent of a rounded box at height qy, and whether
+// the shape reaches that row at all.
+func rowHalfWidth(qy float64, half [2]float64, radius float64) (float64, bool) {
+	a := math.Abs(qy)
+	switch {
+	case a > half[1]:
+		return 0, false
+	case a <= half[1]-radius:
+		return half[0], true
+	default:
+		d := a - (half[1] - radius)
+		return half[0] - radius + math.Sqrt(math.Max(radius*radius-d*d, 0)), true
+	}
+}
+
+// TestShadowCornerMatchesTheConvolution is the test the previous work unit
+// should have written: it samples the corner quadrant, where the shader is
+// approximate, and holds it to a tolerance derived from a real reference
+// rather than from a comment.
+//
+// The tolerances are per case and are the measured error of the shader plus a
+// little room, not a number chosen to make the test green. They are the
+// numbers in shadowCoverage's table in shape.kage, and if that table drifts
+// this test says so.
+func TestShadowCornerMatchesTheConvolution(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		half   [2]float64
+		radius float64
+		blur   float32
+		// tol is the maximum absolute coverage error allowed over the corner
+		// quadrant.
+		tol float64
+	}{
+		// A sharp corner. This used to be the worst case at 0.25; the
+		// separable term makes it exact, so the tolerance is tight enough
+		// that losing that term fails here immediately.
+		{"sharp corner", [2]float64{40, 15}, 0, 16, 0.06},
+		// A small radius relative to sigma, which the project plan's own
+		// example is not but a card with a 4 pixel radius and a soft shadow
+		// is.
+		{"small radius", [2]float64{50, 50}, 4, 32, 0.06},
+		// The regime where neither closed form is right. This is the honest
+		// upper bound of the method.
+		{"radius near sigma", [2]float64{50, 50}, 8, 16, 0.16},
+		// The project plan, section 8: CornerRadius(18), Blur(16).
+		{"the plan's example", [2]float64{50, 20}, 18, 16, 0.12},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sigma := float64(tc.blur) * 0.5
+			// The target is large enough to hold the shape plus three sigma
+			// of falloff on every side, so nothing is cut off by the edge.
+			pad := 3*sigma + 4
+			w := int(2*tc.half[0] + 2*pad)
+			h := int(2*tc.half[1] + 2*pad)
+			cx, cy := float64(w)/2, float64(h)/2
+			dst := drawList(t, w, h, color.RGBA{255, 255, 255, 255}, func(l *render.List) {
+				l.Add(render.Op{
+					Kind: render.OpShadow,
+					Bounds: geom.Rc(
+						float32(cx-tc.half[0]), float32(cy-tc.half[1]),
+						float32(cx+tc.half[0]), float32(cy+tc.half[1])),
+					CornerRadius: float32(tc.radius),
+					Blur:         tc.blur,
+					Color:        render.RGB(0, 0, 0),
+				})
+			})
+
+			var worst, atX, atY float64
+			// The corner quadrant: from the centre out to the far edge of the
+			// falloff, on both axes.
+			for y := int(cy); y < h; y++ {
+				for x := int(cx); x < w; x++ {
+					px, py := float64(x)+0.5-cx, float64(y)+0.5-cy
+					want := referenceCoverage(px, py, tc.half, tc.radius, sigma)
+					got := 1 - float64(dst.At(x, y).(color.RGBA).R)/255
+					if e := math.Abs(got - want); e > worst {
+						worst, atX, atY = e, px, py
+					}
+				}
+			}
+			t.Logf("half=%v radius=%g sigma=%g: worst corner error %.4f at (%.1f, %.1f)",
+				tc.half, tc.radius, sigma, worst, atX, atY)
+			if worst > tc.tol {
+				t.Errorf("the worst coverage error over the corner quadrant is %.4f at (%.1f, %.1f), "+
+					"tolerance %.4f.\nThe shader's shadow no longer matches the Gaussian it claims "+
+					"to be; see the measured table on shadowCoverage in shape.kage.",
+					worst, atX, atY, tc.tol)
+			}
+		})
+	}
+}
+
+// TestShadowEdgeStaysExact is the other half of the corner test: the
+// separable correction must not disturb the straight edge, where the signed
+// distance answer is the exact one.
+func TestShadowEdgeStaysExact(t *testing.T) {
+	half := [2]float64{50, 50}
+	const sigma = 8.0
+	dst := drawList(t, 148, 148, color.RGBA{255, 255, 255, 255}, func(l *render.List) {
+		l.Add(render.Op{
+			Kind: render.OpShadow, Bounds: geom.Rc(24, 24, 124, 124),
+			CornerRadius: 18, Blur: 16, Color: render.RGB(0, 0, 0),
+		})
+	})
+	var worst float64
+	for y := 74; y < 148; y++ {
+		px, py := 0.5, float64(y)+0.5-74
+		want := referenceCoverage(px, py, half, 18, sigma)
+		got := 1 - float64(dst.At(74, y).(color.RGBA).R)/255
+		if e := math.Abs(got - want); e > worst {
+			worst = e
+		}
+	}
+	t.Logf("worst error down the middle of an edge: %.4f", worst)
+	if worst > 0.01 {
+		t.Errorf("the middle of an edge is off by %.4f; that column is a half plane and the "+
+			"shader is supposed to be exact there", worst)
+	}
+}
+
 // TestShadowSitsBehindTheBackground is the drawing order of the project plan,
 // section 8, verified in pixels rather than in display list indices: the
 // shadow must not darken the opaque fill that comes after it.

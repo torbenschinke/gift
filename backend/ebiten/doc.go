@@ -48,14 +48,26 @@
 // prescribes "analytische Geometrie im gemeinsamen Shape-Shader" one row above,
 // for the border and the radius, on exactly this reasoning.
 //
-// The price is stated rather than hidden. The analytic form is the Gaussian
-// cumulative distribution of the signed distance, which is exact along a
-// straight edge and about two per cent too full inside a corner arc, where the
-// true convolution is a quarter plane integral rather than a half plane one.
+// The price is stated rather than hidden, and it is larger than this
+// paragraph used to claim. The analytic form is exact along a straight edge —
+// measured at 0.002 of the alpha down the middle of one — and exact at the
+// corner of a sharp rectangle, because that corner separates into a product of
+// two one dimensional answers and the shader now uses it. It is *not* exact at
+// the corner of a rounded box, where the true convolution is neither. Measured
+// against a numerically convolved reference, the corner error reaches 0.13 of
+// the shadow alpha and is largest when sigma and the radius are comparable.
+// This comment previously said "about two per cent", which was wrong by an
+// order of magnitude and had survived because the one pixel test that could
+// have caught it deliberately sampled away from the corners; see
+// TestShadowCornerMatchesTheConvolution and the measured table on
+// shadowCoverage in shape.kage.
+//
 // There is no cache, so there is nothing to hit, miss, upload or evict, and
-// [RendererStats] has no shadow cache counters for that reason; what a shadow
-// costs is the fill rate of its own quad, which is the shape grown by three
-// standard deviations. See shape.kage and [render.Shadow].
+// [RendererStats] has no shadow cache counters for that reason. What a shadow
+// costs is fill rate: its quad is the shape grown by [render.ShadowSigmas]
+// standard deviations on every side, so a 100x40 button with Blur 16 shades a
+// 148x88 quad, 3.3 times its own area. See [RendererStats.ShadowOps],
+// shape.kage and [render.Shadow].
 //
 // Nothing allocates an image, a texture or a render target per widget, per
 // operation or per frame, which is what the project plan, sections 8 and 11,
@@ -84,6 +96,17 @@
 // practice: the general path is covered by unit tests but has never been
 // exercised end to end against a GPU. It is implemented anyway, because
 // scrolling will need it.
+//
+// One consequence is worth stating rather than implying. Shapes are shaded
+// from a distance field that this package rescales into device pixels, so a
+// scaling transform is correct for them. *Glyphs* are not: the atlas holds a
+// bitmap rasterised at the glyph's nominal size, and a scale would stretch it
+// under a nearest filter, giving text the wrong weight. The mapping from atlas
+// pixel to screen pixel is one to one only because every transform gift emits
+// is the identity — it is not one to one by construction. Making it so under a
+// scale means putting the effective size in the atlas key and asking
+// internal/text to rasterise at that size; see [Renderer.appendGlyphQuad],
+// where the note sits next to the code that would have to change.
 //
 // # Measurement
 //

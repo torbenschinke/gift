@@ -56,10 +56,13 @@ type Renderer struct {
 	// glyphOpts are the draw options of the glyph material. The colour scale
 	// is premultiplied because render.Color is, and the atlas holds
 	// premultiplied white coverage, so the multiply is exact; see
-	// [GlyphAtlas]. The filter is nearest, which is not a quality compromise
-	// but the correct choice: glyph positions are whole pixels and the atlas
-	// rectangle maps one to one onto the destination, so any interpolation
-	// would only blur a mapping that is already exact.
+	// [GlyphAtlas]. The filter is set to nearest in [NewRenderer], explicitly
+	// rather than by relying on it being the zero value of eb.Filter, and it
+	// is not a quality compromise but the correct choice: glyph positions are
+	// whole pixels and the atlas rectangle maps one to one onto the
+	// destination, so any interpolation would only blur a mapping that is
+	// already exact. See [Renderer.appendGlyphQuad] for the assumption that
+	// rests on it.
 	glyphOpts eb.DrawTrianglesOptions
 
 	// dst is the image of the frame in progress. It is set by [Renderer.SetTarget].
@@ -162,6 +165,11 @@ func NewRenderer() (*Renderer, error) {
 	}
 	r := &Renderer{shader: sh, atlas: NewGlyphAtlas(AtlasConfig{})}
 	r.glyphOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
+	// Set explicitly. It was already nearest, but only because
+	// eb.FilterNearest happens to be the zero value of eb.Filter, and a
+	// comment two fields up claimed the choice was deliberate. One of those
+	// two statements had to become true.
+	r.glyphOpts.Filter = eb.FilterNearest
 	// Grown once, reused forever. The numbers are a starting point, not a
 	// limit; a larger scene grows them on its first frames and never again.
 	r.verts = make([]eb.Vertex, 0, 4096)
@@ -472,6 +480,21 @@ func (r *Renderer) appendGlyphs(l *render.List, op render.Op) {
 // which is everything gift produces. The clip is a rectangle intersection in
 // device space and the texture coordinates follow from a linear interpolation
 // inside it.
+//
+// # The scale is assumed to be one
+//
+// The destination rectangle is the atlas rectangle mapped through xf, so a
+// scale other than one stretches a bitmap that was rasterised at the glyph's
+// nominal size. Under a nearest filter that is not a smooth resample: it
+// duplicates and drops rows of coverage, and the text comes out the wrong
+// weight. The correct answer is to rasterise at the *effective* size, which
+// means folding the device scale into the atlas key — a change to
+// [glyphKey] and to what internal/text is asked for, not to this function.
+//
+// Nothing in gift produces such a transform today. Every transform is the
+// identity; see the package documentation, "Clipping and transforms". This is
+// recorded here so that the first thing to push a scale finds the note rather
+// than the artefact.
 func (r *Renderer) appendGlyphQuad(dst, src, clip geom.Rect, xf geom.Affine2D, col render.Color) bool {
 	dev := geom.Rc(
 		xf.A*dst.Min.X+xf.TX, xf.D*dst.Min.Y+xf.TY,
@@ -906,9 +929,20 @@ type RendererStats struct {
 	//
 	// There is deliberately no cache hit ratio beside these. gift evaluates
 	// the Gaussian analytically in the shape shader, so a shadow allocates no
-	// texture, uploads no pixels and evicts nothing; the only cost it has is
-	// the fill rate of its own quad, which is what ShadowOps and the extent
-	// of the operations together describe. See the package documentation.
+	// texture, uploads no pixels and evicts nothing.
+	//
+	// What it does cost is fill rate, and that is the number worth watching
+	// on a GPU that is fill rate bound — which the Raspberry Pi 4 of the
+	// project plan, section 1, is. A shadow's quad is its shape grown by
+	// [render.ShadowSigmas] times sigma on every side, and sigma is half the
+	// blur: a 100x40 button with Blur 16 draws a 148x88 quad, 3.3 times the
+	// area of the button it sits behind, every one of whose fragments runs
+	// two or three exp calls. Twenty such shadows are 260 kilopixels of
+	// shaded area before anything else on the screen is drawn.
+	//
+	// So the thing to do about a slow frame full of shadows is to reduce the
+	// blur, not to look for a cache. ShadowOps times the extent of the
+	// operations is the whole cost model.
 	ShadowOps, ShadowSharpOps uint64
 	// Ops is the number of operations that produced geometry.
 	Ops uint64

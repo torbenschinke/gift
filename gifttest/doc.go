@@ -12,6 +12,25 @@
 //
 // Nothing above mentions a pixel, a frame or a timer.
 //
+// # Actions verify where they landed
+//
+// An action on a [Node] computes a point, hit tests it, and fails unless the
+// hit test reaches the node the test named. That is not a nicety. Without it a
+// button covered by a transparent overlay, by a later sibling of a ZStack or
+// by a full bleed [ui.Box] activated the *covering* control and the harness
+// said nothing at all: the test failed later, on an assertion about a counter,
+// and blamed the application. A test tool that can pass while the interface is
+// broken is the worst thing a test tool can be, and this is the check that
+// closes it. The failure names the intended node, the node actually reached
+// and the tree; see [Node.Click].
+//
+// Clicking through something on purpose is a separate, spelled out thing. The
+// coordinate taking verbs — [Harness.ClickAt], [Harness.PressAt],
+// [Harness.ReleaseAt], [Harness.MoveTo] — take a point and dispatch it, with
+// no intended node and therefore no check, and [Harness.At] answers "what is
+// really here" without dispatching anything. Use them when the coordinate,
+// the overlap or the clip boundary *is* the subject.
+//
 // # Two layers
 //
 // The default layer is headless: build, layout, input and paint all run on the
@@ -24,6 +43,28 @@
 // giftgpu. Without the tag the method still exists and still compiles — a test
 // file is not split in two — but it skips, loudly, and it can be made to fail
 // instead; see [Harness.AssertGolden] and [Main].
+//
+// # Do not call t.Parallel
+//
+// A [Harness] owns a [gift.App], and a gift.App belongs to one goroutine. That
+// much is documented on gift.App and is enforced under giftdebug. What is not
+// obvious, and is the reason this paragraph exists, is that the text stack is
+// *process* wide and not per App: internal/text keeps one shaping cache for
+// the whole process — the project plan, section 3, forbids ui and
+// backend/ebiten from importing each other, so the cache neither of them may
+// own lives in a package variable — and [ui.SetDefaultFont] installs the
+// default font in another one.
+//
+// So two parallel tests that both lay out text share a mutable cache and race,
+// and two that both call ui.SetDefaultFont race on the font. `go test -race`
+// reports it, which is the right tool for it and the one the project plan,
+// section 15, names; nothing here guards it, because a mutex on the
+// measurement path would cost every single window application something to
+// buy a test suite a property it does not need.
+//
+// The practical rule: do not call t.Parallel in a test that uses this package.
+// Tests in different packages are separate processes and are unaffected, so
+// `go test ./...` parallelises at the level that matters anyway.
 //
 // # Time
 //

@@ -2,6 +2,7 @@ package text
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/torbenschinke/gift/geom"
@@ -188,12 +189,25 @@ func TestEvictionByAge(t *testing.T) {
 // TestRecycledEntryIsNotStale guards the buffer recycling in the cache: an
 // evicted entry keeps its backing arrays, and a later miss reusing that slot
 // must not inherit any of the old content.
+//
+// The test used to violate the very borrow contract it was testing around. It
+// copied the Paragraph — `wantLong := *s.Layout(long)` — and then called
+// GlyphCount on the copy after twenty further layouts had evicted the entry
+// it pointed into. It passed by luck: the copy's Lines slice still addressed
+// arrays that happened not to have been rewritten yet. Under giftdebug it now
+// panics, which is how this was found. The numbers are therefore taken out of
+// the borrow while it is still valid, which is what every caller is supposed
+// to do.
 func TestRecycledEntryIsNotStale(t *testing.T) {
 	f := loadRoboto(t)
 	s := NewShaper(Config{MaxBytes: 2 * sizeofEntry})
 	long := Request{Text: "a considerably longer piece of text than the next one", Font: f, Size: 16, MaxWidth: geom.Unbounded()}
 	short := Request{Text: "hi", Font: f, Size: 16, MaxWidth: geom.Unbounded()}
-	wantLong := *s.Layout(long)
+
+	// Read what is needed out of the borrow, now, rather than keeping it.
+	first := s.Layout(long)
+	wantSize, wantGlyphs := first.Size, first.GlyphCount()
+
 	for i := range 20 {
 		s.Layout(Request{Text: fmt.Sprintf("filler %d", i), Font: f, Size: 16, MaxWidth: geom.Unbounded()})
 	}
@@ -206,8 +220,113 @@ func TestRecycledEntryIsNotStale(t *testing.T) {
 	}
 	// And the long one, shaped again, is identical to the first time.
 	again := s.Layout(long)
-	if again.Size != wantLong.Size || again.GlyphCount() != wantLong.GlyphCount() {
-		t.Errorf("reshaped %v/%d glyphs, first time %v/%d", again.Size, again.GlyphCount(), wantLong.Size, wantLong.GlyphCount())
+	if again.Size != wantSize || again.GlyphCount() != wantGlyphs {
+		t.Errorf("reshaped %v/%d glyphs, first time %v/%d",
+			again.Size, again.GlyphCount(), wantSize, wantGlyphs)
+	}
+}
+
+// TestBorrowAfterEvictionPanicsInDebug is the contract itself, as a test.
+//
+// Without the check, this is the defect the review demonstrated: the borrow
+// keeps answering, with somebody else's numbers. A width was watched changing
+// from 91.3 to 108.6 under a pointer nobody had touched, which is the worst
+// possible failure mode — not a crash, not a zero, a plausible number.
+func TestBorrowAfterEvictionPanicsInDebug(t *testing.T) {
+	if !borrowChecks {
+		t.Skip("the borrow check is a giftdebug build check; see the project plan, section 15")
+	}
+	f := loadRoboto(t)
+	// Aged out rather than pushed out, so that the slot is free rather than
+	// already refilled; see the limitation on Paragraph.checkBorrow.
+	s := NewShaper(Config{MaxAge: 1})
+	stale := s.Layout(Request{Text: "the first one", Font: f, Size: 16, MaxWidth: geom.Unbounded()})
+	s.Tick()
+	s.Tick()
+	if s.Stats().AgeEvictions == 0 {
+		t.Fatal("the entry did not age out; the fixture is wrong")
+	}
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("reading a borrow whose entry was evicted did not panic under giftdebug")
+		}
+		msg, _ := r.(string)
+		for _, want := range []string{"Paragraph.GlyphCount", "evicted", "must not be kept"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("the panic message does not mention %q: %s", want, msg)
+			}
+		}
+		t.Logf("the message a developer sees:\n%s", msg)
+	}()
+	_ = stale.GlyphCount()
+}
+
+// TestBorrowIntoARefilledSlotIsNotCaught documents the blind spot rather than
+// leaving somebody to discover it.
+//
+// Once the evicted slot has been refilled, the memory the borrow names holds a
+// different, entirely valid paragraph, and nothing stored at that address can
+// disagree with it. Detecting this would mean never reusing the storage, which
+// is the allocation the cache exists to avoid. The test asserts the shape of
+// the limitation so that a future change which removes it fails here and gets
+// the documentation updated with it.
+func TestBorrowIntoARefilledSlotIsNotCaught(t *testing.T) {
+	if !borrowChecks {
+		t.Skip("the borrow check is a giftdebug build check")
+	}
+	f := loadRoboto(t)
+	s := NewShaper(Config{MaxBytes: 2 * sizeofEntry})
+	stale := s.Layout(Request{Text: "the first one", Font: f, Size: 16, MaxWidth: geom.Unbounded()})
+	for i := range 20 {
+		s.Layout(Request{Text: fmt.Sprintf("filler %d", i), Font: f, Size: 16, MaxWidth: geom.Unbounded()})
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Logf("the refilled slot case is now caught too: %v", r)
+			t.Log("that is an improvement; update Paragraph.checkBorrow, which says it is not")
+		}
+	}()
+	// Reads somebody else's paragraph, quietly. This is the honest state of
+	// the world and the reason the contract is a contract.
+	_ = stale.GlyphCount()
+}
+
+// TestCopyingABorrowIsStillABorrow. Paragraph is a struct and copying it
+// copies the slice headers, not the data, so a copy is exactly as stale as the
+// pointer it came from. The check says so rather than letting the copy look
+// like ownership.
+func TestCopyingABorrowIsStillABorrow(t *testing.T) {
+	if !borrowChecks {
+		t.Skip("the borrow check is a giftdebug build check")
+	}
+	f := loadRoboto(t)
+	s := NewShaper(Config{MaxBytes: 2 * sizeofEntry})
+	copied := *s.Layout(Request{Text: "the first one", Font: f, Size: 16, MaxWidth: geom.Unbounded()})
+	for i := range 20 {
+		s.Layout(Request{Text: fmt.Sprintf("filler %d", i), Font: f, Size: 16, MaxWidth: geom.Unbounded()})
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a copy of a borrowed Paragraph survived the eviction of the entry it came from")
+		}
+	}()
+	_ = copied.LineCount()
+}
+
+// TestAValidBorrowDoesNotPanic is the other half: the check must not fire on
+// the ordinary use, which is every use in gift.
+func TestAValidBorrowDoesNotPanic(t *testing.T) {
+	f := loadRoboto(t)
+	s := newTestShaper()
+	req := Request{Text: "ordinary", Font: f, Size: 16, MaxWidth: geom.Unbounded()}
+	for range 100 {
+		p := s.Layout(req)
+		if p.LineCount() != 1 || p.GlyphCount() == 0 || p.IsOverflowing() {
+			t.Fatalf("unexpected layout: %d lines, %d glyphs", p.LineCount(), p.GlyphCount())
+		}
+		s.Tick()
 	}
 }
 

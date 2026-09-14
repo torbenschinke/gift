@@ -147,13 +147,74 @@ func TestExplicitNewlines(t *testing.T) {
 	if n := s.Layout(req2).LineCount(); n != 2 {
 		t.Errorf("\"a\\n\" produced %d lines, want 2", n)
 	}
-	// A lone carriage return is a mandatory break under UAX 14 and the
-	// segmenter of typesetting applies it, even though this package does not
-	// split on it itself. Pinned so that the behaviour is a decision and not a
-	// surprise.
-	req3 := Request{Text: "a\rb", Font: f, Size: size, MaxWidth: geom.Unbounded()}
-	if n := s.Layout(req3).LineCount(); n != 2 {
-		t.Errorf("\"a\\rb\" produced %d lines, want 2 (UAX 14 mandatory break)", n)
+	// Every mandatory break of UAX 14 does the same thing, in the middle of
+	// the text and at the end of it.
+	//
+	// This is the rule that used to hold only in the middle. The split was on
+	// "\n" alone and the rest was left to the segmenter inside the line
+	// wrapper, which breaks a text but does not open a line box after the last
+	// break — so "a\n" was two lines and "a\r" was one, and the documentation
+	// claimed they were the same.
+	for _, tc := range []struct {
+		name string
+		text string
+		want int
+	}{
+		{"lone CR in the middle", "a\rb", 2},
+		{"trailing CR", "a\r", 2},
+		{"trailing CRLF", "a\r\n", 2},
+		{"CRLF is one break", "a\r\nb", 2},
+		{"trailing vertical tab", "a\v", 2},
+		{"trailing form feed", "a\f", 2},
+		{"trailing NEL", "a\u0085", 2},
+		{"trailing line separator", "a\u2028", 2},
+		{"trailing paragraph separator", "a\u2029", 2},
+		{"vertical tab in the middle", "a\vb", 2},
+		{"NEL in the middle", "a\u0085b", 2},
+		{"two trailing breaks", "a\r\r", 3},
+		{"mixed", "a\rb\nc\u2028d", 4},
+		{"no break at all", "abc", 1},
+		{"a lone break", "\r", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Request{Text: tc.text, Font: f, Size: size, MaxWidth: geom.Unbounded()}
+			if n := s.Layout(r).LineCount(); n != tc.want {
+				t.Errorf("%q produced %d lines, want %d", tc.text, n, tc.want)
+			}
+		})
+	}
+}
+
+// TestMandatoryBreakByteRangesStayInOrder: the byte ranges a Line reports
+// refer to Request.Text and not to a substring of it, so splitting on more
+// break characters must not shift them.
+//
+// The ranges exclude the break that ended the line — that is existing
+// behaviour and is not what this work unit changed — so the assertion is that
+// they are ordered, non overlapping and inside the text, not that they tile
+// it.
+func TestMandatoryBreakByteRangesStayInOrder(t *testing.T) {
+	f := loadRoboto(t)
+	s := newTestShaper()
+	const src = "alpha\rbeta\r\ngamma\u2028delta\n"
+	p := s.Layout(Request{Text: src, Font: f, Size: 16, MaxWidth: geom.Unbounded()})
+
+	if p.LineCount() != 5 {
+		t.Fatalf("%q produced %d lines, want 5", src, p.LineCount())
+	}
+	prev := 0
+	for i, ln := range p.Lines {
+		if ln.Start < prev || ln.End < ln.Start || ln.End > len(src) {
+			t.Fatalf("line %d has range [%d,%d) after %d, over a %d byte text",
+				i, ln.Start, ln.End, prev, len(src))
+		}
+		prev = ln.End
+	}
+	want := []string{"alpha", "beta", "gamma", "delta", ""}
+	for i, ln := range p.Lines {
+		if got := src[ln.Start:ln.End]; got != want[i] {
+			t.Errorf("line %d covers %q, want %q", i, got, want[i])
+		}
 	}
 }
 

@@ -67,9 +67,16 @@ const (
 	// inside or not.
 	EventPointerUp
 	// EventPointerCancel says the pointer went away without a release: the
-	// window lost focus, the platform took the gesture over, or the node was
-	// unmounted mid press. A node that treats it like an up would activate on
-	// something the user never completed.
+	// window lost focus, or the platform took the gesture over. A node that
+	// treats it like an up would activate on something the user never
+	// completed.
+	//
+	// A node that is unmounted while it holds a press does *not* receive one,
+	// and cannot: by the time gift knows, the node is gone and there is
+	// nobody to deliver to. gift ends the press instead — see [App.forgetNode]
+	// — so the pointer is genuinely up as far as the rest of the runtime is
+	// concerned, and the release that eventually arrives is dropped. This
+	// list used to name that case as a cause, and no code path produced it.
 	EventPointerCancel
 	// EventLongPress is delivered once per press to the capturing node, when
 	// the pointer has been down for [LongPressDelay] without moving further
@@ -395,9 +402,11 @@ func (a *App) SetModifiers(m Mods) {
 //
 // For the mouse this also maintains the hover state: the node under the
 // cursor gets [EventPointerEnter], the one it left gets [EventPointerLeave]
-// and [Interaction.Hover] follows. While a pointer is captured the hover set
-// is frozen, because a drag that passes over other buttons must not light
-// them up.
+// and [Interaction.Hover] follows. While a pointer is *down* the hover set is
+// frozen, because a drag that passes over other buttons must not light them
+// up. That holds whether or not anything captured the press: a drag that
+// started on empty space, and a drag whose captured node was unmounted
+// underneath it, both leave the hover alone until the release.
 func (a *App) PointerMove(id PointerID, kind PointerKind, pos geom.Point) {
 	a.assertInputPhase("PointerMove")
 	p := a.pointerFor(id, kind, false)
@@ -418,6 +427,18 @@ func (a *App) PointerMove(id PointerID, kind PointerKind, pos geom.Point) {
 		e.Delta = delta
 		e.Inside = inside
 		a.deliver(p.capture, e, false)
+		return
+	}
+	if p.down {
+		// Down but capturing nothing: the press landed on empty space, or the
+		// node that took it was unmounted and [App.forgetNode] dropped the
+		// capture. Either way the hover set stays frozen, which is what this
+		// method's own documentation promises while a pointer is down.
+		//
+		// Falling through to updateHover here was the defect: a finger held
+		// on a button that then disappeared, or a drag started on the
+		// background, lit up every control it passed over. The release clears
+		// p.down and the hover resumes there.
 		return
 	}
 	a.updateHover(p)
@@ -538,8 +559,26 @@ func (a *App) PointerCancel(id PointerID) {
 // plugs into a delivery path that is already tested, rather than inventing one.
 func (a *App) PointerWheel(pos geom.Point, delta geom.Point) {
 	a.assertInputPhase("PointerWheel")
-	p := &a.in.pointers[0]
+	// Through pointerFor like every other mouse entry point, and not by
+	// indexing the slot directly. Slot zero is the mouse's for its whole life,
+	// but it is only *initialised* — id MousePointer, kind PointerMouse — by
+	// pointerFor, so a wheel that arrived before the first PointerMove used to
+	// carry the zero PointerID. Zero is in the range platform touch
+	// identifiers use, so the event claimed to come from a finger that had
+	// never touched anything.
+	p := a.pointerFor(MousePointer, PointerMouse, false)
+	if p == nil {
+		return
+	}
+	// The hover follows the position, for the same reason PointerMove
+	// maintains it: writing p.pos without it left p.over pointing at whatever
+	// node the mouse was last over, so the next real move computed its delta
+	// and its enter/leave pair from a position the mouse never visited. A
+	// wheel event does move the cursor as far as the platform is concerned.
 	p.pos = pos
+	if !a.store.Valid(p.capture) {
+		a.updateHover(p)
+	}
 	h := a.hitTest(pos)
 	if h.IsZero() {
 		return
@@ -767,8 +806,15 @@ func (a *App) forgetNode(h scene.Handle) {
 		}
 		if p.capture == h {
 			// The node the press belongs to is gone. The pointer keeps
-			// existing but captures nothing, so the eventual release is
-			// delivered nowhere rather than to whatever took the slot.
+			// existing and stays down — the physical button really is still
+			// held — but it captures nothing, so the eventual release is
+			// delivered nowhere rather than to whatever took the slot, and
+			// [App.PointerMove] keeps the hover frozen until that release.
+			//
+			// Nothing is dispatched here. The only node entitled to an
+			// [EventPointerCancel] is the one that took the press, and it no
+			// longer exists; an ancestor did not take it and has no gesture
+			// to cancel. See [EventPointerCancel].
 			p.capture = scene.Handle{}
 		}
 	}

@@ -114,14 +114,25 @@ type Paragraph struct {
 	// one line box and a caller that lays out a form must not have the row
 	// height jump when the string becomes empty.
 	Lines []Line
+
+	// tok and gen identify which incarnation of a cache entry this paragraph
+	// is a borrow of, so that reading it after the entry was evicted is a
+	// panic instead of a plausible wrong number. Both are nil and zero in a
+	// release build and in a Paragraph nobody borrowed; see [Paragraph.checkBorrow].
+	tok *borrowToken
+	gen uint64
 }
 
 // LineCount returns the number of visual lines.
-func (p *Paragraph) LineCount() int { return len(p.Lines) }
+func (p *Paragraph) LineCount() int {
+	p.checkBorrow("LineCount")
+	return len(p.Lines)
+}
 
 // GlyphCount returns the total number of glyphs over all lines and runs. It is
 // intended for diagnostics and for sizing a backend side vertex buffer.
 func (p *Paragraph) GlyphCount() int {
+	p.checkBorrow("GlyphCount")
 	n := 0
 	for i := range p.Lines {
 		for j := range p.Lines[i].Runs {
@@ -133,4 +144,7 @@ func (p *Paragraph) GlyphCount() int {
 
 // IsOverflowing reports whether the text is wider than the width limit it was
 // laid out against.
-func (p *Paragraph) IsOverflowing() bool { return p.Overflow > 0 }
+func (p *Paragraph) IsOverflowing() bool {
+	p.checkBorrow("IsOverflowing")
+	return p.Overflow > 0
+}

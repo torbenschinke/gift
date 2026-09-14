@@ -28,6 +28,35 @@ func (h *Harness) Dump() string { return h.dumpMarked(Selector{}) }
 // with the ancestors that tell them apart and therefore with the answer to
 // "how do I narrow this".
 func (h *Harness) dumpMarked(mark Selector) string {
+	return h.dumpWith(func(r gift.NodeRef) string {
+		if mark.match != nil && mark.match(h, r) {
+			return "=> "
+		}
+		return "   "
+	})
+}
+
+// dumpMarkedRefs renders the tree with the node an action aimed at marked
+// "want" and the node the hit test actually reached marked "got".
+//
+// Two different marks rather than one, because the whole diagnosis of a
+// covered control is "these two are different and here is where they sit
+// relative to each other".
+func (h *Harness) dumpMarkedRefs(want, got gift.NodeRef) string {
+	return h.dumpWith(func(r gift.NodeRef) string {
+		switch r {
+		case want:
+			return "want=> "
+		case got:
+			return "got => "
+		default:
+			return "       "
+		}
+	})
+}
+
+// dumpWith renders the tree, asking prefix for the marker of every line.
+func (h *Harness) dumpWith(prefix func(gift.NodeRef) string) string {
 	var b strings.Builder
 	b.WriteString("the tree was:\n")
 	lines := 0
@@ -38,11 +67,7 @@ func (h *Harness) dumpMarked(mark Selector) string {
 			return
 		}
 		lines++
-		prefix := "   "
-		if mark.match != nil && mark.match(h, r) {
-			prefix = "=> "
-		}
-		b.WriteString(prefix)
+		b.WriteString(prefix(r))
 		b.WriteString(strings.Repeat("  ", depth))
 		b.WriteString(h.nodeLine(r))
 		b.WriteByte('\n')

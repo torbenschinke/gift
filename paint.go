@@ -84,10 +84,11 @@ func (p *PaintContext) PopClip() {
 }
 
 // PaintChildren paints all children of the current node, in order.
+//
+// When the node declared [Element.Clip] the children are painted under that
+// clip; see [PaintContext.paintKids].
 func (p *PaintContext) PaintChildren() {
-	for _, c := range p.nd.children {
-		p.app.paintNode(c)
-	}
+	p.paintKids(p.nd.children)
 }
 
 // PaintChild paints the child with the given index. The index must be in
@@ -96,7 +97,61 @@ func (p *PaintContext) PaintChild(i int) {
 	if i < 0 || i >= len(p.nd.children) {
 		panic("gift: PaintContext.PaintChild index out of range")
 	}
-	p.app.paintNode(p.nd.children[i])
+	p.paintKids(p.nd.children[i : i+1])
+}
+
+// paintKids paints a run of children of the current node under the clip the
+// node declared, if any.
+//
+// # Why the clip is here and not in the widget
+//
+// [Element.Clip] used to mean two different things in two different places.
+// gift read it for hit testing, and a widget was separately expected to call
+// [PaintContext.PushClip] around its children. ui.Stack and ui.Text did;
+// ui.Button did not, so a 400x400 label inside a 50x50 button with Clip(true)
+// painted over the whole window while its own documentation promised the
+// opposite, and the input half agreed with the documentation rather than with
+// the pixels. Two readers of one declaration, and nothing making them agree.
+//
+// Now there is one reader. The flag is applied here, on the way into the
+// subtree, which is the one route every container's children take:
+// [PaintContext.PaintChildren] and [PaintContext.PaintChild] are the only ways
+// a painter can descend, and a node with no painter at all goes through
+// [App.paintNode], which applies the same clip for the same reason. A widget
+// cannot forget it, because there is nothing left for a widget to do.
+//
+// # What stays outside
+//
+// The clip surrounds the children and not the node's own drawing. That is the
+// order the project plan, section 8, fixes and ui_test pins: a background is
+// exactly the bounds and a border lies inside them, so clipping either would
+// be a no-op, but a *shadow* deliberately extends past the bounds and clipping
+// it to them would delete it. A node's own ops are therefore emitted under
+// whatever clip its parent established, and only the subtree is confined.
+//
+// # Leaves
+//
+// A view whose content is not its children — [ui.Text] draws glyphs — has no
+// children to route and applies the clip around its own content itself. There
+// is no shared path to put that on, because "content" for a leaf is whatever
+// that leaf draws, and gift cannot tell it apart from the background.
+//
+// # Cost
+//
+// One bool test per container per frame, and one clip stack entry for the
+// containers that asked for a clip. No allocation, so the frame path contract
+// of the project plan, section 11, is unaffected.
+func (p *PaintContext) paintKids(kids []scene.Handle) {
+	clip := p.nd.clip
+	if clip {
+		p.list.PushClip(p.app.store.Get(p.cur).Bounds)
+	}
+	for _, c := range kids {
+		p.app.paintNode(c)
+	}
+	if clip {
+		p.list.PopClip()
+	}
 }
 
 // ChildCount returns the number of children of the node being painted.
@@ -157,8 +212,17 @@ func (a *App) paintNode(h scene.Handle) {
 
 	if nd.painter == nil {
 		a.paintDepth++
+		// A node with no painter still honours its own [Element.Clip]: the
+		// flag is a property of the node, not of the fact that somebody
+		// installed a painter on it. See [PaintContext.paintKids].
+		if nd.clip {
+			a.list.PushClip(n.Bounds)
+		}
 		for _, c := range nd.children {
 			a.paintNode(c)
+		}
+		if nd.clip {
+			a.list.PopClip()
 		}
 		a.paintDepth--
 		// Deliberately not counted. PaintedNodes means "a painter ran", and

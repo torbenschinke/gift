@@ -685,12 +685,21 @@ func TestStackBaselineIgnoresChildrenWithoutOne(t *testing.T) {
 		[]geom.Size{{W: 10, H: 30}, {W: 10, H: 10}},
 		[]float32{25, -1})
 
-	// The band is 25 + max(30-25, 10) = 35; the rectangle is bottom aligned
-	// inside it.
-	if got, want := res.Size.H, float32(35); !approx(got, want) {
-		t.Errorf("size.H = %v, want %v", got, want)
+	// Only the reporting child contributes a descent, so the band is
+	// 25 + (30-25) = 30, and the row is the height of its tallest child
+	// because that is larger. The rectangle is bottom aligned inside it.
+	//
+	// This used to expect 35, which was the defect written down as a test: a
+	// child with no baseline had its *entire* height charged as descent below
+	// the common line, so any row containing one non-text child grew by
+	// roughly the ascent. A child that is not placed relative to the line
+	// cannot hang below it; its height reaches the row through maxCross, and
+	// the band is the larger of the two.
+	if got, want := res.Size.H, float32(30); !approx(got, want) {
+		t.Errorf("size.H = %v, want %v (the tallest child; the 10 high rectangle has no "+
+			"baseline and therefore no descent below the common line)", got, want)
 	}
-	if got, want := origins[1].Y, float32(25); !approx(got, want) {
+	if got, want := origins[1].Y, float32(20); !approx(got, want) {
 		t.Errorf("origins[1].Y = %v, want %v (bottom of the band, not a guessed baseline)", got, want)
 	}
 }

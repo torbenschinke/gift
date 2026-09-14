@@ -3,6 +3,7 @@ package text
 import (
 	"fmt"
 	"math"
+	"unicode/utf8"
 
 	"github.com/go-text/typesetting/di"
 	"github.com/go-text/typesetting/language"
@@ -18,11 +19,14 @@ import (
 // makes measuring and drawing structurally unable to disagree: there is no
 // second set of parameters anywhere that only one of the two paths applies.
 type Request struct {
-	// Text is the string to lay out. A "\n" starts a new line
-	// unconditionally and a "\r\n" is treated as one newline. The other
-	// mandatory break characters of UAX 14, among them a lone "\r", also
-	// break, because the segmenter of typesetting applies them; see
-	// [paragraphs].
+	// Text is the string to lay out.
+	//
+	// Every mandatory break of UAX 14 starts a new line unconditionally,
+	// whether it sits in the middle of the text or at the end of it: "\n",
+	// a lone "\r", "\r\n" as a single break, vertical tab, form feed, NEL,
+	// U+2028 and U+2029. "a\n" and "a\r" are both two lines, the second of
+	// them empty. See [paragraphs] for why that is spelled out here rather
+	// than left to the segmenter of the line wrapper.
 	Text string
 	// Font is the font to shape with. It must not be nil.
 	Font *Font
@@ -161,6 +165,11 @@ type entry struct {
 	used  uint64
 	prev  int32
 	next  int32
+
+	// tok is the borrow generation of this entry, shared with every
+	// Paragraph handed out from it. It is allocated once and never replaced;
+	// see [borrowToken].
+	tok *borrowToken
 }
 
 // runRange and lineRange hold the layout of a paragraph while it is being
@@ -339,6 +348,14 @@ func (s *Shaper) build(key cacheKey, req Request) *Paragraph {
 		Lines:    e.lines,
 		Overflow: overflowOf(widest, req.MaxWidth),
 	}
+	if borrowChecks {
+		// Stamp this incarnation of the entry. evictTail bumps the shared
+		// counter, so a borrow that outlives its eviction disagrees with it.
+		if e.tok == nil {
+			e.tok = &borrowToken{}
+		}
+		e.par.tok, e.par.gen = e.tok, e.tok.gen
+	}
 
 	s.stats.ShapedGlyphs += uint64(len(e.glyphs))
 	s.account(i)
@@ -502,32 +519,77 @@ type source struct {
 	start, end int
 }
 
-// paragraphs splits text at explicit newlines, appending to dst.
+// paragraphs splits text at every mandatory break, appending to dst.
 //
-// dst is a reused scratch buffer of the shaper. "\r\n" counts as one break.
+// dst is a reused scratch buffer of the shaper.
 //
-// This is not the only source of line breaks: the UAX 14 segmenter inside the
-// line wrapper also breaks at the other mandatory break characters, among them
-// a lone carriage return, vertical tab, form feed, NEL, U+2028 and U+2029. The
-// split here exists because a "\n" must break even when the width is
-// unbounded and because gift owns the byte ranges it reports; it does not
-// claim to be the complete list. Verified against
-// github.com/go-text/typesetting v0.3.5, which is where that behaviour comes
-// from.
+// # Which breaks, and why all of them
+//
+// The mandatory break characters of UAX 14 class BK, plus the carriage return
+// and the line feed of classes CR and LF: "\n", "\r", "\r\n" as one break,
+// vertical tab, form feed, NEL (U+0085), LINE SEPARATOR (U+2028) and
+// PARAGRAPH SEPARATOR (U+2029).
+//
+// This used to split on "\n" alone and the documentation of [Request.Text]
+// claimed the rest were handled by the segmenter inside the line wrapper. They
+// were, in the middle of a text, and not at the end of one: "a\n" produced two
+// lines and "a\r" produced one, because a trailing break only becomes a second
+// line box if somebody creates it, and the wrapper does not. A rule that holds
+// everywhere except at the end of the string is not a rule anybody can
+// remember, so the split is done here for all of them and the wrapper never
+// sees a mandatory break character at all.
+//
+// The byte ranges reported on a [Line] still refer to Request.Text and still
+// include the break that ended the line, exactly as before.
 func paragraphs(dst []source, text string) []source {
 	start := 0
-	for i := 0; i < len(text); i++ {
-		if text[i] != '\n' {
+	for i := 0; i < len(text); {
+		n := breakLen(text, i)
+		if n == 0 {
+			i += runeLen(text, i)
 			continue
 		}
-		end := i
-		if end > start && text[end-1] == '\r' {
-			end--
-		}
-		dst = append(dst, source{text: text[start:end], start: start, end: i + 1})
-		start = i + 1
+		dst = append(dst, source{text: text[start:i], start: start, end: i + n})
+		i += n
+		start = i
 	}
 	return append(dst, source{text: text[start:], start: start, end: len(text)})
+}
+
+// breakLen returns the length in bytes of the mandatory break starting at i,
+// or zero when there is none there.
+func breakLen(s string, i int) int {
+	switch s[i] {
+	case '\n', '\v', '\f':
+		return 1
+	case '\r':
+		// CRLF is one break, not two empty lines.
+		if i+1 < len(s) && s[i+1] == '\n' {
+			return 2
+		}
+		return 1
+	case 0xC2:
+		// U+0085 NEL.
+		if i+1 < len(s) && s[i+1] == 0x85 {
+			return 2
+		}
+	case 0xE2:
+		// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR.
+		if i+2 < len(s) && s[i+1] == 0x80 && (s[i+2] == 0xA8 || s[i+2] == 0xA9) {
+			return 3
+		}
+	}
+	return 0
+}
+
+// runeLen is the length of the UTF-8 sequence starting at i, and at least one
+// so that invalid input cannot stall the scan.
+func runeLen(s string, i int) int {
+	_, n := utf8.DecodeRuneInString(s[i:])
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 // scriptOf returns the script to shape with: the first rune that has one.

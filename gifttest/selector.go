@@ -247,10 +247,7 @@ func (h *Harness) First(s Selector) Node {
 // not a failure; assert on it with [Harness.AssertCount] or with len.
 func (h *Harness) FindAll(s Selector) []Node {
 	h.t.Helper()
-	got := h.findAll(s)
-	out := make([]Node, len(got))
-	copy(out, got)
-	return out
+	return h.findAll(s)
 }
 
 // Exists reports whether at least one node matches s, without failing.
@@ -277,19 +274,37 @@ func (h *Harness) At(p geom.Point) Node {
 	return Node{h: h, ref: ref}
 }
 
-// findAll walks the tree in document order and collects the matches into the
-// reusable buffer.
+// findAll walks the tree in document order and collects the matches.
 //
 // Document order is the pre order traversal gift uses for the focus order too,
 // so "the first match" means the same thing here and there.
+//
+// # Why the buffer is not shared
+//
+// It used to be one scratch slice on the Harness, reset at the top of this
+// function and returned to the caller. That is only safe as long as a selector
+// cannot run a selector, and selectors can: [Under] does it internally, and
+// [Where] invites an application's predicate to do it — "the row whose Delete
+// button is enabled" is a query inside a predicate. The inner run truncated
+// the buffer the outer run was appending to and then appended its own matches
+// on top, so an outer query over three nodes came back with four Nodes, two of
+// them the inner query's. [Harness.Find] then saw a count that had nothing to
+// do with the tree: it reported one match where there were two, and the test
+// asserted against an arbitrary node while the selector it was written with
+// was ambiguous.
+//
+// The buffer is therefore per call. That is one allocation per query, in a
+// test, where [Harness.FindAll] already allocates a copy and the tree walk
+// already copies the children of every node for the same re entrancy reason.
+// Correctness over a scratch slice; see [Harness.walkNode].
 func (h *Harness) findAll(s Selector) []Node {
-	h.matches = h.matches[:0]
+	var out []Node
 	h.walk(func(r gift.NodeRef, _ int) {
 		if s.match(h, r) {
-			h.matches = append(h.matches, Node{h: h, ref: r})
+			out = append(out, Node{h: h, ref: r})
 		}
 	})
-	return h.matches
+	return out
 }
 
 // walk visits every node in document order, passing the depth along for the
@@ -299,7 +314,6 @@ func (h *Harness) walk(fn func(r gift.NodeRef, depth int)) {
 	if root.IsZero() {
 		return
 	}
-	h.stack = h.stack[:0]
 	h.walkNode(root, 0, fn)
 }
 

@@ -94,6 +94,13 @@ func (a *App) focusable(h scene.Handle) bool {
 // first focus change, is the smaller thing to get right. Tab is pressed at
 // human speed, not per frame.
 func (a *App) focusNeighbour(from scene.Handle, forward bool) scene.Handle {
+	// Reachable from the exported [App.MoveFocus], which an application may
+	// call before the first Update has built a root — a keyboard shortcut
+	// wired up at start up does it. There is no focus order without a tree,
+	// and saying so is better than a nil dereference inside the runtime.
+	if a.root == nil {
+		return scene.Handle{}
+	}
 	order := a.in.focusScan[:0]
 	order = a.appendFocusable(order, a.root.node, 0)
 	a.in.focusScan = order

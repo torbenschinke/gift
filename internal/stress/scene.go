@@ -26,6 +26,7 @@
 package stress
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/torbenschinke/gift"
@@ -43,6 +44,24 @@ var (
 	RowHot     = ui.RGB(64, 96, 150)
 	Line       = ui.Border{Width: 1, Color: ui.RGBA(255, 255, 255, 40)}
 	Accent     = ui.RGB(220, 120, 60)
+	Ink        = ui.RGB(236, 238, 244)
+	InkDim     = ui.RGBA(255, 255, 255, 150)
+
+	// PanelShadow and RowShadow are the scene's shadows.
+	//
+	// They exist because a measurement of a scene without them is a
+	// measurement of something else. Until this work unit the scene contained
+	// zero ui.Text and zero Shadow, and a run reported glyph_draw_calls 0,
+	// shaped_glyphs 0, atlas hits and misses 0 and shadow_ops 0 — so every
+	// frame time and allocation figure quoted for step 2 of the project plan
+	// was in fact a figure about step 1.
+	//
+	// The blurs are deliberately modest. A shadow's quad is its shape grown
+	// by render.ShadowSigmas times half the blur on every side, so a large
+	// blur on forty rows is a fill rate experiment rather than a realistic
+	// interface; see backend/ebiten.RendererStats.ShadowOps.
+	PanelShadow = ui.Shadow{Blur: 16, OffsetY: 4, Color: ui.RGBA(0, 0, 0, 110)}
+	RowShadow   = ui.Shadow{Blur: 6, OffsetY: 2, Color: ui.RGBA(0, 0, 0, 90)}
 )
 
 // Scene owns the parameters and the handles to the state the input path
@@ -55,9 +74,19 @@ var (
 type Scene struct {
 	rows, cells int
 
-	// keys are the per row reconciliation keys, formatted once in New so
-	// that a build does not produce one string per row per frame.
-	keys []string
+	// font is the embedded typeface every label in the scene is shaped with.
+	// It is a fixture property and not a knob; see [Font].
+	font ui.Font
+
+	// keys, labels and titles are the per row strings, formatted once in New
+	// so that a build does not produce one string per row per frame. The
+	// scene's determinism depends on it: the same parameters must produce the
+	// same text, and therefore the same shaping cache and atlas behaviour, on
+	// every run.
+	keys     []string
+	labels   []string
+	titles   []string
+	subtitle string
 
 	frame     int
 	highlight *gift.State[int]
@@ -73,11 +102,38 @@ func New(rows, cells int) *Scene {
 	if cells < 1 {
 		cells = 1
 	}
-	s := &Scene{rows: rows, cells: cells, keys: make([]string, rows)}
+	s := &Scene{
+		rows: rows, cells: cells,
+		font:   Font(),
+		keys:   make([]string, rows),
+		labels: make([]string, rows),
+		titles: make([]string, rows),
+	}
 	for i := range s.keys {
 		s.keys[i] = "row" + strconv.Itoa(i)
+		// A fixed width index, so that every row's label shapes to the same
+		// advance and a row's height cannot depend on how many digits its
+		// number has. The test that pins "every row is the same height"
+		// would otherwise start failing at row 10.
+		s.labels[i] = fmt.Sprintf("%03d", i)
+		// Deterministic prose from a fixed table. Real text, in the sense
+		// that matters here: a few dozen distinct strings, each shaped once
+		// and then served from the cache, which is exactly the steady state
+		// the allocation contract of the project plan, section 11, is about.
+		s.titles[i] = words[i%len(words)] + " " + words[(i*7+3)%len(words)]
 	}
+	s.subtitle = strconv.Itoa(rows) + " rows x " + strconv.Itoa(cells) + " cells"
 	return s
+}
+
+// words is the deterministic vocabulary of the row titles. It is a fixed table
+// and not a generator, because a measurement has to shape the same strings on
+// every run.
+var words = [...]string{
+	"aperture", "backdrop", "cadence", "diffuse", "envelope", "fixture",
+	"gradient", "harmonic", "isotope", "junction", "keystone", "lattice",
+	"meridian", "nucleus", "oscillate", "parallax", "quantise", "resonant",
+	"spectrum", "threshold",
 }
 
 // Rows and Cells report the parameters.
@@ -129,6 +185,9 @@ func (s *Scene) Root(ctx *gift.Context) gift.View {
 			Index: i,
 			Cells: s.cells,
 			Hot:   i == hot,
+			Label: s.labels[i],
+			Title: s.titles[i],
+			Font:  s.font,
 		}, buildRow))
 	}
 
@@ -140,6 +199,7 @@ func (s *Scene) Root(ctx *gift.Context) gift.View {
 			Background(PanelBg).
 			CornerRadius(14).
 			Border(Line).
+			Shadow(PanelShadow).
 			Clip(true).
 			Flex(1),
 		s.footer(),
@@ -160,9 +220,12 @@ func (s *Scene) header() gift.View {
 	return ui.ZStack(
 		ui.HStack(
 			ui.VStack(
-				ui.Box().Frame(160, 14).Background(ui.RGB(250, 250, 250)).CornerRadius(7),
-				ui.Box().Frame(110, 8).Background(ui.RGBA(255, 255, 255, 160)).CornerRadius(4),
-			).Gap(6),
+				// Real text, not a grey bar standing in for it. The title is
+				// the one string in the scene large enough to exercise the
+				// atlas at a display size.
+				ui.Text("Gift stress scene").Font(s.font).FontSize(22).Foreground(Ink),
+				ui.Text(s.subtitle).Font(s.font).FontSize(13).Foreground(InkDim),
+			).Gap(4),
 			ui.Spacer(),
 			gift.Component("badge", s.badge),
 		).Padding(14).Align(geom.Alignment{Y: 0.5}),
@@ -170,7 +233,8 @@ func (s *Scene) header() gift.View {
 		Background(Accent).
 		CornerRadius(10).
 		Border(Line).
-		Frame(geom.Unbounded(), 72)
+		Shadow(PanelShadow).
+		Frame(geom.Unbounded(), 84)
 }
 
 // badge is a component with a state scope of its own. [Scene.Bump] writes that
@@ -187,19 +251,28 @@ func (s *Scene) badge(ctx *gift.Context) gift.View {
 		}
 		pips = append(pips, ui.Box().Frame(10, 10).Background(c).CornerRadius(5))
 	}
-	return ui.HStack(pips...).
-		Gap(6).
+	// The count as text next to the pips. It changes when Bump is called and
+	// is therefore the one label in the scene that misses the shaping cache
+	// on purpose: a measurement wants both sides of that boundary visible.
+	return ui.HStack(
+		ui.Text(strconv.Itoa(n)).Font(s.font).FontSize(14).Foreground(Ink),
+		ui.HStack(pips...).Gap(6),
+	).
+		Gap(10).
 		Padding(10).
+		Align(geom.Alignment{Y: 0.5}).
+		AlignBaseline().
 		Background(ui.RGBA(0, 0, 0, 90)).
 		CornerRadius(12).
-		Border(Line)
+		Border(Line).
+		Shadow(RowShadow)
 }
 
 func (s *Scene) footer() gift.View {
 	return ui.HStack(
-		ui.Box().Frame(90, 10).Background(ui.RGBA(255, 255, 255, 120)).CornerRadius(5),
+		ui.Text("space bumps the badge, escape quits").Font(s.font).FontSize(12).Foreground(InkDim),
 		ui.Spacer(),
-		ui.Box().Frame(40, 10).Background(ui.RGBA(255, 255, 255, 60)).CornerRadius(5),
+		ui.Text("deterministic").Font(s.font).FontSize(12).Foreground(InkDim),
 		ui.Box().Frame(40, 10).Background(ui.RGBA(255, 255, 255, 60)).CornerRadius(5),
 	).Gap(8).Padding(8).Align(geom.Alignment{Y: 0.5}).Frame(geom.Unbounded(), 34)
 }
@@ -210,6 +283,14 @@ type rowProps struct {
 	Index int
 	Cells int
 	Hot   bool
+	// Label and Title are the row's two strings. They are precomputed by
+	// [New] and travel in the props, which keeps buildRow a pure function of
+	// a comparable value — a string is comparable, a slice would not be.
+	Label string
+	Title string
+	// Font is a handle to shared immutable tables and is comparable, so it
+	// belongs in the props like everything else the row reads.
+	Font ui.Font
 }
 
 // buildRow builds one row. It is a plain function of its props and has no
@@ -220,11 +301,18 @@ func buildRow(_ *gift.Context, p rowProps) gift.View {
 		back = RowHot
 	}
 
-	cells := make([]gift.View, 0, p.Cells+2)
+	cells := make([]gift.View, 0, p.Cells+4)
 	cells = append(cells, ui.Box().Frame(26, 26).
 		Background(tint(p.Index, 0)).
 		CornerRadius(13).
 		Border(Line))
+	// Two labels per row: a fixed width index and a title. Together with the
+	// header and the footer this is what puts glyphs into the display list at
+	// all, and at forty rows it is eighty runs of real shaped text per frame.
+	cells = append(cells,
+		ui.Text(p.Label).Font(p.Font).FontSize(12).Foreground(InkDim),
+		ui.Text(p.Title).Font(p.Font).FontSize(13).Foreground(Ink).Frame(150, geom.Unbounded()),
+	)
 
 	for c := 0; c < p.Cells; c++ {
 		// A cell is a ZStack, so the scene really does exercise all three
@@ -255,7 +343,8 @@ func buildRow(_ *gift.Context, p rowProps) gift.View {
 		Align(geom.Alignment{Y: 0.5}).
 		Background(back).
 		CornerRadius(8).
-		Border(Line)
+		Border(Line).
+		Shadow(RowShadow)
 }
 
 // tint is a deterministic colour ramp.

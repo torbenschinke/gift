@@ -192,6 +192,13 @@ func (n *textNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size
 
 // Paint implements gift.Painter, in the fixed drawing order of the project
 // plan, section 8: background, content, border.
+//
+// The clip is pushed here and not left to gift, because a TextView's content
+// is its glyphs and not its children: [gift.PaintContext.PaintChildren], where
+// gift applies [gift.Element.Clip] for every container, is never reached. This
+// is the one place in the package that still spells the clip out, and the
+// rectangle is deliberately the same one gift would have used — the node's
+// bounds — so the input half and this half cannot disagree.
 func (n *textNode) Paint(ctx *gift.PaintContext) {
 	b := ctx.Bounds()
 	paintBackground(ctx, n.st, b)

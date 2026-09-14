@@ -38,9 +38,15 @@ func (s *Shaper) alloc() int32 {
 	// A pointer, not a value in a growable slice: [Shaper.Layout] hands out
 	// a *Paragraph that lives inside an entry, and growing a []entry would
 	// move it, leaving an earlier borrow pointing at a copy that stops being
-	// updated. Borrows are short lived by contract, but a contract violation
-	// should not produce plausible stale numbers. One allocation per entry,
-	// on the miss path only, buys a stable address.
+	// updated. One allocation per entry, on the miss path only, buys a stable
+	// address.
+	//
+	// The stable address does not make a violation safe, and this comment
+	// used to claim it did — "a contract violation should not produce
+	// plausible stale numbers" — while [Shaper.evictTail] recycled the entry
+	// at that very address and produced exactly that. The borrow contract is
+	// now enforced under giftdebug instead of asserted in a comment; see
+	// [Paragraph.checkBorrow].
 	s.entries = append(s.entries, &entry{prev: -1, next: -1})
 	return int32(len(s.entries) - 1)
 }
@@ -124,6 +130,12 @@ func (s *Shaper) evictTail() {
 	}
 	s.unlink(i)
 	e := s.entries[i]
+	if borrowChecks && e.tok != nil {
+		// Every outstanding borrow of this entry becomes invalid here, and
+		// this is the one piece of state that says so and does not live in
+		// the memory about to be reused.
+		e.tok.gen++
+	}
 	delete(s.index, e.key)
 	s.bytes -= e.bytes
 	e.bytes = 0
@@ -131,6 +143,14 @@ func (s *Shaper) evictTail() {
 	// keep the backing arrays for the next miss; see alloc.
 	e.key = cacheKey{}
 	e.par = Paragraph{}
+	if borrowChecks {
+		// The token is put back, with the generation left at zero against a
+		// counter that has just moved: a borrow still pointing at this
+		// address now disagrees with it. Clearing the whole struct would have
+		// left tok nil and turned the check into a silent no-op, which is the
+		// one failure mode a check must not have.
+		e.par.tok = e.tok
+	}
 	e.glyphs = e.glyphs[:0]
 	clear(e.runs) // a Run holds a *Font, which must not be retained by a dead entry
 	e.runs = e.runs[:0]

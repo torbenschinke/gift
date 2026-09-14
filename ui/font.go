@@ -53,8 +53,10 @@ var defaultFont Font
 // typeface would add somewhere between a hundred kilobytes and several
 // megabytes to every binary that links gift, would bind the project to that
 // typeface's licence, and would mean the first thing most applications do is
-// pay for a font they then replace. internal/text uses Roboto in testdata and
-// nowhere else, which is exactly the line this function keeps.
+// pay for a font they then replace. The only Roboto in this module sits in the
+// testdata of internal/text and internal/stress — a test fixture and a
+// measurement fixture, neither of them linked into anything an application
+// builds — which is exactly the line this function keeps.
 //
 // So font provision is the application's job, and the diagnosis when it is not
 // done is loud: see [Text].

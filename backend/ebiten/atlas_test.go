@@ -290,3 +290,129 @@ func TestAtlasKeyHasNoSubpixelPhase(t *testing.T) {
 		t.Fatalf("rasterised %d times for one glyph", a.Stats().Rasterised)
 	}
 }
+
+// TestAtlasCachesARejection is the defect the review found with a probe: a
+// full atlas rasterised every glyph it then refused, every frame, for ever.
+//
+// The work was invisible. It produced no pixels, no upload and no allocation —
+// only CPU time and a Rejected counter climbing at sixty times the rate
+// anybody would read it as. A measured probe did 350 discarded outlines per
+// frame.
+func TestAtlasCachesARejection(t *testing.T) {
+	// A single page far too small for the text, so every glyph is refused
+	// after the first shelf fills.
+	a := NewGlyphAtlas(AtlasConfig{PageSize: 32, MaxPages: 1})
+	gs := shapeGlyphs(t, "The quick brown fox jumps over the lazy dog", 24)
+
+	frame := func() {
+		for i := range gs {
+			a.Lookup(gs[i])
+		}
+		a.Tick()
+	}
+	frame()
+	first := a.Stats()
+	if first.Rejected == 0 {
+		t.Fatalf("a 32x32 page held all of %d glyphs at 24 px; the fixture is wrong", len(gs))
+	}
+	for range 10 {
+		frame()
+	}
+	got := a.Stats()
+
+	t.Logf("after 11 frames: rejected %d, of which rasterised %d; rasterised total %d",
+		got.Rejected, got.RejectedRasterised, got.Rasterised)
+
+	// Rejected keeps climbing, because it counts lookups and the text really
+	// is still missing. That is its job.
+	if got.Rejected <= first.Rejected {
+		t.Error("Rejected stopped counting; a missing glyph must stay visible in the counters")
+	}
+	// The rasterisation does not. Nothing evicted, so not one outline may have
+	// been produced a second time.
+	if got.RejectedRasterised != first.RejectedRasterised {
+		t.Errorf("ten further frames rasterised %d more outlines only to discard them "+
+			"(%d -> %d). A rejection must be cached like a blank.",
+			got.RejectedRasterised-first.RejectedRasterised,
+			first.RejectedRasterised, got.RejectedRasterised)
+	}
+	if got.Rasterised != first.Rasterised {
+		t.Errorf("Rasterised moved from %d to %d without a single eviction",
+			first.Rasterised, got.Rasterised)
+	}
+}
+
+// TestAtlasRejectionIsRetriedAfterAnEviction is the other half: a cached
+// rejection must not be permanent, or a glyph that once did not fit would
+// never be drawn again for the life of the process.
+func TestAtlasRejectionIsRetriedAfterAnEviction(t *testing.T) {
+	a := NewGlyphAtlas(AtlasConfig{PageSize: 64, MaxPages: 1, MaxAge: 2})
+	gs := shapeGlyphs(t, "The quick brown fox jumps over the lazy dog", 24)
+
+	// One frame, no Tick: the page is read from during the frame in progress
+	// and therefore cannot be evicted, so the glyphs that do not fit are
+	// refused and the refusals are cached.
+	var refused render.Glyph
+	for i := range gs {
+		if _, ok := a.Lookup(gs[i]); !ok {
+			refused = gs[i]
+		}
+	}
+	if a.Stats().Rejected == 0 {
+		t.Fatalf("a 64x64 page held all of %d glyphs at 24 px; the fixture is wrong", len(gs))
+	}
+
+	// Age every page out. The cached rejections go with them.
+	for range 10 {
+		a.Tick()
+	}
+	if got := a.Stats().Pages; got != 0 {
+		t.Fatalf("the page did not age out: %d left", got)
+	}
+	if _, ok := a.Lookup(refused); !ok {
+		t.Fatal("the glyph was still refused after every page had been evicted; " +
+			"a cached rejection became permanent and that text would never draw again")
+	}
+}
+
+// TestAtlasOccupancyDoesNotDrift. Stats().Glyphs claims to be the current
+// occupancy. Blanks and rejections live on no page, so nothing used to remove
+// them and the number rose for the life of the process — bounded by the glyph
+// count of the font, but a counter that only goes up is not an occupancy.
+func TestAtlasOccupancyDoesNotDrift(t *testing.T) {
+	a := NewGlyphAtlas(AtlasConfig{MaxAge: 2})
+	for _, g := range shapeGlyphs(t, "a b c d e f g", 16) {
+		a.Lookup(g)
+	}
+	if a.Stats().Blanks == 0 {
+		t.Fatal("the fixture produced no blank glyphs")
+	}
+	before := a.Stats()
+	for range 10 {
+		a.Tick()
+	}
+	got := a.Stats()
+	t.Logf("glyphs %d -> %d, pages %d -> %d", before.Glyphs, got.Glyphs, before.Pages, got.Pages)
+	if got.Pages != 0 {
+		t.Fatalf("the pages did not age out: %d left", got.Pages)
+	}
+	if got.Glyphs != 0 {
+		t.Errorf("every page was evicted but Stats().Glyphs is still %d; the pageless entries "+
+			"(blanks and rejections) are never removed and the occupancy counter lies", got.Glyphs)
+	}
+}
+
+// TestAtlasUsesTheFirstRow. The shelf packer opened its first shelf one pixel
+// down, because a zero shelf height made the first-fit test fail and the
+// "open a new shelf below the current one" branch added a pad to a shelf that
+// did not exist. Cosmetic, and still a row of every page.
+func TestAtlasUsesTheFirstRow(t *testing.T) {
+	a := NewGlyphAtlas(AtlasConfig{})
+	i, ok := a.Lookup(shapeGlyphs(t, "H", 16)[0])
+	if !ok {
+		t.Fatal("the first glyph of an empty atlas did not fit")
+	}
+	if y := a.Entry(i).y; y != 0 {
+		t.Errorf("the first glyph on an empty page sits at y=%d, want row 0", y)
+	}
+}

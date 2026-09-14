@@ -470,6 +470,11 @@ func (b ButtonView) CornerRadius(v float32) ButtonView {
 }
 
 // Clip confines the label to the bounds, for paint and for hit testing alike.
+//
+// Both halves come from the one [gift.Element.Clip] this sets; gift applies it
+// on the way into the subtree. It used to apply to hit testing only, so a
+// label larger than the button painted over everything around it while
+// claiming in this very sentence that it did not.
 func (b ButtonView) Clip(v bool) ButtonView { b.setClip(v); return b }
 
 // Key sets the reconciliation key of this view among its siblings.

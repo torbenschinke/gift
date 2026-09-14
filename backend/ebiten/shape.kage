@@ -73,34 +73,81 @@ func sdRoundBox(p vec2, b vec2, r float) float {
 	return length(max(q, vec2(0))) + min(max(q.x, q.y), 0.0) - r
 }
 
-// shadowCoverage is the coverage of a Gaussian blurred shape at signed
-// distance d from its boundary, with standard deviation sigma.
+// phiApprox is the logistic approximation of the normal cumulative
+// distribution, 1/(1+exp(-(1.5976x + 0.070565x^3))), whose maximum absolute
+// error is about 1.4e-4 — well under one step of an eight bit alpha channel.
+// x is clamped at six sigma so that the cube cannot overflow a float, which
+// costs nothing because the geometry stops at three.
+func phiApprox(x float) float {
+	c := clamp(x, -6.0, 6.0)
+	t := 1.5976*c + 0.070565*c*c*c
+	return 1.0 / (1.0 + exp(-t))
+}
+
+// shadowCoverage is the coverage of a Gaussian blurred rounded box at the
+// local point p, with half extents half, corner radius radius and standard
+// deviation sigma.
 //
-// # What this is exactly, and where it is an approximation
+// # What is exact and what is not
 //
 // The exact answer is the 2D convolution of the indicator function of the
-// rounded box with a Gaussian. Along a straight edge that convolution
-// separates and collapses to the Gaussian cumulative distribution of the
-// perpendicular distance, which is what this computes — so away from the
-// corners the result is exact, not an approximation.
+// rounded box with a Gaussian. Two special cases of it have closed forms, and
+// this function is a blend of both.
 //
-// At a corner it is not. The true value there is the integral over a quarter
-// plane and is slightly smaller than the half plane answer this gives, so a
-// corner is drawn a little fuller than a real blur would. The error peaks at
-// roughly two per cent of the shadow alpha, is confined to the corner arcs and
-// is monotone, so it never produces a ring or a step. Every analytic box
-// shadow in every browser makes some version of this trade; the alternatives
-// are a loop of erf evaluations per fragment, or a texture.
+//   - Along a straight edge the convolution separates and collapses to the
+//     Gaussian cumulative distribution of the perpendicular distance, which
+//     is what the signed distance field term gives. Away from the corners
+//     that term is exact, not an approximation. Measured maximum error at the
+//     middle of an edge: 3e-4 for a shape several sigma across.
+//   - At the corner of a *sharp* rectangle the convolution separates the
+//     other way, into the product of two independent one dimensional answers,
+//     one per axis. That term is exact for radius zero, at every point.
 //
-// Phi is the logistic approximation of the normal cumulative distribution,
-// 1/(1+exp(-(1.5976x + 0.070565x^3))), whose maximum absolute error is about
-// 1.4e-4 — well under one step of an eight bit alpha channel. x is clamped at
-// six sigma so that the cube cannot overflow a float, which costs nothing
-// because the geometry stops at three.
-func shadowCoverage(d float, sigma float) float {
-	x := clamp(-d/sigma, -6.0, 6.0)
-	t := 1.5976*x + 0.070565*x*x*x
-	return 1.0 / (1.0 + exp(-t))
+// Neither is exact at the corner of a rounded box, and nothing derivative
+// free is. The blend takes the second term where it is right — a radius small
+// compared to sigma — and the first where it is right, and the weight is a
+// per shape constant, so a fragment pays one compare when the radius wins.
+//
+// # The error, measured
+//
+// Numbers from a reference convolution of the very same sdRoundBox, the x
+// integral in closed form and the y integral over 8000 samples, taken as the
+// maximum absolute coverage error over the whole corner quadrant:
+//
+//	half      radius  sigma   before   after
+//	(40,15)   6       8       0.194    0.106
+//	(40,15)   0       8       0.250    0.030
+//	(50,50)   0       2       0.250    0.000
+//	(50,50)   4       16      0.242    0.020
+//	(50,50)   8       8       0.170    0.133
+//	(50,50)   12      8       0.132    0.132
+//	(50,50)   18      8       0.093    0.093
+//	(50,50)   18      2       0.022    0.022
+//	(30,30)   15      4       0.055    0.055
+//
+// So the honest statement, which replaces the "roughly two per cent" this
+// comment used to claim and which was wrong by an order of magnitude: the
+// corner error is up to 0.13 of the shadow alpha, it grows with sigma over
+// radius, and it is largest when the two are comparable. A sharp cornered
+// shadow — the default, since CornerRadius is zero unless asked for — is now
+// essentially exact instead of being the worst case. The error is confined to
+// the corner quadrants, is monotone and never produces a ring or a step.
+//
+// The alternatives remain a loop of erf evaluations per fragment, or a
+// texture. Every analytic box shadow in every browser makes some version of
+// this trade.
+func shadowCoverage(p vec2, half vec2, radius float, sigma float) float {
+	sdf := phiApprox(-sdRoundBox(p, half, radius) / sigma)
+	// A per shape constant: the shader recomputes it rather than receiving it
+	// because all four custom vertex slots are spoken for, and a divide plus
+	// a smoothstep is cheaper than a fifth attribute would be anyway.
+	w := 1.0 - smoothstep(0.0, 1.5, radius/sigma)
+	if w <= 0.0 {
+		return sdf
+	}
+	d := abs(p) - half
+	prod := phiApprox(-d.x/sigma) * phiApprox(-d.y/sigma)
+	return sdf + (prod-sdf)*w
 }
 
 func Fragment(dstPos vec4, src0Pos vec2, color vec4, custom vec4) vec4 {
@@ -113,7 +160,7 @@ func Fragment(dstPos vec4, src0Pos vec2, color vec4, custom vec4) vec4 {
 	// emitted is the shape grown by three sigma, so the falloff is contained.
 	if stroke < 0.0 {
 		p := src0Pos - half
-		return color * shadowCoverage(sdRoundBox(p, half, radius), -stroke)
+		return color * shadowCoverage(p, half, radius, -stroke)
 	}
 
 	// A plain axis aligned fill needs no distance field at all. The quad the

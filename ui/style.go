@@ -277,7 +277,13 @@ const maxFinite = 3.4028235e38
 // section 8. It is shared by every styled view type whose content is its
 // children.
 //
-// A view whose content is not its children — [TextView] — cannot use it,
+// The clip is not here. [gift.Element.Clip] is applied by gift itself on the
+// way into the subtree — see [gift.PaintContext.PaintChildren] — so that the
+// paint clip and the input clip come from one declaration read in one place
+// and a widget cannot honour one and forget the other. ui.Button forgot it for
+// a whole work unit.
+//
+// A view whose content is not its children — [TextView] — cannot use this,
 // because the content step is different. It calls [paintBackground] and
 // [paintBorder] around its own content instead, which is why the two halves
 // are separate functions: passing a content callback in would put a closure in
@@ -285,13 +291,7 @@ const maxFinite = 3.4028235e38
 func paintStyle(ctx *gift.PaintContext, st styleSpec) {
 	b := ctx.Bounds()
 	paintBackground(ctx, st, b)
-	if st.clip {
-		ctx.PushClip(b)
-	}
 	ctx.PaintChildren()
-	if st.clip {
-		ctx.PopClip()
-	}
 	paintBorder(ctx, st, b)
 }
 

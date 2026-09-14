@@ -120,12 +120,26 @@ type Element struct {
 	// acquires no hover or press state and is skipped by the focus order.
 	Disabled bool
 
-	// Clip confines the input of this node's subtree to its bounds.
+	// Clip confines this node's subtree to its bounds, for painting and for
+	// input alike.
 	//
-	// It is the input half of [ui.Stack.Clip] and is set from the same
-	// declaration. A view that pushes a paint clip must set this too and
-	// must use the same rectangle, or a node would be invisible and still
-	// clickable.
+	// It is one flag with one reader on each side, and both readers use this
+	// node's bounds: [App.hitNode] intersects them into the inherited input
+	// clip, and [PaintContext.PaintChildren] pushes them onto the display
+	// list's clip stack on the way into the subtree. A widget therefore
+	// cannot clip input without clipping paint or the other way round, which
+	// is exactly what ui.Button used to do — Clip(true) confined its hit area
+	// and let a 400x400 label paint over the window.
+	//
+	// The clip surrounds the subtree and not the node's own drawing, so a
+	// shadow still extends past the bounds and a background still covers
+	// them; see [PaintContext.paintKids]. A leaf whose content is not its
+	// children has to apply the clip to that content itself, and ui.Text
+	// does.
+	//
+	// Honest limitation: the clip is the bounding rectangle and not the
+	// rounded shape, on both sides. A shape accurate clip needs stencil or
+	// shader support and is a backend concern.
 	Clip bool
 
 	// Transform maps this node and its subtree into the space of its parent.

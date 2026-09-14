@@ -84,7 +84,16 @@ type glyphEntry struct {
 	// space of every line on every frame in order to rediscover that it is
 	// empty.
 	inked bool
+	// rejected marks an entry that stands for a glyph the packer could not
+	// find room for. It is cached for exactly the same reason a blank is: the
+	// alternative is rasterising the outline again on every frame in order to
+	// rediscover that it still does not fit. See [GlyphAtlas.insert].
+	rejected bool
 }
+
+// isPageless reports whether the entry occupies no page, which is true of a
+// blank and of a rejection.
+func (e glyphEntry) isPageless() bool { return e.page < 0 }
 
 // atlasPage is one GPU texture and the shelf packer that fills it.
 type atlasPage struct {
@@ -92,6 +101,9 @@ type atlasPage struct {
 	// penX is the left edge of the free space on the current shelf, shelfY
 	// the top of that shelf and shelfH its height.
 	penX, shelfY, shelfH int32
+	// open says whether a shelf has been opened on this page yet. See
+	// [atlasPage.fit].
+	open bool
 	// used is the frame number this page was last read from.
 	used uint64
 	// entries is the number of live glyphs on the page. It is what makes a
@@ -159,6 +171,10 @@ type GlyphAtlas struct {
 	// frame is the number of drawn frames, used as the page age stamp.
 	frame uint64
 	bytes int
+	// pageless is the number of live entries that occupy no page: blanks and
+	// cached rejections. It is tracked so that an eviction can drop them
+	// without a second scan of the index.
+	pageless int
 
 	rast *text.Rasterizer
 	mask text.GlyphMask
@@ -218,6 +234,12 @@ func (a *GlyphAtlas) Lookup(g render.Glyph) (int32, bool) {
 	if i, ok := a.index[k]; ok {
 		a.stats.Hits++
 		e := &a.entries[i]
+		if e.rejected {
+			// Known not to fit. The caller draws nothing, exactly as before,
+			// but the outline is not rasterised again; see insert.
+			a.stats.Rejected++
+			return 0, false
+		}
 		if e.page >= 0 {
 			a.pages[e.page].used = a.frame
 		}
@@ -252,6 +274,7 @@ func (a *GlyphAtlas) insert(k glyphKey, f *text.Font, size float32, id render.Gl
 		i := a.alloc()
 		a.entries[i] = glyphEntry{page: -1}
 		a.index[k] = i
+		a.pageless++
 		a.stats.Blanks++
 		return i, true
 	}
@@ -259,7 +282,30 @@ func (a *GlyphAtlas) insert(k glyphKey, f *text.Font, size float32, id render.Gl
 	w, h := int32(a.mask.Width), int32(a.mask.Height)
 	p, px, py, ok := a.place(w, h)
 	if !ok {
+		// The rejection is cached, keyed like a blank and on no page at all.
+		//
+		// Without this the atlas rasterised the outline, threw it away and
+		// recorded nothing, so the next frame rasterised it again — for ever,
+		// for every glyph that did not fit. A full atlas measured 350
+		// discarded outlines per frame, with no symptom other than a counter
+		// climbing at sixty times the rate anybody would expect. The work was
+		// invisible because it produced no pixels and no allocation, only CPU
+		// time.
+		//
+		// A cached rejection is dropped when a page is evicted — see
+		// [GlyphAtlas.evictPage] — so the glyph is retried once per
+		// eviction cycle instead of once per frame. The honest limitation: a
+		// scene that is over budget and completely static never evicts
+		// anything, so those glyphs stay missing until something else asks
+		// for room. That is the same outcome as before, minus the wasted
+		// rasterisation, and [AtlasStats.RejectedRasterised] is the number
+		// that says it is happening.
+		i := a.alloc()
+		a.entries[i] = glyphEntry{page: -1, rejected: true}
+		a.index[k] = i
+		a.pageless++
 		a.stats.Rejected++
+		a.stats.RejectedRasterised++
 		return 0, false
 	}
 
@@ -305,18 +351,27 @@ func (a *GlyphAtlas) place(w, h int32) (page int32, x, y int32, ok bool) {
 }
 
 // fit places a w by h bitmap on this page if it fits, advancing the shelf.
+//
+// open says whether a shelf has been opened at all. Without it the zero value
+// shelfH == 0 made the first-fit test fail for every glyph, so the first shelf
+// opened at y = glyphPad and the topmost row of every page was never used.
+// Cosmetic — one row in a thousand and twenty four — but it is a row.
 func (p *atlasPage) fit(w, h, side int32) (x, y int32, ok bool) {
-	if p.penX+w+glyphPad <= side && h <= p.shelfH {
+	if p.open && p.penX+w+glyphPad <= side && h <= p.shelfH {
 		x, y = p.penX, p.shelfY
 		p.penX += w + glyphPad
 		return x, y, true
 	}
-	// Open a new shelf below the current one.
-	ny := p.shelfY + p.shelfH + glyphPad
+	// Open a new shelf below the current one. The first one starts at row
+	// zero, not below an imaginary shelf of height zero.
+	ny := int32(0)
+	if p.open {
+		ny = p.shelfY + p.shelfH + glyphPad
+	}
 	if ny+h+glyphPad > side {
 		return 0, 0, false
 	}
-	p.shelfY, p.shelfH, p.penX = ny, h, w+glyphPad
+	p.shelfY, p.shelfH, p.penX, p.open = ny, h, w+glyphPad, true
 	return 0, ny, true
 }
 
@@ -363,12 +418,24 @@ func (a *GlyphAtlas) evictPage(idx int32) {
 	p := a.pages[idx]
 	dropped := 0
 	for k, i := range a.index {
-		if a.entries[i].page == idx {
-			delete(a.index, k)
-			a.entries[i] = glyphEntry{page: -1}
-			a.free = append(a.free, i)
-			dropped++
+		e := a.entries[i]
+		// Entries on the evicted page go, and so do the pageless ones: a
+		// cached rejection has to be retried now that there is room, and a
+		// blank that is never dropped makes Stats().Glyphs drift upwards for
+		// the life of the process while claiming to be the current occupancy.
+		// Both are cheap to rediscover and neither holds a byte of GPU
+		// memory.
+		if e.page != idx && !e.isPageless() {
+			continue
 		}
+		delete(a.index, k)
+		a.entries[i] = glyphEntry{page: -1}
+		a.free = append(a.free, i)
+		if e.isPageless() {
+			a.pageless--
+			continue
+		}
+		dropped++
 	}
 	if a.onDeallocate != nil {
 		a.onDeallocate(p.img)
@@ -465,11 +532,29 @@ type AtlasStats struct {
 	PagesCreated, PageEvictions, AgeEvictions uint64
 	// GlyphEvictions is the number of entries dropped with their pages.
 	GlyphEvictions uint64
-	// Rejected counts glyphs that could not be packed at all: a glyph larger
-	// than a page, or a frame that filled every page it had. A non zero value
-	// means text is missing from the screen and the budget needs raising.
+	// Rejected counts lookups that produced no glyph: an outline larger than
+	// a whole page, a frame that filled every page it had, or a repeat of
+	// either. A non zero value means text is missing from the screen and the
+	// budget needs raising. It climbs once per lookup, so in a steady scene
+	// it climbs once per frame per missing glyph.
 	Rejected uint64
-	// Pages, Glyphs and Bytes are the current occupancy.
+	// RejectedRasterised is the subset of Rejected that actually cost a
+	// rasterisation, that is the number of *distinct* glyphs the packer has
+	// turned away since the last eviction.
+	//
+	// This is the number that says whether the atlas is wasting CPU or merely
+	// reporting a budget problem. It used to be equal to Rejected, because a
+	// turned away glyph was rasterised and discarded on every frame for ever
+	// — 350 outlines per frame in a measured probe, invisible because they
+	// produced neither pixels nor allocations. A rejection is now cached like
+	// a blank, so RejectedRasterised should stay near the number of distinct
+	// missing glyphs while Rejected keeps climbing; if the two rise together,
+	// something is dropping the cached rejections every frame.
+	RejectedRasterised uint64
+	// Pages, Glyphs and Bytes are the current occupancy. Glyphs counts index
+	// entries, which includes the pageless ones — blanks and cached
+	// rejections — and those are dropped with the next page eviction, so the
+	// number is the current occupancy rather than a high water mark.
 	Pages, Glyphs int
 	Bytes         int
 }

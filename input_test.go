@@ -41,6 +41,9 @@ type target struct {
 	disabled          bool
 	notFocusable      bool
 	swallowEverything bool
+	// events, when non nil, receives every event the target saw, whole. The
+	// log above keeps only a name, and the wheel tests are about the fields.
+	events *[]gift.Event
 }
 
 func (target) ViewType() gift.TypeID { return targetType }
@@ -63,6 +66,9 @@ func (n *targetNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Si
 }
 
 func (n *targetNode) HandleEvent(ctx *gift.EventContext, e gift.Event) bool {
+	if n.t.events != nil {
+		*n.t.events = append(*n.t.events, e)
+	}
 	if n.t.log != nil {
 		n.t.log.add(n.t.name + ":" + kindName(e.Kind) + insideMark(e))
 	}
@@ -769,4 +775,197 @@ func mustHit(t *testing.T, a *gift.App, p geom.Point) gift.NodeRef {
 		t.Fatalf("nothing at %v", p)
 	}
 	return h
+}
+
+// TestUnmountDuringCaptureEndsThePress is the second half of the unmount case.
+//
+// forgetNode cleared the capture and left p.down set, so the pointer was half
+// down: the next PointerMove skipped the capture branch, fell through to
+// updateHover, and every button the still held finger passed over lit up —
+// which contradicts PointerMove's own documentation and is visible to a user
+// as a row of controls highlighting under a dragging cursor.
+func TestUnmountDuringCaptureEndsThePress(t *testing.T) {
+	var l log
+	show := true
+	root := func(*gift.Context) gift.View {
+		kids := []gift.View{target{name: "a", w: 50, h: 50, log: &l}}
+		if show {
+			kids = append(kids, target{name: "b", w: 50, h: 50, log: &l})
+		}
+		return frameView{w: 300, h: 300, offsets: []geom.Point{at(0, 0), at(100, 0)}, children: kids}
+	}
+	a := gift.New(gift.Options{Root: root})
+	mustUpdate(t, a)
+
+	a.BeginInput(0)
+	a.PointerDown(gift.MousePointer, gift.PointerMouse, at(125, 25))
+
+	show = false
+	a.Invalidate()
+	mustUpdate(t, a)
+
+	// Drag the still held pointer across the surviving target.
+	l.reset()
+	a.BeginInput(0)
+	a.PointerMove(gift.MousePointer, gift.PointerMouse, at(25, 25))
+
+	if l.has("a:enter") || l.has("a:move") {
+		t.Errorf("a pointer whose captured node was unmounted lit up another target: %v.\n"+
+			"The hover set stays frozen while a pointer is down, whether or not anything "+
+			"still captures it; PointerMove says so.", l.seen)
+	}
+	if a.NodeInteraction(mustHit(t, a, at(25, 25))).Hover {
+		t.Error("the target under a still held pointer is hovered")
+	}
+
+	// The release ends the press, and only then does the hover resume.
+	a.BeginInput(0)
+	a.PointerUp(gift.MousePointer, gift.PointerMouse, at(25, 25))
+	if !a.NodeInteraction(mustHit(t, a, at(25, 25))).Hover {
+		t.Error("the hover did not resume after the release; the pointer is stuck down")
+	}
+	if a.NodeInteraction(mustHit(t, a, at(25, 25))).Pressed {
+		t.Error("the target went pressed without ever being pressed on")
+	}
+}
+
+// TestDragFromEmptySpaceDoesNotLightUpControls is the same rule reached the
+// other way: a press that hit nothing captures nothing, and the pointer is
+// still down.
+func TestDragFromEmptySpaceDoesNotLightUpControls(t *testing.T) {
+	var l log
+	root := func(*gift.Context) gift.View {
+		return frameView{
+			w: 300, h: 300,
+			offsets:  []geom.Point{at(100, 100)},
+			children: []gift.View{target{name: "t", w: 50, h: 50, log: &l}},
+		}
+	}
+	a := newInputApp(t, root)
+
+	a.BeginInput(0)
+	a.PointerDown(gift.MousePointer, gift.PointerMouse, at(10, 10))
+	a.BeginInput(0)
+	a.PointerMove(gift.MousePointer, gift.PointerMouse, at(125, 125))
+
+	if l.has("t:enter") {
+		t.Errorf("dragging from empty space across a control hovered it: %v", l.seen)
+	}
+	a.BeginInput(0)
+	a.PointerUp(gift.MousePointer, gift.PointerMouse, at(125, 125))
+	if !a.NodeInteraction(mustHit(t, a, at(125, 125))).Hover {
+		t.Error("the hover did not resume after the release")
+	}
+}
+
+// TestWheelBeforeAnyMoveIsAMousePointer is the K8 half: PointerWheel indexed
+// the mouse slot directly instead of going through pointerFor, so a wheel that
+// arrived before the first PointerMove carried the zero PointerID — a value in
+// the range platform touch identifiers use — and claimed to be a touch.
+func TestWheelBeforeAnyMoveIsAMousePointer(t *testing.T) {
+	var l log
+	var events []gift.Event
+	root := func(*gift.Context) gift.View {
+		return frameView{
+			w: 300, h: 300,
+			offsets: []geom.Point{at(0, 0)},
+			children: []gift.View{target{name: "t", w: 200, h: 200, log: &l, events: &events,
+				swallowEverything: true}},
+		}
+	}
+	a := newInputApp(t, root)
+
+	a.BeginInput(0)
+	a.PointerWheel(at(50, 50), at(0, 3))
+
+	var got gift.Event
+	for _, e := range events {
+		if e.Kind == gift.EventWheel {
+			got = e
+		}
+	}
+	if got.Kind != gift.EventWheel {
+		t.Fatalf("no wheel event was delivered: %v", events)
+	}
+	if got.Pointer != gift.MousePointer {
+		t.Errorf("the first wheel event carries pointer id %d, want MousePointer (%d); "+
+			"a positive id is a touch identifier", got.Pointer, gift.MousePointer)
+	}
+	if got.Device != gift.PointerMouse {
+		t.Errorf("the first wheel event says device %v, want mouse", got.Device)
+	}
+}
+
+// TestWheelUpdatesTheHover is the other K8 half: the wheel wrote p.pos without
+// touching p.over, so the *next* real move computed its delta and its
+// enter/leave pair from a position the mouse had never visited.
+func TestWheelUpdatesTheHover(t *testing.T) {
+	var l log
+	var events []gift.Event
+	root := func(*gift.Context) gift.View {
+		return frameView{
+			w: 300, h: 300,
+			offsets: []geom.Point{at(0, 0), at(100, 0)},
+			children: []gift.View{
+				target{name: "left", w: 50, h: 50, log: &l, events: &events},
+				target{name: "right", w: 50, h: 50, log: &l, events: &events},
+			},
+		}
+	}
+	a := newInputApp(t, root)
+
+	a.BeginInput(0)
+	a.PointerMove(gift.MousePointer, gift.PointerMouse, at(25, 25))
+	if !a.NodeInteraction(mustHit(t, a, at(25, 25))).Hover {
+		t.Fatal("the move did not set the hover; the fixture is wrong")
+	}
+
+	// A wheel over the other target. The cursor really is over it, so the
+	// hover has to follow.
+	a.BeginInput(0)
+	a.PointerWheel(at(125, 25), at(0, 3))
+
+	if a.NodeInteraction(mustHit(t, a, at(25, 25))).Hover {
+		t.Error("the left target is still hovered after the pointer wheeled over the right one")
+	}
+	if !a.NodeInteraction(mustHit(t, a, at(125, 25))).Hover {
+		t.Error("the right target is not hovered after the pointer wheeled over it")
+	}
+
+	// And the delta of the next move is measured from where the wheel left
+	// the pointer, not from where it was two events ago.
+	events = events[:0]
+	a.BeginInput(0)
+	a.PointerMove(gift.MousePointer, gift.PointerMouse, at(135, 25))
+	for _, e := range events {
+		if e.Kind == gift.EventPointerMove && e.Delta.X != 10 {
+			t.Errorf("the move after a wheel reports delta %v, want (10, 0) measured from the "+
+				"wheel position", e.Delta)
+		}
+	}
+}
+
+// TestMoveFocusBeforeTheFirstUpdate. MoveFocus is exported and reaches
+// focusNeighbour, which dereferenced a.root with no guard — so a keyboard
+// shortcut wired up before the first Update crashed inside the runtime instead
+// of answering "there is no focus order yet".
+func TestMoveFocusBeforeTheFirstUpdate(t *testing.T) {
+	a := gift.New(gift.Options{Root: func(*gift.Context) gift.View {
+		return frameView{w: 100, h: 100, children: []gift.View{target{name: "t", w: 10, h: 10}}}
+	}})
+	if a.MoveFocus(true) {
+		t.Error("MoveFocus reported a change before anything was built")
+	}
+	if a.MoveFocus(false) {
+		t.Error("MoveFocus reported a change before anything was built")
+	}
+	if _, ok := a.Focus(); ok {
+		t.Error("something holds the focus before the first build")
+	}
+	// And it works normally once there is a tree, so the guard is a guard and
+	// not a disabling.
+	mustUpdate(t, a)
+	if !a.MoveFocus(true) {
+		t.Error("MoveFocus found nothing after the tree was built")
+	}
 }

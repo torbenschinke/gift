@@ -66,13 +66,23 @@ func TestAlignBaselineAlignsLabelsOfDifferentSizes(t *testing.T) {
 
 // TestAlignBaselineLeavesARectangleAlone: a child that reports no baseline is
 // not guessed at. It keeps the ordinary cross axis alignment.
+//
+// The alignment is deliberately not the default. Under Y=0 "keeps its ordinary
+// alignment" and "was clamped onto the common baseline like everything else"
+// both put the rectangle at the top of the band, so the test could not tell
+// them apart and passed with the fallback deleted. With Y=0.5 the two answers
+// are different numbers.
 func TestAlignBaselineLeavesARectangleAlone(t *testing.T) {
 	f := loadTestFont(t)
-	box := probe(20, 60)
-	label := ui.Text("Ag").Font(f).FontSize(12)
+	// The label is the tall one, so the band is taller than the rectangle and
+	// the rectangle has somewhere to be that is neither the top nor the
+	// baseline.
+	box := probe(20, 20)
+	label := ui.Text("Ag").Font(f).FontSize(40)
+	mid := geom.Alignment{Y: 0.5}
 
-	withBaseline := run(t, ui.ZStack(ui.HStack(box, label).Gap(8).AlignBaseline()), geom.Sz(400, 200))
-	plain := run(t, ui.ZStack(ui.HStack(box, label).Gap(8)), geom.Sz(400, 200))
+	withBaseline := run(t, ui.ZStack(ui.HStack(box, label).Gap(8).Align(mid).AlignBaseline()), geom.Sz(400, 200))
+	plain := run(t, ui.ZStack(ui.HStack(box, label).Gap(8).Align(mid)), geom.Sz(400, 200))
 
 	// The rectangle is the first fill in both lists.
 	var a, b geom.Rect
@@ -90,6 +100,54 @@ func TestAlignBaselineLeavesARectangleAlone(t *testing.T) {
 	}
 	if !approxRect(a, b) {
 		t.Fatalf("the rectangle moved from %v to %v; a child with no baseline must keep its ordinary alignment", b, a)
+	}
+	// And the ordinary alignment is not the top, so the assertion above
+	// distinguishes the two outcomes rather than agreeing with both.
+	if a.Min.Y == 0 {
+		t.Fatalf("the rectangle sits at y=0 under a centred alignment (%v); the row is exactly as "+
+			"tall as the rectangle, so 'kept its alignment' and 'clamped to the top' are still "+
+			"the same answer and this test proves nothing", a)
+	}
+}
+
+// TestBaselineRowIsNotInflatedByANonBaselineChild is the row height half of
+// the same rule.
+//
+// The descent below the common baseline used to be charged over every child,
+// with a child that reported no baseline contributing its entire height. A
+// 20x60 rectangle next to a 12 pt label therefore produced a band of
+// ascent+60 — 72 pixels for a row whose tallest thing is 60 — and every row
+// with one non-text child in it grew.
+func TestBaselineRowIsNotInflatedByANonBaselineChild(t *testing.T) {
+	f := loadTestFont(t)
+	const boxH = 60
+	row := func(baseline bool) geom.Rect {
+		s := ui.HStack(probe(20, boxH), ui.Text("Ag").Font(f).FontSize(12)).
+			Gap(8).
+			Background(ui.RGB(1, 2, 3))
+		if baseline {
+			s = s.AlignBaseline()
+		}
+		l := run(t, ui.ZStack(s), geom.Sz(400, 200))
+		for _, op := range l.Ops() {
+			if op.Color == ui.RGB(1, 2, 3) {
+				return op.Bounds
+			}
+		}
+		t.Fatal("the row did not paint its background")
+		return geom.Rect{}
+	}
+
+	plain, aligned := row(false), row(true)
+	if plain.Height() != boxH {
+		t.Fatalf("without baselines the row is %v high, want the %d of its tallest child; "+
+			"the fixture is wrong", plain.Height(), boxH)
+	}
+	if aligned.Height() != plain.Height() {
+		t.Errorf("baseline alignment made the row %v high where ordinary alignment gives %v. "+
+			"The label's band is far smaller than the rectangle, so the row must stay %d: a child "+
+			"that reports no baseline has no descent below the common line and must not be charged "+
+			"its whole height.", aligned.Height(), plain.Height(), boxH)
 	}
 }
 

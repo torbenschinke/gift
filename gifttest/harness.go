@@ -83,12 +83,6 @@ type Harness struct {
 	// Release can happen where Press left it without the test restating the
 	// coordinate.
 	mouse geom.Point
-
-	// scratch buffers of the tree walk. A selector run costs no allocation
-	// after the first one, which matters only because a test that asserts in
-	// a loop should not be the slowest thing in the suite.
-	stack   []gift.NodeRef
-	matches []Node
 }
 
 // New mounts the view and brings it to a settled, painted steady state.

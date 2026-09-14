@@ -184,3 +184,90 @@ func BenchmarkUpdatePaint(b *testing.B) {
 		a.Paint()
 	}
 }
+
+// TestSceneContainsTextAndShadows is the guard against the defect this scene
+// actually had.
+//
+// It contained neither. A run reported glyph_draw_calls 0, shaped_glyphs 0,
+// atlas hits and misses 0 and shadow_ops 0, so every frame time and every
+// allocation number quoted for step 2 of the project plan was a number about
+// step 1 — the text stack, the atlas and the shadows, which are most of what
+// step 2 added, were never executed by the one scene that measures anything.
+// A fixture that measures the wrong thing is worse than no fixture, because it
+// produces numbers.
+func TestSceneContainsTextAndShadows(t *testing.T) {
+	const rows, cells = 12, 14
+	_, l := paintScene(t, rows, cells, geom.Sz(1280, 720))
+
+	var glyphRuns, glyphs, shadows int
+	for _, op := range l.Ops() {
+		switch op.Kind {
+		case render.OpGlyphs:
+			glyphRuns++
+			glyphs += int(op.GlyphCount)
+		case render.OpShadow:
+			shadows++
+		}
+	}
+	t.Logf("%d glyph runs, %d glyphs, %d shadow ops in a %dx%d scene", glyphRuns, glyphs, shadows, rows, cells)
+
+	// Two labels per row, plus the header's two, the badge's one and the
+	// footer's two. The bound is deliberately loose: the assertion is "there
+	// is real text in here", not "the design is exactly this".
+	if want := 2 * rows; glyphRuns < want {
+		t.Errorf("the scene paints %d glyph runs, want at least %d; the text stack is not being "+
+			"exercised and the measurement is about step 1 of the project plan", glyphRuns, want)
+	}
+	if glyphs < 200 {
+		t.Errorf("the scene paints %d glyphs; that is not a text workload", glyphs)
+	}
+	// One per row, one on the panel, one on the header, one on the badge.
+	if want := rows + 1; shadows < want {
+		t.Errorf("the scene paints %d shadow operations, want at least %d; the analytic shadow "+
+			"path is not being exercised", shadows, want)
+	}
+}
+
+// TestSceneIsDeterministic. Two Scenes with the same parameters must produce
+// the same display list, or two measurements are not comparable and the
+// package documentation's promise is false. Text is the part most likely to
+// break it, which is why this test arrives with the text.
+func TestSceneIsDeterministic(t *testing.T) {
+	size := geom.Sz(1280, 720)
+	_, a := paintScene(t, 12, 14, size)
+	first := append([]render.Op(nil), a.Ops()...)
+	_, b := paintScene(t, 12, 14, size)
+	second := b.Ops()
+
+	if len(first) != len(second) {
+		t.Fatalf("two identical scenes painted %d and %d operations", len(first), len(second))
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Fatalf("operation %d differs between two identical scenes:\n  %+v\n  %+v",
+				i, first[i], second[i])
+		}
+	}
+}
+
+// TestRowTitlesAreDistinctAndStable. The shaping cache is keyed on the string,
+// so a scene whose rows all said the same thing would measure one cache entry
+// and forty hits — which is a fine thing to measure, and not the thing this
+// scene claims to measure.
+func TestRowTitlesAreDistinctAndStable(t *testing.T) {
+	s := New(40, 4)
+	seen := map[string]bool{}
+	for _, v := range s.titles {
+		seen[v] = true
+	}
+	if len(seen) < 10 {
+		t.Errorf("40 rows carry only %d distinct titles; the shaping cache would see almost no "+
+			"misses and the scene would not exercise it", len(seen))
+	}
+	again := New(40, 4)
+	for i := range s.titles {
+		if s.titles[i] != again.titles[i] || s.labels[i] != again.labels[i] {
+			t.Fatalf("row %d text differs between two constructions of the same scene", i)
+		}
+	}
+}

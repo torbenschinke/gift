@@ -812,6 +812,33 @@ Playwright.
 - **Strukturelle Assertions haben Vorrang vor Bildern.** Ein Golden sagt "das
   hat sich geaendert", nie "das ist falsch", und laeuft im Normalbuild gar
   nicht. Assertions auf der Display-Liste sagen warum.
+- **Aktionen pruefen ihr Ziel.** Eine Aktion rechnet sich den Punkt aus den
+  Bounds des Knotens aus und steigt zum naechsten interaktiven Vorfahren auf,
+  damit ein Test nicht die Interna eines Widgets festschreibt. Danach wird per
+  Hit-Test geprueft, **ob der Klick auch dort ankommt**. Review-Gate 3 hat
+  belegt, dass ohne diese Pruefung ein Test einen verdeckten Button anklicken
+  und trotzdem gruen sein kann. Der bewusste Klick durch etwas hindurch ist
+  `ClickAt` mit expliziter Koordinate.
+
+### Bekannte Falle: `t.Parallel` und prozessweiter Zustand
+
+Benannt, nicht behoben, mit Absicht. `internal/text` haelt einen prozessweiten
+Shaper samt Shaping-Cache, und `ui.SetDefaultFont` ist prozessweit
+veraenderlich. Solange kein Test `t.Parallel` aufruft, ist nichts kaputt; das
+Repository enthaelt heute keinen einzigen.
+
+Warum nicht jetzt beheben: ein Mutex saesse auf dem Messpfad, der im Layout
+laeuft und damit im 0-B/op-Vertrag aus Abschnitt 11 - und braechte einer
+Einfenster-Anwendung nach Abschnitt 1 nichts. Die saubere Loesung ist ein
+Shaper je `App`, und die scheitert daran, dass der Layout-Vertrag einem
+Layouter ein `*LayoutContext` und keinen Anwendungs-Handle gibt. Das ist eine
+Aenderung an `gift.Layouter`, keine Nachbesserung.
+
+Ausloeser zum Beheben: sobald eine zweite `App` im selben Prozess gebraucht
+wird, etwa ein Vorschaufenster in Schritt 3. Dann ist es ein
+Korrektheitsproblem und kein Testkomfortproblem, und der Shaper je `App` wird
+richtig gebaut statt mit einem Lock geflickt. Bis dahin gilt Abschnitt 15:
+fuer nebenlaeufige Fehler ist `-race` das verbindliche Werkzeug.
 
 Automatisierte Korrektheitstests:
 

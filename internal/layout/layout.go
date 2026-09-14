@@ -343,16 +343,27 @@ func baselinePass(spec StackSpec, ax Axis, n int, m Measurer, items []Item) (bas
 		return baselineSet{}, false
 	}
 	// The band the row needs is the largest ascent plus the largest descent
-	// below the common line, which is generally more than the tallest child:
-	// a big label and a small one aligned on their baselines overlap only
-	// partially.
+	// below the common line, which is generally more than the tallest
+	// *reporting* child: a big label and a small one aligned on their
+	// baselines overlap only partially.
+	//
+	// Only children that reported a baseline are charged to the descent.
+	// This loop used to fall back to the child's full height when it had no
+	// baseline, which put that whole height below the common line: a 20x60
+	// rectangle next to a 12 pt label produced a band of ascent+60, so the
+	// row came out 72 high instead of 60, and every row containing one
+	// non-text child inflated. A child with no baseline is not placed
+	// relative to the line at all — it keeps the ordinary
+	// [StackSpec.Alignment] placement, which is what [CrossAlignBaseline]
+	// promises — so it has no descent to contribute. Its height is already
+	// in maxCross from the measurement passes, and the band is the larger of
+	// the two.
 	for i := range n {
-		cross := ax.cross(items[i].Size)
-		d := cross
-		if b, has := set.of(i); has {
-			d = cross - b
+		b, has := set.of(i)
+		if !has {
+			continue
 		}
-		if d > set.descent {
+		if d := ax.cross(items[i].Size) - b; d > set.descent {
 			set.descent = d
 		}
 	}
