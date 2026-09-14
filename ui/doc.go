@@ -74,6 +74,21 @@
 // -tags giftdebug to have the offending node named. This is the overflow model
 // of the project plan, section 7.
 //
+// # Scrolling and the gallery
+//
+// [ScrollView] is a stack in a window that is smaller than it. The offset is
+// presentation state in the retained node, so scrolling rebuilds nothing and
+// measures nothing: gift translates the children with a matrix.
+//
+// [ImageGallery] is the other kind. It is a *virtualising* container over an
+// [github.com/torbenschinke/gift/asset.Collection]: only the entries inside
+// the viewport have nodes, and which entry a node stands for is decided during
+// layout rather than during build. A hundred thousand entries and a hundred
+// entries therefore produce the same handful of nodes, and scrolling still
+// never builds — it relayouts one node. The retained half is a [Gallery] the
+// application creates once and holds; see the documentation of that type for
+// why it is not the view.
+//
 // # Ownership of children
 //
 // ui.VStack(a, b, c) creates a fresh slice that gift keeps. ui.VStack(items...)

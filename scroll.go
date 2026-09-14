@@ -149,6 +149,37 @@ type ScrollSpec struct {
 	Axis ScrollAxis
 	// Config tunes the gesture constants of this container.
 	Config ScrollConfig
+
+	// Virtual declares that this container's layouter *produces* its content
+	// from the scroll offset instead of merely being translated by it.
+	//
+	// # What it changes
+	//
+	// An ordinary scroll container lays its children out once and then moves
+	// them with a matrix; changing the offset marks the node for repaint and
+	// nothing else, which is the whole claim of the scroll fast path. A
+	// virtualising container — the gallery of the project plan, section 10 —
+	// has no node for most of its content: it decides on every offset which
+	// of its bounded set of tiles stands for which item, and that decision is
+	// made in [Layouter.Layout] through [LayoutContext.ScrollOffset]. For
+	// such a container an offset change must invalidate *layout*, or the
+	// tiles would keep standing for the items they stood for at the offset
+	// the last layout saw.
+	//
+	// So: with Virtual set, [App.setScroll] marks the node for layout rather
+	// than only for paint. Nothing is rebuilt either way — no view function
+	// runs, [Diagnostics.Builds] does not move — and the layout that follows
+	// descends along the marked path only, so it costs the depth of the tree
+	// plus this one layouter. That is the honest price of virtualisation and
+	// it is measured in TestGalleryScrollPathCost.
+	//
+	// # Why it is opt in
+	//
+	// Because relayouting on every wheel notch is exactly what an ordinary
+	// scroller must not do, and a default that did it would quietly undo the
+	// property ui.ScrollView documents and gifttest asserts. A container that
+	// does not read [LayoutContext.ScrollOffset] has nothing to gain from it.
+	Virtual bool
 }
 
 // velSamples is the size of the velocity ring. Eight samples at sixty hertz
@@ -198,6 +229,10 @@ type velSample struct {
 type scrollState struct {
 	axis ScrollAxis
 	cfg  ScrollConfig
+
+	// virtual is [ScrollSpec.Virtual]: an offset change invalidates the
+	// layout of this node instead of only its paint.
+	virtual bool
 
 	// off is the document coordinate shown at the leading edge of the
 	// viewport, clamped to [0, maxOffset].
@@ -419,6 +454,9 @@ func (scrollHandler) HandleEvent(ctx *EventContext, e Event) bool {
 // repaint mark. Nothing is built, nothing is measured and no view function
 // runs, which is what [Diagnostics.Builds] and [Diagnostics.Layouts] are
 // asserted on.
+//
+// A container that declared [ScrollSpec.Virtual] is marked for layout instead,
+// because for it the content *is* a function of the offset. Still no build.
 func (a *App) setScroll(h scene.Handle, s *scrollState, v float64) bool {
 	v = s.clamp(v)
 	if v == s.off {
@@ -426,6 +464,10 @@ func (a *App) setScroll(h scene.Handle, s *scrollState, v float64) bool {
 	}
 	s.off = v
 	a.diag.Scrolls++
+	if s.virtual {
+		a.markNeedsLayout(h)
+		return true
+	}
 	a.markNeedsPaint(h)
 	return true
 }
@@ -551,6 +593,8 @@ type ScrollInfo struct {
 	// Dragging says whether a pointer drag is currently driving this
 	// container.
 	Dragging bool
+	// Virtual mirrors [ScrollSpec.Virtual].
+	Virtual bool
 }
 
 // ScrollInfo returns the state of the scroll container r, and false when r is
@@ -570,6 +614,7 @@ func (a *App) ScrollInfo(r NodeRef) (ScrollInfo, bool) {
 		Velocity:       s.vel,
 		Flinging:       s.flinging,
 		Dragging:       s.dragging,
+		Virtual:        s.virtual,
 	}, true
 }
 
@@ -765,6 +810,60 @@ func (l *LayoutContext) ScrollOffset() float64 {
 	return s.off
 }
 
+// SetScrollOffset moves this scroll container to off, clamped to the content
+// reported so far, and reports whether the offset changed.
+//
+// It is the counterpart of [LayoutContext.ScrollOffset] and exists for exactly
+// one caller: the scroll anchor of the project plan, section 10. A reflow —
+// a resize, a layout switch, a batch of corrections — moves every item in the
+// document, and keeping the viewport on the same picture means computing a new
+// offset from the new position of that picture. That computation needs the new
+// layout, so it happens inside the layouter, and its result has to go
+// somewhere.
+//
+// It writes the offset and nothing else. In particular it does not invalidate
+// layout, because it is called *from* a layout pass and the caller is about to
+// use the new offset in the same pass. Call
+// [LayoutContext.ReportScrollContent] first, or the clamp has nothing to clamp
+// against.
+//
+// Any running fling is cancelled, for the same reason [App.ScrollTo] cancels
+// one: a reflow that moves the content and a fling that also moves it would
+// fight over the same number.
+func (l *LayoutContext) SetScrollOffset(off float64) bool {
+	s := l.nd.scroll
+	if s == nil {
+		panic("gift: LayoutContext.SetScrollOffset on a node whose Element did not declare a ScrollSpec")
+	}
+	off = s.clamp(off)
+	if off == s.off {
+		return false
+	}
+	l.app.stopFling(s)
+	s.off = off
+	l.app.diag.Scrolls++
+	return true
+}
+
+// ScrollInteractor returns the [Interactor] gift installs on a scroll
+// container that brought none of its own: wheel, drag past [DragSlop] and the
+// kinetic fling, with the overscroll chaining rule described on it.
+//
+// It exists because the two are otherwise exclusive. A scroll container that
+// declares an Interactor — because it also wants the keyboard, which a gallery
+// does — replaces gift's, and would then have to reimplement the gesture. The
+// intended shape is delegation:
+//
+//	func (n *myNode) HandleEvent(ctx *gift.EventContext, e gift.Event) bool {
+//	    if e.Kind == gift.EventKeyDown { ... }
+//	    return gift.ScrollInteractor().HandleEvent(ctx, e)
+//	}
+//
+// The returned value is a shared, stateless singleton — everything it touches
+// lives in the node payload — so calling this in the event path allocates
+// nothing.
+func ScrollInteractor() Interactor { return scrollHandler{} }
+
 // applyScroll installs or removes the scroll state of a node during a build.
 //
 // The state object survives a rebuild, which is the whole point: the offset is
@@ -786,6 +885,7 @@ func (a *App) applyScroll(nd *nodeData, spec *ScrollSpec) {
 	}
 	s.axis = spec.Axis
 	s.cfg = spec.Config.withDefaults()
+	s.virtual = spec.Virtual
 	if nd.interactor == nil {
 		// A scroll container has to be a hit target, or the wheel would never
 		// reach it and a drag on its background would go nowhere. gift

@@ -653,6 +653,33 @@ func (ix *Index) Resolve(a Anchor) (float64, bool) {
 	return r.Y + a.Local, true
 }
 
+// RowOf returns the half open item range of the justified row item i belongs
+// to. It reports false for a masonry layout, for an unready index and for an
+// item outside the committed layout.
+//
+// It exists for keyboard navigation. The project plan, section 10, requires
+// the cursor to follow "der logischen Collection-Reihenfolge", and in a
+// justified layout the step that moves one line down is the length of the
+// current row, which varies per row and is only known here. A masonry layout
+// needs no equivalent, because its vertical step is the column count and that
+// is [Index.Columns].
+//
+// It is one binary search over the row starts, so O(log r).
+func (ix *Index) RowOf(i int) (start, end int, ok bool) {
+	st := ix.cur
+	if st == nil || st.params.Mode != Justified || i < 0 || i >= st.n {
+		return 0, 0, false
+	}
+	rows := st.segments()
+	// segStart[r+1] is the exclusive end of row r, so the row of i is the
+	// first r whose end is greater than i.
+	r := sort.Search(rows, func(j int) bool { return int(st.segStart[j+1]) > i })
+	if r >= rows {
+		return 0, 0, false
+	}
+	return int(st.segStart[r]), int(st.segStart[r+1]), true
+}
+
 // Compact releases the recycled backing arrays of the index, trading the cost
 // of the next rebuild for about half the resident bytes. It is for a gallery
 // that has gone off screen, not for the scroll path.

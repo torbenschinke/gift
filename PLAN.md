@@ -592,6 +592,33 @@ func Gallery(ctx *gift.Context, photos *asset.Collection) gift.View {
 }
 ```
 
+**Korrektur aus WU-N: die obige Skizze ist so nicht baubar.** `ui.ImageGallery(photos)`
+unterstellt, dass die Galerie aus einer View-Konstruktion entsteht. Ein
+View-Wert wird aber bei jedem Build weggeworfen, und was ueberleben muss, ist
+der Index ueber 100.000 Eintraege samt Tile-Bindungen - 2,4 MB, deren
+Neuaufbau je Build O(N) waere. Richtig ist
+`ui.ImageGallery(ui.NewGallery(photos))`: das Galerieobjekt gehoert der
+Anwendung und ist langlebig, die View ist die kurzlebige Deklaration darauf.
+Nebeneffekt: die dauerhafte Selektion liegt damit automatisch beim
+Collection-Owner, wie Abschnitt 5 es verlangt.
+
+**Tiles werden gepoolt, nicht ge- und entmountet.** Scrollen bindet Slots eines
+positionsbasierten Pools im Layout um, statt Knoten zu mounten. Das ist nicht
+nur billiger, es macht den in Abschnitt 13 geforderten Test
+"keine falschen Bilder nach Tile-Recycling" ueberhaupt erst moeglich: eine
+Umsetzung, die mountet und entmountet, recycelt nichts, und der benannte
+Fehlerfall kann dort gar nicht auftreten. Preis, ehrlich benannt: Scrollen
+loest ein Relayout der Galerie aus, wo ein gewoehnlicher Scroller nur neu
+zeichnet. Deshalb ist das Verhalten per `ScrollSpec.Virtual` opt-in und faellt
+`ui.ScrollView` nicht zur Last.
+
+**Der Runtime-Vertrag wurde dafuer erweitert.** Virtualisierung war mit der
+bestehenden `gift`-API nicht ausdrueckbar. Neu: `ScrollSpec.Virtual`,
+`LayoutContext.RequestLayout`, `RequestBuild`, `SetScrollOffset`,
+`Invalidator` und `gift.ScrollInteractor`. Das ist die Naht, die jeder
+virtualisierende Container braucht, und keine Galerie-Spezialitaet - aber es
+ist eine echte Verbreiterung des Vertrags und gehoert deshalb hier vermerkt.
+
 ImageGallery besitzt seinen Scrollbereich und verwendet denselben Bildservice
 wie `ui.Image(source)`. Sie ist eine Komposition ueber einem internen lazy
 Grid-/Viewport-Kern, kein eigener Backend-Zeichenbefehl.
@@ -676,9 +703,14 @@ sondern getrennt gemessen:
   Das ist kein Wortspiel, sondern eine Abnahmebedingung. Ein Label, das sich
   aendert, ist ein Build und damit ohnehin ausgenommen. Eine Beschriftung, die
   sich ohne Rebuild aendert, oder eine Galerie, die staendig neue Bildtitel in
-  den Viewport scrollt, verfehlt den Vertrag dagegen in jedem Frame. Schritt 3
-  bekommt dafuer ein eigenes Messszenario; das darf keine Entdeckung waehrend
-  der Galeriearbeit werden.
+  den Viewport scrollt, verfehlt den Vertrag dagegen in jedem Frame.
+
+  Stand nach WU-N: **dieses Messszenario hat noch keinen Gegenstand.** Die
+  Galerie zeichnet bewusst keine Kacheltitel, gerade weil ein Titel je Kachel
+  den Vertrag in jedem Frame brechen wuerde. Die Identitaet einer Kachel ist
+  stattdessen ueber `Gallery.Bindings` abfragbar. Sobald Kacheltitel dazukommen
+  - sei es in Schritt 4 oder spaeter - muss die Messung zusammen mit ihnen
+  kommen und nicht danach.
 
 Kein globales GC-Abschalten, keine unsafe-Arena als Ausgangspunkt.
 

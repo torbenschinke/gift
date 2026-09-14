@@ -107,6 +107,10 @@ type nodeData struct {
 	baseline    float32
 	hasBaseline bool
 
+	// invalidate is the cached closure handed out by
+	// [LayoutContext.Invalidator]. It is nil until a layouter asks for one.
+	invalidate func()
+
 	own ownershipGuard
 }
 
@@ -143,6 +147,9 @@ func (nd *nodeData) release() {
 	// this only keeps the recycled slot from carrying a stale value.
 	nd.overflow = geom.Size{}
 	nd.baseline, nd.hasBaseline = 0, false
+	// The closure captures a handle that now belongs to a different node.
+	// Keeping it would make a stale model invalidate a stranger.
+	nd.invalidate = nil
 	nd.releaseOwnership()
 }
 

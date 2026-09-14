@@ -881,3 +881,57 @@ func BenchmarkColdBuildMasonry100k(b *testing.B) {
 		ix.Rebuild(p)
 	}
 }
+
+// TestRowOf checks the justified row lookup keyboard navigation is built on,
+// against a brute force scan of the same layout.
+func TestRowOf(t *testing.T) {
+	ix := layout.NewIndex()
+	ix.SetItems(500, dimsFunc(func(i int) (uint32, uint32) {
+		return uint32(100 + i%7*40), 100
+	}))
+	ix.Rebuild(layout.GalleryParams{Mode: layout.Justified, Width: 900, Gap: 6, TargetRowHeight: 120})
+
+	if _, _, ok := ix.RowOf(-1); ok {
+		t.Error("RowOf(-1) reported a row")
+	}
+	if _, _, ok := ix.RowOf(500); ok {
+		t.Error("RowOf(500) reported a row")
+	}
+	for i := range 500 {
+		start, end, ok := ix.RowOf(i)
+		if !ok {
+			t.Fatalf("item %d has no row", i)
+		}
+		if i < start || i >= end {
+			t.Fatalf("item %d is reported in the row [%d,%d)", i, start, end)
+		}
+		// Every item of the reported row shares its top, and the items just
+		// outside it do not. That is the definition of a row and is checked
+		// against the rectangles rather than against the internal arrays.
+		top, _ := ix.ItemRect(i)
+		for j := start; j < end; j++ {
+			r, _ := ix.ItemRect(j)
+			if r.Y != top.Y {
+				t.Fatalf("item %d of row [%d,%d) is at y=%g, item %d at y=%g",
+					j, start, end, r.Y, i, top.Y)
+			}
+		}
+		if start > 0 {
+			r, _ := ix.ItemRect(start - 1)
+			if r.Y == top.Y {
+				t.Fatalf("item %d is at the same y as row [%d,%d)", start-1, start, end)
+			}
+		}
+	}
+
+	// A masonry index has no rows; its vertical step is the column count.
+	ix.Rebuild(layout.GalleryParams{Mode: layout.Masonry, Width: 900, MinColumnWidth: 200})
+	if _, _, ok := ix.RowOf(0); ok {
+		t.Error("a masonry index reported a justified row")
+	}
+}
+
+// dimsFunc adapts a function to the Dimensions interface.
+type dimsFunc func(i int) (uint32, uint32)
+
+func (f dimsFunc) DimensionsAt(i int) (uint32, uint32) { return f(i) }

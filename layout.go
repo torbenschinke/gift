@@ -126,6 +126,112 @@ func (l *LayoutContext) ChildBaseline(child int) (float32, bool) {
 	return nd.baseline, nd.hasBaseline
 }
 
+// RequestLayout asks for another layout pass over this node in the next
+// update, without rebuilding anything.
+//
+// It exists for a layouter whose work is *incremental*: the gallery of the
+// project plan, section 10, may not rebuild a 100 000 entry masonry index in
+// one frame, so it advances the rebuild by a bounded chunk per pass and asks
+// for the next pass from here. Section 10 requires exactly that — "Initiales
+// Layout, Sortierung und Spaltenwechsel duerfen O(N) Arbeit benoetigen; sie
+// werden ausserhalb des Frame-Hotpaths oder inkrementell berechnet".
+//
+// A layouter that calls this unconditionally never lets the application idle
+// and fails [gifttest.Harness.Settle] with a diagnosis, which is the intended
+// outcome: "I am still working" must be a statement with an end.
+//
+// # Why the mark is deferred
+//
+// Marking the node immediately would be undone three lines later:
+// [App.layoutNode] clears [scene.FlagNeedsLayout] on the node as soon as its
+// layouter returns, and the ancestors it would have marked are in the middle
+// of being laid out and clear theirs on the way back up. The request is
+// therefore queued and applied after the whole pass, which is the only point
+// at which "again, next update" can be expressed at all.
+func (l *LayoutContext) RequestLayout() { l.app.queueLayout(l.node) }
+
+// queueLayout records a node that asked for another layout pass. The queue is
+// a reused slice and the scan is linear over a handful of virtualising
+// containers, so an incremental reflow costs no allocation per pass.
+func (a *App) queueLayout(h scene.Handle) {
+	for _, q := range a.pendingLayout {
+		if q == h {
+			return
+		}
+	}
+	a.pendingLayout = append(a.pendingLayout, h)
+}
+
+// flushPendingLayout applies the requests collected during the pass. It runs
+// after the pass, so the marks survive into the next update.
+func (a *App) flushPendingLayout() {
+	if len(a.pendingLayout) == 0 {
+		return
+	}
+	for _, h := range a.pendingLayout {
+		a.markNeedsLayout(h)
+	}
+	a.pendingLayout = a.pendingLayout[:0]
+}
+
+// Invalidator returns a function that marks this node for layout from outside
+// the frame, and nil for a node that is no longer part of the tree.
+//
+// # Why a closure and not a NodeRef
+//
+// Because the caller is a view's retained object, not the application. A
+// virtualising container holds a model the application mutates directly — a
+// catalogue correction arrives from a worker, a keyboard cursor is moved by a
+// command — and that model has to say "my layout is stale" without having been
+// handed the App, the node reference and the knowledge of how the two combine.
+// Handing it one function is the smallest interface that does the job, and it
+// keeps the App out of a package that must not import the frame loop.
+//
+// The closure is created once per node and cached in the node, so calling this
+// on every layout pass allocates only on the first one. It is safe to call
+// after the node has been unmounted: it then does nothing, because
+// [App.markNeedsLayout] stops at an invalid handle. It must be called from the
+// UI executor like everything else.
+func (l *LayoutContext) Invalidator() func() {
+	if l.nd.invalidate == nil {
+		a, h := l.app, l.node
+		l.nd.invalidate = func() { a.markNeedsLayout(h) }
+	}
+	return l.nd.invalidate
+}
+
+// RequestBuild asks gift to rebuild the component instance that produced this
+// node, in the next update.
+//
+// It is the one thing a layouter cannot do for itself: change the *number* of
+// its children. A virtualising container sizes its tile pool from the
+// viewport, and the viewport is only known once the constraints have arrived,
+// which is after the build that had to declare the tiles. So it lays out what
+// it has, asks for a rebuild here, and has the right pool one update later.
+//
+// The rebuild happens in the next [App.Update], never inside this one: build
+// during layout would mean a view function running while the tree it produces
+// is being measured. The frame this is called in is therefore laid out with
+// the old child count, which for a tile pool means a briefly under filled
+// viewport — the placeholder behaviour of the project plan, section 10, and
+// not a wrong picture.
+//
+// A layouter that calls this on every pass is an infinite rebuild loop and is
+// caught by [gifttest.Harness.Settle]. Guard it with a comparison.
+func (l *LayoutContext) RequestBuild() {
+	for h, depth := l.node, 0; !h.IsZero() && l.app.store.Valid(h); depth++ {
+		if depth > scene.MaxDepth {
+			return
+		}
+		n := l.app.store.Get(h)
+		if sc := n.Payload.scope; sc != nil {
+			l.app.markNeedsBuild(sc)
+			return
+		}
+		h = n.Parent
+	}
+}
+
 // layoutNode measures h with the constraints c and returns its size.
 //
 // This is where the "Layout: kein Measure/Arrange" row of the project plan,

@@ -378,6 +378,23 @@ func (a *App) stealPointer(h scene.Handle) bool {
 // does not have to, because the dispatcher already did.
 func (c *EventContext) Repaint() { c.app.markNeedsPaint(c.cur) }
 
+// RequestLayout marks the receiving node as needing another layout pass in the
+// next update, without rebuilding anything.
+//
+// Most interactors do not need it: hover, press and focus are read back by the
+// painter and change no size. A *virtualising* container does, because its
+// layouter is what turns state into placed children — the gallery of the
+// project plan, section 10, decides in its layouter which tile stands for
+// which item and where the viewport has to move so that a keyboard cursor is
+// on screen. An interactor that moves such a cursor has changed a layout
+// input, and this is how it says so.
+//
+// It is deliberately not the same as [EventContext.Repaint]. Asking for a
+// layout when a repaint would do costs a measure pass every keystroke;
+// asking for a repaint when a layout was needed shows the previous frame's
+// geometry, which is the harder bug to see.
+func (c *EventContext) RequestLayout() { c.app.markNeedsLayout(c.cur) }
+
 // --- the pointer state machine ---------------------------------------------
 
 // pointer is one tracked pointer.

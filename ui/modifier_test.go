@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/torbenschinke/gift"
+	"github.com/torbenschinke/gift/asset"
 	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/ui"
 )
@@ -30,6 +31,12 @@ const (
 	// setStyled adds the size and box style modifiers of a view that has
 	// bounds it can fill, stroke and clip.
 	setStyled
+	// setInternal is a view type that exists only as a part of a composite
+	// and that an application never constructs. It has no public modifier
+	// contract to check, because it has no public constructor; it is listed
+	// so that TestEveryViewTypeIsListed stays a check rather than a list
+	// with an escape hatch.
+	setInternal
 )
 
 // views lists one value of every exported view type together with the set it
@@ -53,6 +60,14 @@ var views = []struct {
 	{name: "ui.Button", set: setStyled, v: ui.Button(ui.Box(), nil)},
 	{name: "ui.VScroll", set: setStyled, v: ui.VScroll()},
 	{name: "ui.HScroll", set: setStyled, v: ui.HScroll()},
+	{name: "ui.ImageGallery", set: setStyled, v: ui.ImageGallery(ui.NewGallery(asset.NewCollection(nil)))},
+	{
+		name: "ui.GalleryTile", set: setInternal,
+		why: "a tile is one slot of the gallery's recycled pool. It has no exported " +
+			"constructor and no styling of its own: what it looks like is ui.TileStyle, " +
+			"set on the gallery, because a tile is bound to an item during layout and a " +
+			"per tile modifier would have nowhere to be written.",
+	},
 	{
 		name: "ui.Spacer", set: setMinimal, v: ui.Spacer(),
 		why: "a Spacer draws nothing and has no bounds of its own; a Background it then " +
@@ -102,6 +117,9 @@ var (
 
 func TestViewsCarryTheSharedModifierSet(t *testing.T) {
 	for _, view := range views {
+		if view.set == setInternal {
+			continue
+		}
 		rt := reflect.TypeOf(view.v)
 		want := minimalModifiers
 		if view.set == setStyled {
@@ -184,6 +202,9 @@ func TestEveryViewTypeIsListed(t *testing.T) {
 // TestEveryViewIsAView keeps the table honest about what it contains.
 func TestEveryViewIsAView(t *testing.T) {
 	for _, v := range views {
+		if v.set == setInternal {
+			continue
+		}
 		if _, ok := v.v.(gift.View); !ok {
 			t.Errorf("%T is in views but does not implement gift.View", v.v)
 		}

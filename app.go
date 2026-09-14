@@ -51,6 +51,9 @@ type App struct {
 
 	// dirty is the queue of scopes that need a rebuild in the next update.
 	dirty []*scope
+	// pendingLayout are the nodes that asked for another layout pass from
+	// inside one; see [LayoutContext.RequestLayout].
+	pendingLayout []scene.Handle
 	// building is the scope whose build is currently running, nil outside a
 	// build. Dependency registration attaches to it.
 	building *scope
@@ -161,6 +164,9 @@ func (a *App) Update(viewport geom.Size) error {
 		a.needsLayout = false
 		a.needsPaint = true
 	}
+	// After the pass, never during it: a mark set during layout is cleared by
+	// the very pass that is running. See [LayoutContext.RequestLayout].
+	a.flushPendingLayout()
 	return nil
 }
 
