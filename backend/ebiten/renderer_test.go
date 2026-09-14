@@ -13,7 +13,7 @@ import (
 
 // newHeadlessRenderer returns a renderer whose draw call is captured instead
 // of issued, so the whole translation path can be tested without a window.
-func newHeadlessRenderer(t *testing.T) (*Renderer, *capture) {
+func newHeadlessRenderer(t testing.TB) (*Renderer, *capture) {
 	t.Helper()
 	r, err := NewRenderer()
 	if err != nil {
@@ -28,15 +28,21 @@ type capture struct {
 	verts   []eb.Vertex
 	idx     []uint32
 	batches int
+	// mats is the material of every batch, in the order the batches were
+	// issued. It is what a batching test asserts on.
+	mats []Material
 }
 
-func (c *capture) draw(verts []eb.Vertex, idx []uint32) {
+func (c *capture) draw(m Material, verts []eb.Vertex, idx []uint32) {
 	c.batches++
+	c.mats = append(c.mats, m)
 	c.verts = append(c.verts[:0], verts...)
 	c.idx = append(c.idx[:0], idx...)
 }
 
-func (c *capture) reset() { c.verts, c.idx, c.batches = c.verts[:0], c.idx[:0], 0 }
+func (c *capture) reset() {
+	c.verts, c.idx, c.batches, c.mats = c.verts[:0], c.idx[:0], 0, c.mats[:0]
+}
 
 // TestShaderCompiles checks the Kage source. ebiten.NewShader needs no GPU, so
 // a syntax error in the shader is caught by the ordinary headless test run.
@@ -529,7 +535,7 @@ func TestSubmitDoesNotRetainTheList(t *testing.T) {
 func TestFlushSplitsOversizedBatches(t *testing.T) {
 	r, _ := newHeadlessRenderer(t)
 	var batches int
-	r.drawFn = func([]eb.Vertex, []uint32) { batches++ }
+	r.drawFn = func(Material, []eb.Vertex, []uint32) { batches++ }
 
 	var l render.List
 	l.Reset()
@@ -573,7 +579,7 @@ func TestStatsCountSkips(t *testing.T) {
 // section 12, for the backend half of the frame path.
 func TestSubmitDoesNotAllocate(t *testing.T) {
 	r, _ := newHeadlessRenderer(t)
-	r.drawFn = func([]eb.Vertex, []uint32) {}
+	r.drawFn = func(Material, []eb.Vertex, []uint32) {}
 
 	var l render.List
 	l.Reset()
@@ -603,7 +609,7 @@ func TestSubmitDoesNotAllocate(t *testing.T) {
 // uses fixed size scratch arrays for exactly this reason.
 func TestRotatedSubmitDoesNotAllocate(t *testing.T) {
 	r, _ := newHeadlessRenderer(t)
-	r.drawFn = func([]eb.Vertex, []uint32) {}
+	r.drawFn = func(Material, []eb.Vertex, []uint32) {}
 
 	var l render.List
 	l.Reset()

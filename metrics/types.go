@@ -184,8 +184,15 @@ type FrameTimerOptions struct {
 type RendererStats struct {
 	// Frames is the number of completed frames.
 	Frames uint64
-	// DrawCalls is the number of draw calls issued.
+	// DrawCalls is the number of draw calls issued. It is one per run of
+	// same-material operations in display list order, not one per frame: text
+	// is a textured quad and a shape is not, and the project plan, section
+	// 11, forbids reordering transparent content to merge them.
 	DrawCalls uint64
+	// ShapeDrawCalls and GlyphDrawCalls split DrawCalls by material.
+	ShapeDrawCalls, GlyphDrawCalls uint64
+	// GlyphQuads is the number of glyph quads emitted.
+	GlyphQuads uint64
 	// Ops is the number of operations that produced geometry.
 	Ops uint64
 
@@ -197,13 +204,39 @@ type RendererStats struct {
 	SkippedEmptyClip   uint64
 	SkippedOutsideClip uint64
 	SkippedZeroStroke  uint64
+	SkippedEmptyText   uint64
 	UnknownKinds       uint64
+
+	// Atlas are the glyph atlas counters.
+	Atlas AtlasStats
+}
+
+// AtlasStats are the glyph atlas numbers of one report.
+//
+// It is a plain struct for the same reason [RendererStats] is: metrics must
+// not import a backend, so the backend converts its own counters into this
+// shape.
+type AtlasStats struct {
+	// Hits and Misses are the glyph lookup outcomes.
+	Hits, Misses uint64
+	// Rasterised is the number of outlines turned into coverage.
+	Rasterised uint64
+	// UploadedBytes is the total coverage uploaded.
+	UploadedBytes uint64
+	// PageEvictions and GlyphEvictions are what the budget cost.
+	PageEvictions, GlyphEvictions uint64
+	// Rejected counts glyphs that did not fit anywhere. Non zero means text
+	// is missing from the screen.
+	Rejected uint64
+	// Pages, Glyphs and Bytes are the current occupancy.
+	Pages, Glyphs, Bytes int
 }
 
 // Skipped is the total number of skipped operations.
 func (s RendererStats) Skipped() uint64 {
 	return s.SkippedNone + s.SkippedTransparent + s.SkippedEmptyBounds +
-		s.SkippedEmptyClip + s.SkippedOutsideClip + s.SkippedZeroStroke
+		s.SkippedEmptyClip + s.SkippedOutsideClip + s.SkippedZeroStroke +
+		s.SkippedEmptyText
 }
 
 // Accounted is Ops + Skipped + UnknownKinds and must equal the number of
@@ -212,17 +245,10 @@ func (s RendererStats) Accounted() uint64 { return s.Ops + s.Skipped() + s.Unkno
 
 // ShaperStats are the text shaping cache numbers of one report.
 //
-// # This is a seam, not a feature
-//
-// It is deliberately not wired up. internal/text has a Shaper with exactly
-// these counters, but as of WU-G0 nothing outside its own tests constructs
-// one: ui has no Text view yet, so there is no shaper in a running
-// application to take a snapshot of. Reaching into the package to invent one
-// would produce a report field that measures a shaper nobody shapes with.
-//
-// When ui.Text arrives in WU-G, whoever owns the shaper sets
-// [Options.Shaper] and the field starts being filled. Until then Present is
-// false and the field is omitted from the report.
+// As of WU-G it is wired up: ui.Text measures through the process wide shaper
+// of internal/text, and the Ebitengine backend sets [Options.Shaper] to a
+// snapshot of it. Present is false only when the backend was configured
+// without one.
 type ShaperStats struct {
 	// Present says whether a shaper supplied these numbers at all.
 	Present bool
@@ -231,10 +257,17 @@ type ShaperStats struct {
 	// for text it has already seen, and a miss allocates about five
 	// kilobytes inside harfbuzz.
 	Hits, Misses uint64
-	// Evictions is the number of entries dropped by the byte budget.
-	Evictions uint64
-	// Bytes is the current size of the cache.
-	Bytes uint64
+	// Evictions is the number of entries dropped by the byte budget, and
+	// AgeEvictions the ones dropped for going unused.
+	Evictions, AgeEvictions uint64
+	// ShapedGlyphs is the number of glyphs produced by misses, which is the
+	// honest measure of shaping work: the miss count alone says nothing about
+	// how much text was shaped.
+	ShapedGlyphs uint64
+	// Entries is the number of cached paragraphs and Bytes the accounted size
+	// of the cache.
+	Entries int
+	Bytes   uint64
 }
 
 // Options configures a [Recorder].
@@ -258,7 +291,6 @@ type Options struct {
 	// knows how to reach them safely.
 	Renderer func() RendererStats
 
-	// Shaper supplies the text shaping counters. It may be nil, and as of
-	// WU-G0 it always is; see [ShaperStats].
+	// Shaper supplies the text shaping counters. It may be nil.
 	Shaper func() ShaperStats
 }

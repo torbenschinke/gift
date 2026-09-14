@@ -5,9 +5,18 @@
 //
 // The package turns a string, a font, a size and a width limit into a
 // [Paragraph]: lines with integer baselines and runs of positioned glyph ids.
-// It produces no pixels, owns no GPU object and knows nothing about a glyph
-// atlas; the project plan, section 3, forbids all three, and the same rule
-// forbids importing the module root. Only geom is used.
+// It owns no GPU object and knows nothing about a glyph atlas; the project
+// plan, section 3, forbids both, and the same rule forbids importing the
+// module root. Only geom is used.
+//
+// It does produce one kind of pixels, and the boundary is worth being precise
+// about. [Rasterizer] turns a glyph outline into an eight bit coverage
+// [GlyphMask] and nothing else: no colour, no texture, no packing, no budget.
+// It exists because rasterising needs the typesetting face, and exporting that
+// face so that the backend could rasterise for itself would put a typesetting
+// type on a package boundary and hand every caller a way to shape behind this
+// package's back. A narrow accessor is the smaller concession. Everything
+// about the *atlas* — packing, pages, eviction, upload — stays in the backend.
 //
 // What is in scope, per the project plan, section 7:
 //
@@ -73,7 +82,12 @@
 // # Concurrency
 //
 // A [Shaper] and every [Font] it has been used with belong to one goroutine,
-// normally the UI executor. A Font caches rune to glyph lookups and glyph
+// normally the UI executor. [Default] returns the process wide shaper that ui
+// measures through and that the backend reads counters from; it is bound to
+// the UI executor like any other, and two Apps measuring text on two
+// goroutines is a data race. [Lookup] is the exception: it takes a read lock,
+// because the backend resolves a [FontID] from a display list on its own
+// schedule. A Font caches rune to glyph lookups and glyph
 // extents internally, so even two Shapers using the same Font concurrently is
 // a data race. Load a Font per Shaper if you need more than one.
 //

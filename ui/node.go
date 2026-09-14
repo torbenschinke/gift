@@ -124,7 +124,7 @@ func (n *node) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 // It is installed as the painter only when there is something to draw; see
 // [styleSpec.needsPainter].
 func (n *node) Paint(ctx *gift.PaintContext) {
-	paintStyle(ctx, n.st, n.spec.Padding)
+	paintStyle(ctx, n.st)
 }
 
 // ensure sizes the scratch buffers to k children, reusing the backing arrays

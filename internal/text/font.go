@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 	"sync/atomic"
 
 	"github.com/go-text/typesetting/font"
@@ -115,11 +116,52 @@ func parseFont(data []byte) (*Font, error) {
 	if !isFinite(f.ascent) || !isFinite(f.descent) || !isFinite(f.gap) {
 		return nil, fmt.Errorf("%w: font has non finite horizontal extents", ErrBadFont)
 	}
+	register(f)
 	return f, nil
 }
 
 // ID returns the identity of the loaded font.
 func (f *Font) ID() FontID { return f.id }
+
+// registry maps a [FontID] back to the [Font] it names.
+//
+// # Why this exists
+//
+// A display list carries a font *id*, not a font pointer: render.Op is plain
+// old data and the project plan, section 3, keeps typesetting types out of the
+// renderer contract. The backend's glyph atlas therefore has an id and needs
+// the font to rasterise from, and this is the only legitimate way back.
+//
+// A registered font is never released. Fonts are loaded at startup, are a
+// handful per application and are alive for as long as anything can reference
+// them by id; an unregister call would be an invitation to dangle an id that
+// is still sitting in a display list. If font unloading ever becomes a real
+// requirement it needs a generation in the id, not a delete here.
+var registry struct {
+	mu sync.RWMutex
+	m  map[FontID]*Font
+}
+
+// Lookup returns the [Font] with the given id, or nil.
+//
+// It takes a read lock, so it belongs on a miss path and not in a per glyph
+// loop. The one caller, the glyph atlas, consults it only when a glyph is not
+// cached yet.
+func Lookup(id FontID) *Font {
+	registry.mu.RLock()
+	f := registry.m[id]
+	registry.mu.RUnlock()
+	return f
+}
+
+func register(f *Font) {
+	registry.mu.Lock()
+	if registry.m == nil {
+		registry.m = make(map[FontID]*Font, 4)
+	}
+	registry.m[f.id] = f
+	registry.mu.Unlock()
+}
 
 // UnitsPerEm returns the design grid size of the font, typically 1000 or 2048.
 // It is exported because a glyph atlas that rasterises outlines needs it.

@@ -67,6 +67,12 @@ type nodeData struct {
 	// see [App.setOverflow].
 	overflow geom.Size
 
+	// baseline is the distance from the top of this node to the baseline of
+	// its content, and hasBaseline says whether the node reported one. See
+	// [LayoutContext.ReportBaseline].
+	baseline    float32
+	hasBaseline bool
+
 	own ownershipGuard
 }
 
@@ -94,6 +100,7 @@ func (nd *nodeData) release() {
 	// The aggregate counters were already adjusted by App.clearOverflow;
 	// this only keeps the recycled slot from carrying a stale value.
 	nd.overflow = geom.Size{}
+	nd.baseline, nd.hasBaseline = 0, false
 	nd.releaseOwnership()
 }
 

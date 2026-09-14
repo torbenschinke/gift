@@ -235,10 +235,29 @@ func isFinite(v float32) bool {
 const maxFinite = 3.4028235e38
 
 // paintStyle draws one node in the fixed order of the project plan,
-// section 8. It is shared by every styled view type.
-func paintStyle(ctx *gift.PaintContext, st styleSpec, pad geom.Insets) {
+// section 8. It is shared by every styled view type whose content is its
+// children.
+//
+// A view whose content is not its children — [TextView] — cannot use it,
+// because the content step is different. It calls [paintBackground] and
+// [paintBorder] around its own content instead, which is why the two halves
+// are separate functions: passing a content callback in would put a closure in
+// the paint path, and a closure is an allocation per painted node.
+func paintStyle(ctx *gift.PaintContext, st styleSpec) {
 	b := ctx.Bounds()
+	paintBackground(ctx, st, b)
+	if st.clip {
+		ctx.PushClip(b)
+	}
+	ctx.PaintChildren()
+	if st.clip {
+		ctx.PopClip()
+	}
+	paintBorder(ctx, st, b)
+}
 
+// paintBackground emits the shadow and background steps of the drawing order.
+func paintBackground(ctx *gift.PaintContext, st styleSpec, b geom.Rect) {
 	// Step 2 inserts the shadow pass here, before the background. The order
 	// is shadow, background, content, border and is a property of the node,
 	// not of the order in which the modifiers were called.
@@ -251,25 +270,21 @@ func paintStyle(ctx *gift.PaintContext, st styleSpec, pad geom.Insets) {
 		}
 		ctx.Add(op)
 	}
+}
 
-	if st.clip {
-		// Clip to the full bounds, not to the padded bounds. Padding is a
-		// layout property everywhere else, and clipping it away would cut
-		// off content that deliberately overflows into the padding, such as
-		// a focus ring, a selection glow or a badge. A separate content clip
-		// can be added later if it is ever actually wanted.
-		//
-		// Honest limitation: this clips to the bounding rectangle, not to
-		// the rounded shape. A shape accurate clip needs stencil or shader
-		// support and is a backend concern; until the backend offers it, a
-		// clipped child may cover the inside of a rounded corner.
-		ctx.PushClip(b)
-	}
-	ctx.PaintChildren()
-	if st.clip {
-		ctx.PopClip()
-	}
-
+// paintBorder emits the border step of the drawing order.
+//
+// A clip, where one is set, surrounds the content and not the border: see
+// paintStyle. It clips to the full bounds, not to the padded bounds. Padding
+// is a layout property everywhere else, and clipping it away would cut off
+// content that deliberately overflows into the padding, such as a focus ring,
+// a selection glow or a badge.
+//
+// Honest limitation: the clip is the bounding rectangle, not the rounded
+// shape. A shape accurate clip needs stencil or shader support and is a
+// backend concern; until the backend offers it, a clipped child may cover the
+// inside of a rounded corner.
+func paintBorder(ctx *gift.PaintContext, st styleSpec, b geom.Rect) {
 	if st.border.IsVisible() {
 		ctx.Add(render.Op{
 			Kind:         render.OpStrokeRoundRect,

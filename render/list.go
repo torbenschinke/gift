@@ -10,10 +10,11 @@ const sentinelExtent = 1e30
 
 // List is the display list of a single frame.
 //
-// A list owns three flat slices: the operations themselves, the clip
-// rectangles and the transforms. Operations reference the latter two by
-// index, and index 0 of both is a reserved sentinel meaning "unclipped"
-// respectively "identity".
+// A list owns four flat slices: the operations themselves, the clip
+// rectangles, the transforms and the glyphs. Operations reference the clips
+// and transforms by index, and index 0 of both is a reserved sentinel meaning
+// "unclipped" respectively "identity". A text operation references a range of
+// the glyph table; see [Op.Glyphs].
 //
 // A list is reused across frames. [List.Reset] empties it while keeping the
 // capacity of all backing arrays, so a steady state frame performs no
@@ -24,6 +25,7 @@ type List struct {
 	ops    []Op
 	clips  []geom.Rect
 	xforms []geom.Affine2D
+	glyphs []Glyph
 	// clipStack holds indices into clips. Its first element is always 0,
 	// the unbounded sentinel, so the stack is never empty.
 	clipStack []uint32
@@ -44,12 +46,14 @@ func (l *List) ensure() {
 // Reset empties the list and resets the clip stack, keeping the capacity of
 // all backing arrays.
 //
-// Every slice previously returned by [List.Ops] becomes invalid at this
-// point. A consumer that still holds such a slice is reading recycled memory.
+// Every slice previously returned by [List.Ops] or [List.Glyphs] becomes
+// invalid at this point. A consumer that still holds such a slice is reading
+// recycled memory.
 func (l *List) Reset() {
 	l.ops = l.ops[:0]
 	l.clips = l.clips[:0]
 	l.xforms = l.xforms[:0]
+	l.glyphs = l.glyphs[:0]
 	l.clipStack = l.clipStack[:0]
 	l.ensure()
 }
@@ -128,3 +132,41 @@ func (l *List) Xform(i uint32) geom.Affine2D {
 
 // Len returns the number of operations in the list.
 func (l *List) Len() int { return len(l.ops) }
+
+// AppendGlyph appends one positioned glyph to the glyph side table.
+//
+// The usual sequence is: remember [List.GlyphsLen], append the glyphs of a
+// run, then emit one [OpGlyphs] whose Glyphs is the remembered index and whose
+// GlyphCount is the difference. Appending one at a time rather than handing
+// over a slice is deliberate — the producer of glyphs is a painter reading a
+// borrowed *text.Paragraph, and a slice parameter would force it to build an
+// intermediate buffer it does not otherwise need.
+//
+// # Lifetime
+//
+// This is a copy, and it is the whole point. The shaping result a painter
+// reads from is borrowed from the shaping cache and stays valid only until the
+// next Layout or Tick call; the display list, by the same rule that already
+// governs ops, clips and transforms, stays valid until the next [List.Reset].
+// Copying the glyph here, during the frame that shaped it, is what keeps those
+// two lifetimes from having to be reconciled at all.
+func (l *List) AppendGlyph(g Glyph) { l.glyphs = append(l.glyphs, g) }
+
+// GlyphsLen returns the number of glyphs currently in the side table. It is
+// the index the next [List.AppendGlyph] will write to.
+func (l *List) GlyphsLen() uint32 { return uint32(len(l.glyphs)) }
+
+// Glyphs returns the count glyphs starting at first, which is normally
+// [Op.Glyphs] and [Op.GlyphCount] of an [OpGlyphs] operation.
+//
+// The slice is borrowed under the same rule as [List.Ops]: it is valid until
+// the producer calls [List.Reset]. An out of range request returns nil rather
+// than panicking, so that a backend reading a malformed list draws nothing
+// instead of taking the process down.
+func (l *List) Glyphs(first, count uint32) []Glyph {
+	end := uint64(first) + uint64(count)
+	if end > uint64(len(l.glyphs)) {
+		return nil
+	}
+	return l.glyphs[first:end:end]
+}

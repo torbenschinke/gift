@@ -8,6 +8,7 @@ import (
 	eb "github.com/hajimehoshi/ebiten/v2"
 	"github.com/torbenschinke/gift"
 	"github.com/torbenschinke/gift/geom"
+	"github.com/torbenschinke/gift/internal/text"
 	"github.com/torbenschinke/gift/metrics"
 )
 
@@ -183,9 +184,12 @@ func Run(app *gift.App, cfg Config) error {
 				Warmup:    cfg.WarmupFrames,
 			},
 			App:      app,
-			Renderer: func() metrics.RendererStats { return rendererMetrics(r.Stats()) },
-			// Shaper stays nil. Nothing in a running application owns a
-			// text shaper yet; see metrics.ShaperStats for the seam.
+			Renderer: func() metrics.RendererStats { return rendererMetrics(r.Stats(), r.Atlas().Stats()) },
+			// The shaper is the process wide one of internal/text, which is
+			// what ui.Text measures through. The backend may not import ui —
+			// the project plan, section 3 — so this is the only place both
+			// sides can meet.
+			Shaper: func() metrics.ShaperStats { return shaperMetrics(text.Default().Stats()) },
 		})
 		defer func() { _ = rec.Close() }()
 	}
@@ -283,6 +287,12 @@ func (g *game) Update() error {
 		}
 	}
 
+	// One age tick of the shaping cache per update. It is deliberately not in
+	// Draw: the cache is CPU work driven by layout, layout runs in Update,
+	// and the atlas — which is GPU memory budgeted per drawn frame — is
+	// ticked in EndFrame instead. See the project plan, section 6.
+	text.Default().Tick()
+
 	err := g.app.Update(geom.Sz(float32(g.w), float32(g.h)))
 
 	// The idle policy reads the paint flag, which the update sets when a
@@ -352,7 +362,7 @@ func (g *game) Draw(screen *eb.Image) {
 //
 // The conversion sits here and not there on purpose: metrics must not import
 // a backend, or the backend could not call into it. See [metrics.RendererStats].
-func rendererMetrics(s RendererStats) metrics.RendererStats {
+func rendererMetrics(s RendererStats, a AtlasStats) metrics.RendererStats {
 	return metrics.RendererStats{
 		Frames:             s.Frames,
 		DrawCalls:          s.Batches,
@@ -363,6 +373,33 @@ func rendererMetrics(s RendererStats) metrics.RendererStats {
 		SkippedEmptyClip:   s.SkippedEmptyClip,
 		SkippedOutsideClip: s.SkippedOutsideClip,
 		SkippedZeroStroke:  s.SkippedZeroStroke,
+		SkippedEmptyText:   s.SkippedEmptyText,
 		UnknownKinds:       s.UnknownKinds,
+		ShapeDrawCalls:     s.ShapeBatches,
+		GlyphDrawCalls:     s.GlyphBatches,
+		GlyphQuads:         s.GlyphQuads,
+		Atlas: metrics.AtlasStats{
+			Hits: a.Hits, Misses: a.Misses,
+			Rasterised: a.Rasterised, UploadedBytes: a.UploadedBytes,
+			PageEvictions: a.PageEvictions, GlyphEvictions: a.GlyphEvictions,
+			Rejected: a.Rejected,
+			Pages:    a.Pages, Glyphs: a.Glyphs, Bytes: a.Bytes,
+		},
+	}
+}
+
+// shaperMetrics converts the shaping cache counters of internal/text into the
+// plain struct the metrics package defines, for the same reason
+// [rendererMetrics] exists: metrics must not import what calls into it.
+func shaperMetrics(s text.Stats) metrics.ShaperStats {
+	return metrics.ShaperStats{
+		Present:      true,
+		Hits:         s.Hits,
+		Misses:       s.Misses,
+		Evictions:    s.Evictions,
+		AgeEvictions: s.AgeEvictions,
+		ShapedGlyphs: s.ShapedGlyphs,
+		Entries:      s.Entries,
+		Bytes:        uint64(s.Bytes),
 	}
 }

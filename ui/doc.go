@@ -32,6 +32,20 @@
 //
 // Shadow is part of step 2 and is not implemented here.
 //
+// # Text
+//
+// [Text] measures itself by shaping its string against the width its
+// constraints allow, and the glyphs it draws are that very shaping result:
+// internal/text has one entry point and it returns a size together with the
+// glyphs the size was computed from, so a label cannot be measured differently
+// from how it is drawn.
+//
+// gift ships no font, and there is no built-in fallback. An application loads
+// one with [LoadFont] and installs it with [SetDefaultFont], or names one per
+// view with [TextView.Font]. Building a [Text] with neither panics with an
+// explanation, because the alternative — measuring it as empty — is a blank
+// area with no diagnosis.
+//
 // # Content that does not fit
 //
 // Nothing is clipped unless Clip(true) was asked for, and no container starves

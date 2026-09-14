@@ -9,6 +9,7 @@
 package ebiten
 
 import (
+	"image"
 	"image/color"
 	"os"
 	"testing"
@@ -239,4 +240,158 @@ func abs8(a, b uint8) int {
 		return int(a - b)
 	}
 	return int(b - a)
+}
+
+// --- text -------------------------------------------------------------------
+
+// textList appends a glyph run to l with its paragraph top left at (x, top),
+// which is the same arithmetic ui.Text does: the glyph positions shapeGlyphs
+// returns are already relative to the top of the paragraph.
+func textList(t *testing.T, l *render.List, s string, size, x, top float32, col render.Color) {
+	t.Helper()
+	first := l.GlyphsLen()
+	for _, g := range shapeGlyphs(t, s, size) {
+		g.X += x
+		g.Y += top
+		l.AppendGlyph(g)
+	}
+	l.Add(render.Op{
+		Kind:   render.OpGlyphs,
+		Bounds: geom.Rc(x, top, x+200, top+2*size),
+		Color:  col,
+		Glyphs: first, GlyphCount: l.GlyphsLen() - first,
+	})
+}
+
+// baselineOf is where the first baseline of a paragraph sits below its top.
+func baselineOf(t *testing.T, size float32) float32 {
+	t.Helper()
+	return testFont(t).Metrics(size).FirstBaseline
+}
+
+// inkIn counts the pixels in r that differ from the background colour.
+func inkIn(img *eb.Image, r image.Rectangle, bg color.RGBA) int {
+	n := 0
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			if img.At(x, y).(color.RGBA) != bg {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// TestGlyphsActuallyReachThePixels is the end to end proof for text: shape a
+// known string, run it through the atlas and the second batch, and read the
+// framebuffer back. Every layer between ui.Text and the screen is exercised
+// except ui itself, which is tested headless.
+func TestGlyphsActuallyReachThePixels(t *testing.T) {
+	bg := color.RGBA{0, 0, 0, 255}
+	const top = 6
+	base := int(top + baselineOf(t, 32))
+	dst := drawList(t, 160, 64, bg, func(l *render.List) {
+		textList(t, l, "HELLO", 32, 8, top, render.RGB(255, 255, 255))
+	})
+
+	// The glyphs sit on the first baseline starting at x=8, so the ink is in
+	// the band above that baseline and to the right of x=8.
+	inside := inkIn(dst, image.Rect(8, top, 152, base+1), bg)
+	if inside < 100 {
+		t.Fatalf("only %d non background pixels where the text should be; nothing was drawn", inside)
+	}
+
+	// And nowhere else: not below the baseline, where these five capitals have
+	// no descender, and not to the left of the origin.
+	if n := inkIn(dst, image.Rect(0, 0, 8, 64), bg); n != 0 {
+		t.Errorf("%d pixels of ink left of the text origin", n)
+	}
+	if n := inkIn(dst, image.Rect(0, base+2, 160, 64), bg); n != 0 {
+		t.Errorf("%d pixels of ink below the baseline of a string with no descenders", n)
+	}
+	t.Logf("HELLO at 32 px: %d inked pixels in the expected band", inside)
+}
+
+// TestGlyphsAreNotDrawnAsOpaqueBoxes guards the one failure that would still
+// pass a "some pixels changed" assertion: an atlas whose coverage was ignored
+// would fill every glyph's bounding box solid.
+func TestGlyphsAreNotDrawnAsOpaqueBoxes(t *testing.T) {
+	bg := color.RGBA{0, 0, 0, 255}
+	base := int(baselineOf(t, 48))
+	dst := drawList(t, 64, 80, bg, func(l *render.List) {
+		textList(t, l, "O", 48, 8, 0, render.RGB(255, 255, 255))
+	})
+	box := image.Rect(8, 2, 48, base+1)
+	ink := inkIn(dst, box, bg)
+	total := box.Dx() * box.Dy()
+	if ink == 0 {
+		t.Fatal("the glyph produced no ink at all")
+	}
+	if ink > total*3/4 {
+		t.Fatalf("%d of %d pixels in the glyph box are inked; the coverage mask is being ignored", ink, total)
+	}
+	t.Logf("a 48 px O covers %d of %d pixels of its box", ink, total)
+}
+
+// TestTextPremultipliedAlphaOverABackground is the colour convention for text.
+//
+// render.Color is premultiplied, the atlas holds premultiplied white coverage,
+// and the vertex colour scale is declared premultiplied. Fully covered pixels
+// of a half transparent red glyph over an opaque blue background must
+// therefore come out at src + dst*(1-src.a) = (0.5, 0, 0.5, 1), exactly as for
+// a rectangle. Anything else means a straight alpha value is being multiplied
+// somewhere.
+func TestTextPremultipliedAlphaOverABackground(t *testing.T) {
+	bg := color.RGBA{0, 0, 255, 255}
+	dst := drawList(t, 128, 80, bg, func(l *render.List) {
+		textList(t, l, "MM", 48, 4, 4, render.RGBA(255, 0, 0, 128))
+	})
+
+	// Find the pixel with the most red: the interior of a stem is fully
+	// covered, so it shows the blend at coverage 1.
+	var best color.RGBA
+	for y := 4; y < 60; y++ {
+		for x := 4; x < 120; x++ {
+			c := dst.At(x, y).(color.RGBA)
+			if c.R > best.R {
+				best = c
+			}
+		}
+	}
+	t.Logf("most covered pixel of 50%% red text over opaque blue = %v", best)
+	if best.R < 100 {
+		t.Fatalf("no pixel reached full coverage: %v; the text did not draw", best)
+	}
+	want := color.RGBA{128, 0, 127, 255}
+	const tol = 3
+	if abs8(best.R, want.R) > tol || abs8(best.G, want.G) > tol ||
+		abs8(best.B, want.B) > tol || abs8(best.A, want.A) > tol {
+		t.Fatalf("got %v, want about %v; premultiplied alpha is broken on the text path", best, want)
+	}
+
+	// The uncovered background is untouched, which is the other half: a glyph
+	// quad must not tint its own empty corners.
+	if c := dst.At(126, 78).(color.RGBA); c != bg {
+		t.Errorf("background outside the text is %v, want %v", c, bg)
+	}
+}
+
+// TestMixedSceneKeepsDisplayListOrderOnScreen is the visible form of the
+// interleaving rule: a shape declared *after* text covers it. If the backend
+// sorted text into its own pass this would come out the other way round, and
+// only in scenes where two things overlap.
+func TestMixedSceneKeepsDisplayListOrderOnScreen(t *testing.T) {
+	bg := color.RGBA{0, 0, 0, 255}
+	dst := drawList(t, 64, 64, bg, func(l *render.List) {
+		textList(t, l, "WW", 40, 2, 4, render.RGB(255, 255, 255))
+		l.Add(render.Op{
+			Kind:   render.OpFillRect,
+			Bounds: geom.Rc(0, 0, 64, 64),
+			Color:  render.RGB(0, 255, 0),
+		})
+	})
+	c := dst.At(32, 32).(color.RGBA)
+	if c.G != 255 || c.R != 0 {
+		t.Fatalf("the rectangle declared after the text did not cover it: %v", c)
+	}
 }

@@ -164,8 +164,20 @@ Daraus folgt konkret:
   zurueckgeben oder Style-Parameter entgegennehmen.
 - Die API-Flaeche waechst multiplikativ: jede Modifier-Methode mal jedes Widget.
   Bei Text, Image, Button und Gallery kommen dutzende Einzeiler-Forwarder dazu,
-  und der Compiler meldet nicht, wenn einer vergessen wurde. Vor Schritt 3 ist
-  zu pruefen, ob diese Forwarder generiert werden.
+  und der Compiler meldet nicht, wenn einer vergessen wurde.
+
+  **Entschieden nach WU-G: nicht generieren, sondern pruefen.** Mit `Box`,
+  `Stack`, `Overlay`, `Spacer` und `Text` liegen rund 70 solcher Einzeiler vor,
+  die in §4 genannte Schwelle ist also erreicht. Ein Generator loest aber das
+  falsche Problem: der Fehlerfall "Methode vergessen" ist ein Compilerfehler an
+  der Aufrufstelle, kein stilles Fehlverhalten. Ein Generator kostet dafuer
+  einen Buildschritt, einen `go:generate`-Vertrag und eine zweite Stelle, an
+  der man `func (t TextView) Padding` suchen muss.
+
+  Stattdessen: ein Test, der ueber alle exportierten View-Typen reflektiert und
+  den gemeinsamen Modifier-Satz mit korrekter Signatur einfordert. Er faengt
+  genau den realen Fehler, kostet rund dreissig Zeilen und haelt den Code
+  greppbar. Faellig mit WU-H.
 
 Das ist kein Argument fuer gemeinsame Modifier-Interfaces; die bleiben
 abgelehnt. Es ist die ehrliche Formulierung des Preises: **Styling ist eine

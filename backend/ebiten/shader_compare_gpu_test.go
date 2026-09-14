@@ -86,7 +86,7 @@ func renderBoth(t *testing.T, w, h int, sx, sy float32, build func(l *render.Lis
 	// Capture the baked stream.
 	var verts []eb.Vertex
 	var idx []uint32
-	r.drawFn = func(v []eb.Vertex, i []uint32) {
+	r.drawFn = func(_ Material, v []eb.Vertex, i []uint32) {
 		verts = append(verts[:0], v...)
 		idx = append(idx[:0], i...)
 	}

@@ -102,6 +102,18 @@ func (p *PaintContext) PaintChild(i int) {
 // ChildCount returns the number of children of the node being painted.
 func (p *PaintContext) ChildCount() int { return len(p.nd.children) }
 
+// GlyphsLen returns the current length of the glyph side table of the display
+// list, which is the index the next [PaintContext.AppendGlyph] writes to.
+func (p *PaintContext) GlyphsLen() uint32 { return p.list.GlyphsLen() }
+
+// AppendGlyph appends one positioned glyph to the display list.
+//
+// A text painter remembers [PaintContext.GlyphsLen], appends the glyphs of its
+// run and then emits a single [render.OpGlyphs] spanning them. The glyph is
+// copied into the list here and now, which is what confines the borrowed
+// shaping result to the frame that produced it; see [render.List.AppendGlyph].
+func (p *PaintContext) AppendGlyph(g render.Glyph) { p.list.AppendGlyph(g) }
+
 // paintNode paints h and, through its painter, its subtree.
 //
 // A node without a painter paints its children and nothing else; see

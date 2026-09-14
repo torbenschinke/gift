@@ -50,6 +50,18 @@ type Renderer struct {
 	shader *eb.Shader
 	opts   eb.DrawTrianglesShaderOptions
 
+	// atlas is the glyph atlas. It is created by NewRenderer and is the only
+	// thing in this package that knows what a glyph looks like.
+	atlas *GlyphAtlas
+	// glyphOpts are the draw options of the glyph material. The colour scale
+	// is premultiplied because render.Color is, and the atlas holds
+	// premultiplied white coverage, so the multiply is exact; see
+	// [GlyphAtlas]. The filter is nearest, which is not a quality compromise
+	// but the correct choice: glyph positions are whole pixels and the atlas
+	// rectangle maps one to one onto the destination, so any interpolation
+	// would only blur a mapping that is already exact.
+	glyphOpts eb.DrawTrianglesOptions
+
 	// dst is the image of the frame in progress. It is set by [Renderer.SetTarget].
 	dst *eb.Image
 
@@ -63,7 +75,15 @@ type Renderer struct {
 	// decoding, clipping, transform lookup and colour conversion — testable
 	// without a graphics context, as the project plan, section 12, criterion
 	// 4 demands.
-	drawFn func(verts []eb.Vertex, idx []uint32)
+	//
+	// It receives the material of the batch, which is what lets a test assert
+	// the interleaving of shapes and text without a window.
+	drawFn func(m Material, verts []eb.Vertex, idx []uint32)
+
+	// curMat and curPage are the material of the batch under construction.
+	// See [Renderer.material].
+	curMat  Material
+	curPage *eb.Image
 
 	// scratch polygons of the general clipping path. Two buffers of eight
 	// vertices are enough: clipping a convex quad against four half planes
@@ -87,7 +107,39 @@ type Renderer struct {
 	skipEmptyClip   uint64
 	skipOutsideClip uint64
 	skipZeroStroke  uint64
+	skipEmptyText   uint64
 	unknowns        uint64
+
+	shapeBatches uint64
+	glyphBatches uint64
+	glyphQuads   uint64
+}
+
+// Material is what a batch is drawn with. A batch ends where the material
+// changes; see [Renderer.material].
+type Material uint8
+
+const (
+	// MaterialNone is the empty batch.
+	MaterialNone Material = iota
+	// MaterialShape is the shared shape shader: fills, rounded fills and
+	// strokes, all of them untextured.
+	MaterialShape
+	// MaterialGlyph is a textured quad sampling one glyph atlas page. Two
+	// pages are two materials.
+	MaterialGlyph
+)
+
+// String makes a failing test readable.
+func (m Material) String() string {
+	switch m {
+	case MaterialShape:
+		return "shape"
+	case MaterialGlyph:
+		return "glyph"
+	default:
+		return "none"
+	}
 }
 
 // NewRenderer compiles the shape shader and returns a renderer.
@@ -100,7 +152,8 @@ func NewRenderer() (*Renderer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gift/backend/ebiten: compiling the shape shader: %w", err)
 	}
-	r := &Renderer{shader: sh}
+	r := &Renderer{shader: sh, atlas: NewGlyphAtlas(AtlasConfig{})}
+	r.glyphOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
 	// Grown once, reused forever. The numbers are a starting point, not a
 	// limit; a larger scene grows them on its first frames and never again.
 	r.verts = make([]eb.Vertex, 0, 4096)
@@ -129,7 +182,17 @@ func (r *Renderer) BeginFrame(geom.Size) {
 	r.inFrame = true
 	r.verts = r.verts[:0]
 	r.idx = r.idx[:0]
+	r.curMat, r.curPage = MaterialNone, nil
 }
+
+// Atlas returns the glyph atlas of this renderer, for [GlyphAtlas.Stats] and
+// for a test that wants to configure the budget.
+func (r *Renderer) Atlas() *GlyphAtlas { return r.atlas }
+
+// SetAtlas replaces the glyph atlas. It is for tests that need a small budget
+// in order to observe eviction; the atlas installed by [NewRenderer] is the
+// one an application wants.
+func (r *Renderer) SetAtlas(a *GlyphAtlas) { r.atlas = a }
 
 // Submit implements [render.Backend].
 //
@@ -161,6 +224,12 @@ func (r *Renderer) EndFrame() {
 	r.inFrame = false
 	r.dst = nil
 	r.drawn++
+	// Once per drawn frame, not once per update: the atlas budget is a per
+	// frame budget and Ebitengine may update several times between two
+	// frames. See the project plan, section 6.
+	if r.atlas != nil {
+		r.atlas.Tick()
+	}
 }
 
 // appendOp translates one operation into vertices.
@@ -184,6 +253,9 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 			r.skipZeroStroke++
 			return
 		}
+	case render.OpGlyphs:
+		r.appendGlyphs(l, op)
+		return
 	default:
 		// An unknown kind is skipped rather than fatal, as [render.OpKind]
 		// documents: a newer gift with an older backend must still run.
@@ -263,11 +335,193 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 		scaleY:  sy,
 	}
 
+	r.material(MaterialShape, nil)
 	if xf.B == 0 && xf.C == 0 && xf.A != 0 && xf.D != 0 {
 		r.appendAxisAligned(quad, clip, xf, shape)
 		return
 	}
 	r.appendTransformed(quad, clip, xf, shape)
+}
+
+// material starts a new batch when the material of the next primitive differs
+// from the one under construction.
+//
+// # Why interleaving and not sorting
+//
+// Glyphs are textured quads and shapes are not, so "one draw call per frame"
+// becomes "one draw call per material run". The cheap way to get the old
+// number back would be to collect all the text of a frame and draw it in one
+// pass at the end. gift does not do that, and the project plan, section 11, is
+// why: globally reordering transparent content merely to reduce draw calls is
+// forbidden, and for a good reason — a label drawn between two overlapping
+// panels would move in front of the second one, and the bug would appear only
+// when two things happened to overlap.
+//
+// So the display list order is the drawing order, always, and a batch ends
+// wherever the material changes. A scene pays one draw call per run of
+// same-material operations, which for the usual "panel, text, panel, text"
+// nesting is two per text bearing container and one for everything that is not
+// text.
+func (r *Renderer) material(m Material, page *eb.Image) {
+	if r.curMat == m && r.curPage == page {
+		return
+	}
+	r.flush()
+	r.curMat, r.curPage = m, page
+}
+
+// appendGlyphs turns one [render.OpGlyphs] into textured quads.
+//
+// It never shapes, measures or lays out anything: the positions arrive in the
+// display list and the only lookup is the atlas one, which is a map read on a
+// comparable struct key. The project plan, section 3, puts shaping in
+// internal/text, and this function is where that boundary is actually visible.
+func (r *Renderer) appendGlyphs(l *render.List, op render.Op) {
+	if op.Color.IsTransparent() {
+		r.skipTransparent++
+		return
+	}
+	clip := l.Clip(op.Clip)
+	if clip.IsEmpty() {
+		r.skipEmptyClip++
+		return
+	}
+	gs := l.Glyphs(op.Glyphs, op.GlyphCount)
+	if len(gs) == 0 || r.atlas == nil {
+		r.skipEmptyText++
+		return
+	}
+
+	xf := l.Xform(op.Xform)
+	fast := xf.B == 0 && xf.C == 0 && xf.A > 0 && xf.D > 0
+	drawn := false
+	for i := range gs {
+		g := &gs[i]
+		ei, ok := r.atlas.Lookup(*g)
+		if !ok {
+			continue
+		}
+		e := r.atlas.Entry(ei)
+		if !e.inked {
+			// A space. It occupies advance, not pixels.
+			continue
+		}
+		r.material(MaterialGlyph, r.atlas.Page(ei))
+		dst := geom.Rc(
+			g.X+float32(e.left), g.Y+float32(e.top),
+			g.X+float32(e.left+e.w), g.Y+float32(e.top+e.h))
+		src := geom.Rc(float32(e.x), float32(e.y), float32(e.x+e.w), float32(e.y+e.h))
+		var wrote bool
+		if fast {
+			wrote = r.appendGlyphQuad(dst, src, clip, xf, op.Color)
+		} else {
+			wrote = r.appendGlyphQuadTransformed(dst, src, clip, xf, op.Color)
+		}
+		if wrote {
+			r.glyphQuads++
+			drawn = true
+		}
+	}
+	if drawn {
+		r.emitted++
+		return
+	}
+	// Exactly one counter per operation, or the accounting in
+	// [RendererStats.Accounted] stops adding up. A run whose every glyph was
+	// clipped away, blank or unresolvable is an operation that drew nothing.
+	r.skipEmptyText++
+}
+
+// appendGlyphQuad is the fast path for a translation and a positive scale,
+// which is everything gift produces. The clip is a rectangle intersection in
+// device space and the texture coordinates follow from a linear interpolation
+// inside it.
+func (r *Renderer) appendGlyphQuad(dst, src, clip geom.Rect, xf geom.Affine2D, col render.Color) bool {
+	dev := geom.Rc(
+		xf.A*dst.Min.X+xf.TX, xf.D*dst.Min.Y+xf.TY,
+		xf.A*dst.Max.X+xf.TX, xf.D*dst.Max.Y+xf.TY)
+	vis := dev.Intersect(clip)
+	if vis.IsEmpty() {
+		return false
+	}
+	du, dv := src.Width()/dev.Width(), src.Height()/dev.Height()
+	u0 := src.Min.X + (vis.Min.X-dev.Min.X)*du
+	u1 := src.Min.X + (vis.Max.X-dev.Min.X)*du
+	v0 := src.Min.Y + (vis.Min.Y-dev.Min.Y)*dv
+	v1 := src.Min.Y + (vis.Max.Y-dev.Min.Y)*dv
+
+	base := uint32(len(r.verts))
+	r.verts = append(r.verts,
+		glyphVertex(vis.Min.X, vis.Min.Y, u0, v0, col),
+		glyphVertex(vis.Max.X, vis.Min.Y, u1, v0, col),
+		glyphVertex(vis.Max.X, vis.Max.Y, u1, v1, col),
+		glyphVertex(vis.Min.X, vis.Max.Y, u0, v1, col),
+	)
+	r.idx = append(r.idx, base, base+1, base+2, base, base+2, base+3)
+	return true
+}
+
+// appendGlyphQuadTransformed is the general path: the quad is mapped into
+// device space and clipped as a convex polygon, with the texture coordinates
+// interpolated along with the corners. gift produces no transform that needs
+// it yet; it exists so that a rotated or mirrored scroll container later is a
+// display list change and not a backend rewrite.
+func (r *Renderer) appendGlyphQuadTransformed(dst, src, clip geom.Rect, xf geom.Affine2D, col render.Color) bool {
+	poly := &r.poly[0]
+	other := &r.poly[1]
+	corners := [4]geom.Point{
+		{X: dst.Min.X, Y: dst.Min.Y},
+		{X: dst.Max.X, Y: dst.Min.Y},
+		{X: dst.Max.X, Y: dst.Max.Y},
+		{X: dst.Min.X, Y: dst.Max.Y},
+	}
+	uvs := [4]geom.Point{
+		{X: src.Min.X, Y: src.Min.Y},
+		{X: src.Max.X, Y: src.Min.Y},
+		{X: src.Max.X, Y: src.Max.Y},
+		{X: src.Min.X, Y: src.Max.Y},
+	}
+	for i, c := range corners {
+		d := xf.Apply(c)
+		// lx and ly carry the texture coordinate here rather than a local
+		// position; the clipper interpolates whatever is in them.
+		poly[i] = clipVertex{dx: d.X, dy: d.Y, lx: uvs[i].X, ly: uvs[i].Y}
+	}
+	n := 4
+	n = clipHalfPlane(poly, n, other, edgeLeft, clip.Min.X)
+	poly, other = other, poly
+	n = clipHalfPlane(poly, n, other, edgeRight, clip.Max.X)
+	poly, other = other, poly
+	n = clipHalfPlane(poly, n, other, edgeTop, clip.Min.Y)
+	poly, other = other, poly
+	n = clipHalfPlane(poly, n, other, edgeBottom, clip.Max.Y)
+	poly, other = other, poly
+	if n < 3 {
+		return false
+	}
+	base := uint32(len(r.verts))
+	for i := 0; i < n; i++ {
+		v := poly[i]
+		r.verts = append(r.verts, glyphVertex(v.dx, v.dy, v.lx, v.ly, col))
+	}
+	for i := 1; i < n-1; i++ {
+		r.idx = append(r.idx, base, base+uint32(i), base+uint32(i)+1)
+	}
+	return true
+}
+
+// glyphVertex builds one vertex of a glyph quad.
+//
+// The colour travels unconverted, exactly as for shapes: render.Color is
+// premultiplied, the glyph options say the vertex colour scale is
+// premultiplied, and the atlas holds premultiplied white coverage. Nothing in
+// the frame path converts a colour.
+func glyphVertex(dx, dy, u, v float32, c render.Color) eb.Vertex {
+	return eb.Vertex{
+		DstX: dx, DstY: dy,
+		SrcX: u, SrcY: v,
+		ColorR: c.R, ColorG: c.G, ColorB: c.B, ColorA: c.A,
+	}
 }
 
 // shapeParams are the per operation values that end up in the vertex
@@ -549,16 +803,30 @@ func vertex(dx, dy, lx, ly float32, sh shapeParams) eb.Vertex {
 func (r *Renderer) flush() {
 	if len(r.idx) == 0 {
 		r.verts = r.verts[:0]
+		r.curMat, r.curPage = MaterialNone, nil
 		return
 	}
-	if r.drawFn != nil {
-		r.drawFn(r.verts, r.idx)
-	} else if r.dst != nil {
+	switch {
+	case r.drawFn != nil:
+		r.drawFn(r.curMat, r.verts, r.idx)
+	case r.dst == nil:
+		// No target: the geometry is still accounted for, which is what makes
+		// the counters usable from a headless test.
+	case r.curMat == MaterialGlyph:
+		r.dst.DrawTriangles32(r.verts, r.idx, r.curPage, &r.glyphOpts)
+	default:
 		r.dst.DrawTrianglesShader32(r.verts, r.idx, r.shader, &r.opts)
 	}
 	r.batches++
+	switch r.curMat {
+	case MaterialGlyph:
+		r.glyphBatches++
+	default:
+		r.shapeBatches++
+	}
 	r.verts = r.verts[:0]
 	r.idx = r.idx[:0]
+	r.curMat, r.curPage = MaterialNone, nil
 }
 
 // RendererStats are the counters of the renderer. Like [gift.Diagnostics]
@@ -584,8 +852,18 @@ func (r *Renderer) flush() {
 type RendererStats struct {
 	// Frames is the number of completed frames.
 	Frames uint64
-	// Batches is the number of draw calls issued.
+	// Batches is the number of draw calls issued. It is ShapeBatches plus
+	// GlyphBatches.
 	Batches uint64
+	// ShapeBatches and GlyphBatches split the draw calls by material. A
+	// shapes only scene has exactly one of the former and none of the
+	// latter; text costs one extra batch per run of text in display list
+	// order, and per atlas page switch inside such a run. See
+	// [Renderer.material] for why they are not sorted together.
+	ShapeBatches, GlyphBatches uint64
+	// GlyphQuads is the number of glyph quads emitted. Together with Ops it
+	// says how much of a frame is text.
+	GlyphQuads uint64
 	// Ops is the number of operations that produced geometry.
 	Ops uint64
 
@@ -611,6 +889,12 @@ type RendererStats struct {
 	SkippedOutsideClip uint64
 	// SkippedZeroStroke counts strokes with a width of zero or less.
 	SkippedZeroStroke uint64
+	// SkippedEmptyText counts glyph operations that produced no quad: an
+	// empty range, a run of nothing but spaces, a run entirely outside its
+	// clip, or — the one worth watching — a run whose glyphs the atlas
+	// refused. Cross check it against [AtlasStats.Rejected] before blaming
+	// the layout.
+	SkippedEmptyText uint64
 
 	// UnknownKinds is the number of operations whose kind this backend does
 	// not know.
@@ -618,11 +902,12 @@ type RendererStats struct {
 }
 
 // Skipped is the total number of operations that produced no geometry. It is
-// the sum of the six reasons above and exists so that the total accounting is
-// one expression.
+// the sum of the seven reasons above and exists so that the total accounting
+// is one expression.
 func (s RendererStats) Skipped() uint64 {
 	return s.SkippedNone + s.SkippedTransparent + s.SkippedEmptyBounds +
-		s.SkippedEmptyClip + s.SkippedOutsideClip + s.SkippedZeroStroke
+		s.SkippedEmptyClip + s.SkippedOutsideClip + s.SkippedZeroStroke +
+		s.SkippedEmptyText
 }
 
 // Accounted is Ops + Skipped + UnknownKinds. It must equal the total number of
@@ -645,6 +930,10 @@ func (r *Renderer) Stats() RendererStats {
 		SkippedEmptyClip:   r.skipEmptyClip,
 		SkippedOutsideClip: r.skipOutsideClip,
 		SkippedZeroStroke:  r.skipZeroStroke,
+		SkippedEmptyText:   r.skipEmptyText,
 		UnknownKinds:       r.unknowns,
+		ShapeBatches:       r.shapeBatches,
+		GlyphBatches:       r.glyphBatches,
+		GlyphQuads:         r.glyphQuads,
 	}
 }

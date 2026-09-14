@@ -91,6 +91,41 @@ func (l *LayoutContext) check(child int) {
 	}
 }
 
+// ReportBaseline records the distance from the top of this node to the
+// baseline its content sits on, in logical pixels.
+//
+// # This is a seam, and it is honest about being one
+//
+// The project plan, section 7, makes baselines part of the shared layout
+// contract, and this is the channel they travel through: a text node reports
+// the first baseline of its paragraph, and a container that wants to align
+// siblings on it reads [LayoutContext.ChildBaseline].
+//
+// As of WU-G exactly one thing writes it, [ui.Text], and nothing reads it: no
+// stack aligns on baselines yet, because cross sibling baseline alignment
+// needs a second measuring pass over the row — measure every child, take the
+// largest baseline, then place each child shifted by the difference — and that
+// is a change to the stack algorithm in internal/layout, not to a text view.
+// Adding the channel now and the algorithm later is the cheap order; inventing
+// the algorithm now for a toolkit whose only baseline bearing view is a label
+// would be building against a single caller.
+//
+// A layouter that never calls it reports no baseline, which is the right
+// answer for a box: a rectangle has no baseline, and a container that guesses
+// one — the bottom edge, say — would silently misalign every row it touched.
+func (l *LayoutContext) ReportBaseline(v float32) {
+	l.nd.baseline, l.nd.hasBaseline = v, true
+}
+
+// ChildBaseline returns the baseline the given child reported during this
+// layout pass, and whether it reported one at all. See
+// [LayoutContext.ReportBaseline].
+func (l *LayoutContext) ChildBaseline(child int) (float32, bool) {
+	l.check(child)
+	nd := l.app.data(l.nd.children[child])
+	return nd.baseline, nd.hasBaseline
+}
+
 // layoutNode measures h with the constraints c and returns its size.
 //
 // This is where the "Layout: kein Measure/Arrange" row of the project plan,

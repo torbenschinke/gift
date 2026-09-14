@@ -191,16 +191,45 @@ type rendererCounters struct {
 	SkippedEmptyClip   uint64 `json:"skipped_empty_clip"`
 	SkippedOutsideClip uint64 `json:"skipped_outside_clip"`
 	SkippedZeroStroke  uint64 `json:"skipped_zero_stroke"`
+	SkippedEmptyText   uint64 `json:"skipped_empty_text"`
 	UnknownKinds       uint64 `json:"unknown_kinds"`
 	// Accounted is Ops + Skipped + UnknownKinds and must equal painted_ops.
 	Accounted uint64 `json:"accounted_ops"`
+
+	// ShapeDrawCalls and GlyphDrawCalls split draw_calls by material, and
+	// GlyphQuads says how much of the frame was text. A frame is one draw
+	// call per run of same-material operations in display list order; see
+	// [RendererStats.DrawCalls].
+	ShapeDrawCalls uint64 `json:"shape_draw_calls"`
+	GlyphDrawCalls uint64 `json:"glyph_draw_calls"`
+	GlyphQuads     uint64 `json:"glyph_quads"`
+
+	Atlas atlasCounters `json:"atlas"`
+}
+
+// atlasCounters are the glyph atlas numbers; see [AtlasStats].
+type atlasCounters struct {
+	Hits           uint64 `json:"hits"`
+	Misses         uint64 `json:"misses"`
+	Rasterised     uint64 `json:"rasterised"`
+	UploadedBytes  uint64 `json:"uploaded_bytes"`
+	PageEvictions  uint64 `json:"page_evictions"`
+	GlyphEvictions uint64 `json:"glyph_evictions"`
+	// Rejected non zero means glyphs did not fit and text is missing.
+	Rejected uint64 `json:"rejected"`
+	Pages    int    `json:"pages"`
+	Glyphs   int    `json:"glyphs"`
+	Bytes    int    `json:"bytes"`
 }
 
 type shaperCounters struct {
-	Hits      uint64 `json:"hits"`
-	Misses    uint64 `json:"misses"`
-	Evictions uint64 `json:"evictions"`
-	Bytes     uint64 `json:"bytes"`
+	Hits         uint64 `json:"hits"`
+	Misses       uint64 `json:"misses"`
+	Evictions    uint64 `json:"evictions"`
+	AgeEvictions uint64 `json:"age_evictions"`
+	ShapedGlyphs uint64 `json:"shaped_glyphs"`
+	Entries      int    `json:"entries"`
+	Bytes        uint64 `json:"bytes"`
 }
 
 // report is one line of output.
@@ -283,15 +312,28 @@ func (r *Recorder) emit(kind string) {
 			SkippedEmptyClip:   rs.SkippedEmptyClip,
 			SkippedOutsideClip: rs.SkippedOutsideClip,
 			SkippedZeroStroke:  rs.SkippedZeroStroke,
+			SkippedEmptyText:   rs.SkippedEmptyText,
 			UnknownKinds:       rs.UnknownKinds,
 			Accounted:          rs.Accounted(),
+			ShapeDrawCalls:     rs.ShapeDrawCalls,
+			GlyphDrawCalls:     rs.GlyphDrawCalls,
+			GlyphQuads:         rs.GlyphQuads,
+			Atlas: atlasCounters{
+				Hits: rs.Atlas.Hits, Misses: rs.Atlas.Misses,
+				Rasterised: rs.Atlas.Rasterised, UploadedBytes: rs.Atlas.UploadedBytes,
+				PageEvictions: rs.Atlas.PageEvictions, GlyphEvictions: rs.Atlas.GlyphEvictions,
+				Rejected: rs.Atlas.Rejected,
+				Pages:    rs.Atlas.Pages, Glyphs: rs.Atlas.Glyphs, Bytes: rs.Atlas.Bytes,
+			},
 		}
 	}
 	if r.opt.Shaper != nil {
 		if ss := r.opt.Shaper(); ss.Present {
 			m.Shaper = &shaperCounters{
 				Hits: ss.Hits, Misses: ss.Misses,
-				Evictions: ss.Evictions, Bytes: ss.Bytes,
+				Evictions: ss.Evictions, AgeEvictions: ss.AgeEvictions,
+				ShapedGlyphs: ss.ShapedGlyphs,
+				Entries:      ss.Entries, Bytes: ss.Bytes,
 			}
 		}
 	}

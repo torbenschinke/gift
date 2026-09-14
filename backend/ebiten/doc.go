@@ -18,12 +18,29 @@
 //
 // # Drawing
 //
-// Every operation of the display list is a rounded rectangle, filled or
-// stroked, so all of them are drawn by one shared Kage shader that evaluates a
-// signed distance field, fed from vertex attributes. A frame is normally one
-// draw call. Nothing allocates an image, a texture or a render target per
-// widget, per operation or per frame, which is what the project plan, sections
-// 8 and 11, require.
+// A shape operation — a rectangle, a rounded rectangle or a stroke — is drawn
+// by one shared Kage shader that evaluates a signed distance field fed from
+// vertex attributes, so a frame of nothing but shapes is one draw call. A text
+// operation is a run of textured quads sampling a [GlyphAtlas] page, which is
+// a different material, so "one draw call per frame" becomes one per run of
+// same-material operations.
+//
+// Those runs are *not* reordered to merge them. Display list order is drawing
+// order and a batch ends wherever the material changes, because the project
+// plan, section 11, forbids globally reordering transparent content to reduce
+// draw calls — a label sorted into a late text pass would slide in front of
+// panels declared after it. See [Renderer.material] and [RendererStats.DrawCalls].
+//
+// Nothing allocates an image, a texture or a render target per widget, per
+// operation or per frame, which is what the project plan, sections 8 and 11,
+// require. The glyph atlas is a bounded, evicting pool of pages; see
+// [GlyphAtlas].
+//
+// Glyph coverage is a single channel mask and the colour comes from the
+// operation, so the atlas never holds a colour and the same glyph serves every
+// colour it is ever drawn in. Glyph positions are whole pixels and the atlas
+// key carries no subpixel phase; the project plan, section 7, rules subpixel
+// positioning out.
 //
 // Colours are premultiplied on both sides of the boundary — [render.Color] is
 // premultiplied by construction and so is everything Ebitengine consumes — so
@@ -50,7 +67,8 @@
 //
 // What remains here is the wiring. [Run] starts a [metrics.Recorder], times
 // the two callbacks, records the interval between drawn frames and hands the
-// renderer counters over as [metrics.RendererStats]. Every one of those steps
+// renderer counters, the glyph atlas counters and the shaping cache counters
+// of internal/text over as [metrics.RendererStats] and [metrics.ShaperStats]. Every one of those steps
 // is behind metrics.Enabled, which is a compile time constant false without
 // the giftmetrics build tag, so an ordinary build does not even call
 // time.Now. An application therefore gets a measurement by rebuilding with
