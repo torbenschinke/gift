@@ -609,11 +609,37 @@ oder einem Dateisystem-Scanner gleichgesetzt.
   Requests und Texturen bleiben durch Viewport und Budgets begrenzt.
 - Pro Spalte beziehungsweise Zeile werden sichtbare Intervalle binaer gesucht.
   Der Scrollpfad durchsucht nicht alle 100.000 Eintraege.
+
+  Praezisierung aus WU-M: die Abfrage ist **nicht** O(log N + k), und das kann
+  sie bei Masonry auch nicht sein. Eine Suche je Spalte ergibt
+  O(c · log(N/c) + k), wobei c eine Konstante des Viewports ist und nicht von
+  N abhaengt. Gemessen bei hundertfachem N: Bruteforce 96-fach, Masonry
+  4,2-fach, Justified 1,7-fach. Der Rest ueber dem reinen log-Term sind
+  Cache-Misses auf einem 2,4-MB-Array. In absoluten Zahlen kostet die Abfrage
+  bei 100.000 Eintraegen 1,2 µs (Masonry) beziehungsweise 0,2 µs (Justified)
+  von 16,67 ms. Sollte das je stoeren, ist der Hebel ein zusammenhaengendes
+  `y`-Array je Spalte, nicht ein anderer Algorithmus.
+- Die Abfrage ist nur deshalb allokationsfrei, weil sie an ein Slice des
+  Aufrufers anhaengt. Das ist ein Vertrag **an den Aufrufer** und muss bis in
+  die Galerie durchgehalten werden.
 - Initiales Layout, Sortierung und Spaltenwechsel duerfen O(N) Arbeit benoetigen;
   sie werden ausserhalb des Frame-Hotpaths oder inkrementell berechnet und
   versioniert uebernommen. Ergebnisse veralteter Layouts werden verworfen.
 - Fehlende Abmessungen verwenden vorlaeufige Seitenverhaeltnisse. Korrekturen
   werden gebuendelt; stabile Bild-ID plus lokaler Offset erhalten den Scrollanker.
+
+  Praezisierung aus WU-M: der Anker ist **geteilt**. Der lokale Offset lebt im
+  Layoutindex, die stabile Bild-ID in der Collection. Der Index fuehrt bewusst
+  keine IDs mit: das kostete acht Byte je Eintrag plus eine ID-nach-Position-
+  Abbildung, und die Collection besitzt beides ohnehin. Beim Resize und bei
+  Korrekturbuendeln genuegt der Offset allein; nur eine Umsortierung braucht
+  zusaetzlich die ID.
+
+  Ausserdem offen gelassen und jetzt entschieden: ein Korrekturbuendel
+  verschiebt das bereits uebernommene Layout **nicht**. Wann der Inhalt
+  nachrueckt, ist eine Ankerentscheidung und gehoert der Galerie. Sonst
+  ruckelte der Viewport mitten im Frame, ohne dass vorher ein Anker genommen
+  wurde.
 - Sehr grosse Dokumentpositionen werden erst nach Abzug des Viewport-Ursprungs
   in float32-GPU-Koordinaten konvertiert.
 - Schnelle Spruenge zeigen Platzhalter, statt auf Laden oder Decode zu warten.

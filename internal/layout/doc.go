@@ -9,6 +9,13 @@
 //
 // # Allocation
 //
-// Nothing in this package allocates. Every function that needs per child
+// Nothing on the frame path allocates. Every function that needs per child
 // scratch space takes it from the caller as a slice; see [Stack].
+//
+// The one exception is the gallery index, and it is a deliberate one. [Index]
+// owns O(N) arrays for a hundred thousand items, so it cannot take them from a
+// caller's stack; it allocates them while a layout is being *built*, which the
+// project plan, section 10, explicitly permits to cost O(N) off the hot path,
+// and it reuses them across rebuilds. Querying the index — which is the part
+// that runs every frame — allocates nothing; see [Index.Visible].
 package layout
