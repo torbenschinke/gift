@@ -74,6 +74,10 @@ type App struct {
 	// box is the inbox for results posted from worker goroutines.
 	box postbox
 
+	// in is the input dispatcher: pointers, focus and the reusable event
+	// context. It is a plain struct, so nothing about input allocates.
+	in inputState
+
 	diag       Diagnostics
 	pub        diagPublisher
 	liveScopes uint64
@@ -96,6 +100,7 @@ func New(opts Options) *App {
 	a.ui.capture()
 	a.bctx = BuildContext{app: a}
 	a.pctx = PaintContext{app: a, list: &a.list}
+	a.in.ectx = EventContext{app: a}
 	a.list.Reset()
 
 	// The root is an ordinary component instance, so that the root has state

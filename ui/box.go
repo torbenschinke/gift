@@ -49,7 +49,7 @@ func (b BoxView) ViewType() gift.TypeID { return boxType }
 // A Box has its own tiny layout path rather than reusing the overlay
 // algorithm, because its sizing rule differs: it is greedy on bounded axes.
 func (b BoxView) Build(*gift.BuildContext) gift.Element {
-	return element(b.base, kindBox, 0, layout.Vertical, nil)
+	return element(b.base, kindBox, 0, layout.Vertical, layout.CrossAlignPosition, nil)
 }
 
 // Padding sets the same padding on all four edges, replacing any previous

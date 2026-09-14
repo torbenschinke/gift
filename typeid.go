@@ -52,3 +52,21 @@ func TypeName(id TypeID) string {
 	}
 	return typeNames[id]
 }
+
+// RegisteredTypeNames appends the names of every registered view type to dst
+// and returns the extended slice.
+//
+// It exists for diagnostics and for one specific test: the modifier check the
+// project plan, section 4, requires instead of a generator needs a way to
+// notice that a *new* view type appeared. Reflection cannot enumerate the
+// types of a package, but every view type has to register itself here to be
+// reconcilable at all, so this registry is the one place that knows the
+// complete list.
+//
+// The order is registration order and the names are the ones passed to
+// [RegisterType]. Never persist them.
+func RegisteredTypeNames(dst []string) []string {
+	typeMu.RLock()
+	defer typeMu.RUnlock()
+	return append(dst, typeNames[1:]...)
+}

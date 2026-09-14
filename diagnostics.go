@@ -47,6 +47,18 @@ type Diagnostics struct {
 	// is precisely when it would be needed.
 	OverflowNodes uint64
 
+	// HitTests counts the hit tests performed, that is roughly the number of
+	// pointer events that had to find a target.
+	HitTests uint64
+	// InputEvents counts the calls into an [Interactor], including the ones
+	// that happened while an event bubbled towards the root.
+	InputEvents uint64
+	// DiscardedTouches counts the additional fingers that were recognised
+	// and dropped. The project plan, section 7, limits multitouch to exactly
+	// that, and a counter is how "it was dropped on purpose" is told apart
+	// from "it was never seen".
+	DiscardedTouches uint64
+
 	// OverflowExtent is the sum over those nodes of their horizontal plus
 	// vertical overflow, in logical pixels.
 	//

@@ -102,13 +102,28 @@ type Config struct {
 	// application may legally read those counters from is OnUpdate.
 	OnRenderer func(*Renderer)
 
-	// OnUpdate runs at the beginning of every update, before gift builds and
-	// lays out. It is where an application reads input and drives timers.
+	// OnUpdate runs once per update, after input has been dispatched into
+	// gift and before gift builds and lays out.
+	//
+	// # Why it survived WU-H
+	//
+	// It used to be the only way an application could get anything to happen,
+	// and the example abused it as a substitute for input. It is kept, with a
+	// narrower job: it is the tick hook. Animations, timers, a benchmark that
+	// stops after sixty seconds and a headless driver all need a callback per
+	// update that is not an input event, and none of them are served by the
+	// event model. What it is no longer is the input path — that is
+	// [inputBridge], and an application writes no code for it.
 	//
 	// Returning [Terminate] stops the loop and makes [Run] return nil, which
 	// is how a benchmark run exits after a fixed duration. Any other non nil
 	// error stops the loop and is returned by [Run].
 	OnUpdate func() error
+
+	// NoInput disables the input bridge. It exists for a measurement run that
+	// must not be perturbed by a cursor that happens to rest over a button,
+	// and for a test harness that dispatches events into [gift.App] itself.
+	NoInput bool
 }
 
 // Terminate is the error that stops the frame loop without making [Run] fail.
@@ -196,6 +211,7 @@ func Run(app *gift.App, cfg Config) error {
 
 	g := &game{
 		app:       app,
+		input:     newInputBridge(app),
 		r:         r,
 		rec:       rec,
 		log:       cfg.Logger,
@@ -206,6 +222,9 @@ func Run(app *gift.App, cfg Config) error {
 		idleAfter: idleAfter,
 		w:         w,
 		h:         h,
+	}
+	if cfg.NoInput {
+		g.input = nil
 	}
 
 	eb.SetWindowTitle(cfg.Title)
@@ -253,6 +272,7 @@ type game struct {
 	log *slog.Logger
 
 	onUpdate func() error
+	input    *inputBridge
 
 	activeTPS, busyTPS, idleTPS, idleAfter int
 	idleCount                              int
@@ -279,6 +299,14 @@ func (g *game) Update() error {
 	var start time.Time
 	if metrics.Enabled() {
 		start = time.Now()
+	}
+
+	// Input first, and inside Update. Every handler an event fires runs here,
+	// so a state write it makes is picked up by the g.app.Update below, in
+	// this same tick. The project plan, section 6, allows build and layout
+	// only in Update, and the UI executor assertion assumes exactly this.
+	if g.input != nil {
+		g.input.poll()
 	}
 
 	if g.onUpdate != nil {

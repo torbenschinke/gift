@@ -1,5 +1,7 @@
 package gift
 
+import "github.com/torbenschinke/gift/geom"
+
 // View is a short lived description of a piece of user interface.
 //
 // A view is a value, not an object with identity. It is created during a
@@ -72,6 +74,44 @@ type Element struct {
 	// reading one float from the retained node, see
 	// [LayoutContext.ChildFlex]. A layouter that is not a stack ignores it.
 	Flex float32
+
+	// Interactor makes this node a hit target for input. A nil Interactor,
+	// the default, makes the node transparent to input without affecting its
+	// children; see [Interactor] for why that polarity is the safe one.
+	Interactor Interactor
+
+	// Focusable declares that this node may hold the keyboard focus and
+	// therefore takes part in the tab order. It is only honoured together
+	// with a non nil Interactor: focus exists to deliver key events, and a
+	// node that cannot receive them would be a black hole in the tab order.
+	Focusable bool
+
+	// Disabled takes the node out of input without taking it out of the
+	// layout. A disabled node is still a hit target — so a click on it does
+	// not fall through to whatever is behind it — but receives no events,
+	// acquires no hover or press state and is skipped by the focus order.
+	Disabled bool
+
+	// Clip confines the input of this node's subtree to its bounds.
+	//
+	// It is the input half of [ui.Stack.Clip] and is set from the same
+	// declaration. A view that pushes a paint clip must set this too and
+	// must use the same rectangle, or a node would be invisible and still
+	// clickable.
+	Clip bool
+
+	// Transform maps this node and its subtree into the space of its parent.
+	// A nil Transform, the default, is the identity.
+	//
+	// It is the one channel through which scrolling will move a subtree
+	// without re measuring it, and it is shared: [App.paintNode] pushes it
+	// into the display list and the hit test composes the same matrix, so
+	// input and output cannot disagree about where a node is. The project
+	// plan, section 7, requires exactly that.
+	//
+	// The pointer is retained for as long as the node lives and must not be
+	// modified afterwards; build a new one instead.
+	Transform *geom.Affine2D
 }
 
 // BuildContext is passed to [View.Build].

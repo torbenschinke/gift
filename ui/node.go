@@ -49,6 +49,12 @@ func (n *node) MeasureChild(i int, c geom.Constraints) geom.Size {
 	return n.ctx.Measure(i, c)
 }
 
+// ChildBaseline implements layout.Baseliner. It forwards the baseline a child
+// reported during this pass, or false when the child reported none — which is
+// the answer for anything that is not text, and the one case the algorithm
+// must not guess at.
+func (n *node) ChildBaseline(i int) (float32, bool) { return n.ctx.ChildBaseline(i) }
+
 // Layout measures the children through the shared algorithms in
 // internal/layout and places them.
 //
@@ -141,10 +147,10 @@ func (n *node) ensure(k int) {
 }
 
 // element builds the gift.Element of a container view.
-func element(b base, kind nodeKind, gap float32, axis layout.Axis, children []gift.View) gift.Element {
+func element(b base, kind nodeKind, gap float32, axis layout.Axis, cross layout.CrossAlign, children []gift.View) gift.Element {
 	n := &node{
 		kind: kind,
-		spec: layout.StackSpec{Axis: axis, Gap: gap, Padding: b.pad, Alignment: b.align},
+		spec: layout.StackSpec{Axis: axis, Gap: gap, Padding: b.pad, Alignment: b.align, CrossAlign: cross},
 		fr:   b.frame,
 		st:   b.style,
 	}
@@ -158,5 +164,10 @@ func element(b base, kind nodeKind, gap float32, axis layout.Axis, children []gi
 		Layouter: n,
 		Painter:  p,
 		Children: children,
+		// The paint clip and the input clip come from this one field. The
+		// painter pushes the full bounds (see paintStyle) and gift clips hit
+		// testing to the same rectangle, so a clipped child cannot be
+		// invisible and clickable at the same time.
+		Clip: b.style.clip,
 	}
 }

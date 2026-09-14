@@ -141,6 +141,23 @@ func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *
 	nd.layouter = desc.elem.Layouter
 	nd.painter = desc.elem.Painter
 	nd.flex = desc.elem.Flex
+	// The input declaration is refreshed from the new element, but the
+	// interaction state is not: hover, press and focus belong to the node and
+	// must survive a rebuild that happened for an unrelated reason. What does
+	// follow the element is Disabled, because a button that was disabled
+	// while the mouse rested on it must not keep the hover look.
+	nd.interactor = desc.elem.Interactor
+	nd.focusable = desc.elem.Focusable && desc.elem.Interactor != nil
+	nd.disabled = desc.elem.Disabled
+	nd.clip = desc.elem.Clip
+	nd.xform = desc.elem.Transform
+	nd.ia.Disabled = desc.elem.Disabled
+	if nd.disabled || nd.interactor == nil {
+		nd.ia.Hover, nd.ia.Pressed = false, false
+	}
+	if a.in.focus == h && !a.focusable(h) {
+		a.setFocus(scene.Handle{})
+	}
 
 	checkOwnership(nd, desc.elem.Children)
 	nd.childViews = desc.elem.Children
@@ -266,6 +283,7 @@ func (a *App) destroyScopes(h scene.Handle, depth int) {
 	for _, c := range nd.children {
 		a.destroyScopes(c, depth+1)
 	}
+	a.forgetNode(h)
 	if sc := nd.scope; sc != nil {
 		a.clearDeps(sc)
 		sc.alive = false

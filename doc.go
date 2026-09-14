@@ -42,6 +42,22 @@
 // composing views boxes them into interfaces by construction. See the project
 // plan, section 11.
 //
+// # Input
+//
+// Input is polled by the backend, turned into events and dispatched into the
+// App during Ebitengine's Update, before build and layout. Event handlers
+// therefore run where state writes are allowed and are picked up by the build
+// of the same tick; see the project plan, section 6.
+//
+// A node takes part in hit testing only if its [Element] carries an
+// [Interactor]. Hit testing walks the retained tree front to back and honours
+// the clips and transforms of ancestors, using the same device space
+// convention as the display list, so what is visible and what is clickable
+// cannot disagree. Hover, press and focus are kept in the retained node as
+// [Interaction] and are read by painters; changing them repaints and does not
+// rebuild anything, which is what the project plan, section 5, requires of
+// presentation state.
+//
 // # Logging
 //
 // Nothing in the frame path logs, not even behind a level check, because

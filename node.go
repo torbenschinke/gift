@@ -26,6 +26,25 @@ type nodeData struct {
 	layouter Layouter
 	painter  Painter
 
+	// interactor, focusable, disabled and clip are the input half of the
+	// element; see [Element]. They are plain fields in the payload, so the
+	// hit test reads them without an interface dispatch and the dispatcher
+	// writes hover and press without touching the view.
+	interactor Interactor
+	focusable  bool
+	disabled   bool
+	clip       bool
+
+	// xform is [Element.Transform]. It is a pointer because the common case
+	// is the identity and a nil check is cheaper than comparing six floats.
+	xform *geom.Affine2D
+
+	// ia is the interaction state gift owns for this node. It lives here and
+	// not in the view because that is what makes hover and press survive a
+	// rebuild and, more importantly, what makes them not cause one; see
+	// [Interaction].
+	ia Interaction
+
 	// flex is [Element.Flex] of the last build. It is plain old data stored
 	// inline, so that a stack can read the flexibility of a child without an
 	// interface dispatch and without allocating.
@@ -88,6 +107,12 @@ func (nd *nodeData) release() {
 	nd.scope = nil
 	nd.layouter = nil
 	nd.painter = nil
+	nd.interactor = nil
+	nd.focusable = false
+	nd.disabled = false
+	nd.clip = false
+	nd.xform = nil
+	nd.ia = Interaction{}
 	nd.flex = 0
 	nd.childViews = nil
 	nd.children = nd.children[:0]

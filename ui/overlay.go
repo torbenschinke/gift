@@ -31,7 +31,7 @@ func (o Overlay) ViewType() gift.TypeID { return zstackType }
 
 // Build implements gift.View.
 func (o Overlay) Build(*gift.BuildContext) gift.Element {
-	return element(o.base, kindOverlay, 0, layout.Vertical, o.children)
+	return element(o.base, kindOverlay, 0, layout.Vertical, layout.CrossAlignPosition, o.children)
 }
 
 // Padding sets the same padding on all four edges, replacing any previous

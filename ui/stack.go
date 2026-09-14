@@ -21,6 +21,7 @@ var (
 type Stack struct {
 	base
 	axis     layout.Axis
+	cross    layout.CrossAlign
 	gap      float32
 	children []gift.View
 }
@@ -50,7 +51,7 @@ func (s Stack) ViewType() gift.TypeID {
 
 // Build implements gift.View.
 func (s Stack) Build(*gift.BuildContext) gift.Element {
-	return element(s.base, kindStack, s.gap, s.axis, s.children)
+	return element(s.base, kindStack, s.gap, s.axis, s.cross, s.children)
 }
 
 // Gap sets the space inserted between two adjacent children. It is never
@@ -73,7 +74,43 @@ func (s Stack) PaddingInsets(v geom.Insets) Stack { s.setPaddingInsets(v); retur
 
 // Align sets the cross axis alignment of the children. A vertical stack reads
 // the X component, a horizontal stack the Y component.
-func (s Stack) Align(v geom.Alignment) Stack { s.setAlign(v); return s }
+//
+// It has no effect on a child that takes part in baseline alignment; see
+// [Stack.AlignBaseline].
+func (s Stack) Align(v geom.Alignment) Stack {
+	s.setAlign(v)
+	s.cross = layout.CrossAlignPosition
+	return s
+}
+
+// AlignBaseline lines the children up on their first text baseline instead of
+// on an edge or the centre. It replaces any previous [Stack.Align].
+//
+// Two labels of different font sizes placed next to each other sit on a common
+// line, which is what "next to each other" means for text and what centring
+// only approximates. A child that reports no baseline — a [BoxView], an
+// [Overlay], anything that is not text — is not guessed at: it keeps the
+// ordinary alignment inside the same band. Guessing a baseline for a rectangle
+// would misalign every row it appeared in, and there is no value that would be
+// right.
+//
+// # Only on a horizontal stack
+//
+// A baseline is a horizontal line, so aligning on it positions a child
+// vertically. In a vertical stack the vertical axis is the stacking axis and
+// is already decided, so there is nothing left for a baseline to say. Calling
+// this on a [VStack] panics at the call site rather than silently doing
+// nothing: the package documentation promises that a view never accepts a
+// modifier it then ignores, and this is the cheapest place to keep that
+// promise — the axis is known at construction time.
+func (s Stack) AlignBaseline() Stack {
+	if s.axis != layout.Horizontal {
+		panic("gift/ui: AlignBaseline on a VStack; a baseline positions a child vertically, " +
+			"which in a vertical stack is what the stacking itself already decides. Use it on an HStack.")
+	}
+	s.cross = layout.CrossAlignBaseline
+	return s
+}
 
 // Frame fixes both axes. Pass [geom.Unbounded] for an axis that should stay
 // free.

@@ -69,7 +69,7 @@ func TestNeedsPainterGateIsInstalled(t *testing.T) {
 						t.Errorf("needsPainter(%s, %s, radius %v, clip %v) = %v, want %v",
 							bg.name, bd.name, r, cl, got, want)
 					}
-					el := element(b, kindBox, 0, 0, nil)
+					el := element(b, kindBox, 0, 0, 0, nil)
 					if got := el.Painter != nil; got != want {
 						t.Errorf("element(%s, %s, radius %v, clip %v) installed a painter = %v, want %v; "+
 							"a node with nothing to draw must hand gift a nil Painter so that gift takes its fast path",

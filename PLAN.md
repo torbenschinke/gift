@@ -405,9 +405,24 @@ Eingabe, Clip und Hit-Testing verwenden dieselben Koordinatentransformationen.
 - Tastatur: Fokusreihenfolge, Disabled, Aktivierung per Space/Enter,
   Pfeilnavigation in der Galerie.
 - Touch: Tap, Long-Press, Drag-Scroll und kinetisches Scrollen mit Reibung.
-  Die Zielhardware ist typischerweise ein Pi-Display; Touch nachtraeglich
-  einzubauen waere teuer, weil es die Pointer-Capture- und Scroll-Semantik
-  beruehrt.
+  Touch nachtraeglich einzubauen waere teuer, weil es die Pointer-Capture- und
+  Scroll-Semantik beruehrt.
+
+  **Korrigiert nach WU-H.** Die urspruengliche Begruendung lautete zusaetzlich,
+  die Zielhardware sei typischerweise ein Pi-Display. Das ist fuer den
+  Desktop-Backend falsch und in der Quelle geprueft: Ebitengine dokumentiert an
+  `AppendTouchIDs` selbst "AppendTouchIDs always does nothing on desktops".
+  Unter Raspberry Pi OS mit X11/XWayland - der in Abschnitt 1 festgelegten
+  Plattform - kommt ein Touchscreen als Maus an. Der Touch-Pfad ist real und
+  getestet, wird aber von Android- und iOS-Builds ausgeuebt, nicht vom Pi. Das
+  Architekturargument traegt, das Hardwareargument nicht.
+
+  Ebitengine hat ausserdem **keine Tastenwiederholung**. Die Suche im
+  gepinnten Modul findet `Repeat` nur im Gamepad-Code. Das Naechstliegende ist
+  `inpututil.KeyPressDuration`, das Ticks zaehlt; Anfangsverzoegerung und Rate
+  muessten darauf aufgebaut werden. Fuer den ersten Aufschlag ist das ohne
+  Belang, weil Space/Enter und Tab auf der Flanke ausloesen. Ein Texteditor
+  braeuchte es, und der ist in Abschnitt 14 ausgeschlossen.
 
 Ein gemeinsames Pointer-Modell abstrahiert Maus und Touch; Touch-Ereignisse
 erzeugen keine synthetischen Hover-Zustaende. Multitouch beschraenkt sich auf

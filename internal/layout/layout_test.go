@@ -604,3 +604,179 @@ func TestOverflowIsAllocationFree(t *testing.T) {
 		t.Fatalf("AllocsPerRun = %v, want 0", got)
 	}
 }
+
+// --- baseline alignment -----------------------------------------------------
+
+// baselined is a Measurer that also reports a baseline per child. A negative
+// entry means "this child has no baseline", which is what a rectangle says.
+type baselined struct {
+	fake
+	baselines []float32
+}
+
+func (b *baselined) ChildBaseline(i int) (float32, bool) {
+	if b.baselines[i] < 0 {
+		return 0, false
+	}
+	return b.baselines[i], true
+}
+
+func runBaseline(t *testing.T, spec layout.StackSpec, c geom.Constraints, want []geom.Size, bl []float32) (layout.Result, []geom.Point) {
+	t.Helper()
+	n := len(want)
+	m := &baselined{fake: fake{want: want}, baselines: bl}
+	items := make([]layout.Item, n)
+	origins := make([]geom.Point, n)
+	return layout.Stack(spec, c, n, m, items, origins), origins
+}
+
+// TestStackBaselineAlignment is the arithmetic the ui level test observes
+// through glyph positions: the children are shifted so that their baselines
+// coincide on the largest of them.
+func TestStackBaselineAlignment(t *testing.T) {
+	spec := layout.StackSpec{Axis: layout.Horizontal, CrossAlign: layout.CrossAlignBaseline}
+	res, origins := runBaseline(t, spec, geom.Loose(geom.Sz(300, 300)),
+		[]geom.Size{{W: 40, H: 50}, {W: 30, H: 20}},
+		[]float32{40, 16})
+
+	// The common line is the largest ascent, 40. The first child is already
+	// there, the second is pushed down by 40-16.
+	if got, want := origins[0].Y, float32(0); !approx(got, want) {
+		t.Errorf("origins[0].Y = %v, want %v", got, want)
+	}
+	if got, want := origins[1].Y, float32(24); !approx(got, want) {
+		t.Errorf("origins[1].Y = %v, want %v", got, want)
+	}
+	// The band is the largest ascent plus the largest descent below the line:
+	// 40 + max(50-40, 20-16) = 50. Here that equals the tallest child, but
+	// the next test shows a case where it does not.
+	if got, want := res.Size.H, float32(50); !approx(got, want) {
+		t.Errorf("size.H = %v, want %v", got, want)
+	}
+}
+
+// TestStackBaselineCanBeTallerThanItsTallestChild: a big ascent and a
+// different child's big descent do not overlap, so the row needs more room
+// than either child. Sizing the row to the tallest child would cut the second
+// one off at the bottom.
+func TestStackBaselineCanBeTallerThanItsTallestChild(t *testing.T) {
+	spec := layout.StackSpec{Axis: layout.Horizontal, CrossAlign: layout.CrossAlignBaseline}
+	res, origins := runBaseline(t, spec, geom.Loose(geom.Sz(300, 300)),
+		[]geom.Size{{W: 10, H: 50}, {W: 10, H: 50}},
+		[]float32{45, 5})
+
+	if got, want := res.Size.H, float32(90); !approx(got, want) {
+		t.Errorf("size.H = %v, want %v (ascent 45 plus descent 45)", got, want)
+	}
+	if got, want := origins[1].Y, float32(40); !approx(got, want) {
+		t.Errorf("origins[1].Y = %v, want %v", got, want)
+	}
+}
+
+// TestStackBaselineIgnoresChildrenWithoutOne: a rectangle reports nothing and
+// keeps the ordinary cross alignment. Nothing is invented for it.
+func TestStackBaselineIgnoresChildrenWithoutOne(t *testing.T) {
+	spec := layout.StackSpec{
+		Axis:       layout.Horizontal,
+		CrossAlign: layout.CrossAlignBaseline,
+		Alignment:  geom.Alignment{Y: 1},
+	}
+	res, origins := runBaseline(t, spec, geom.Loose(geom.Sz(300, 300)),
+		[]geom.Size{{W: 10, H: 30}, {W: 10, H: 10}},
+		[]float32{25, -1})
+
+	// The band is 25 + max(30-25, 10) = 35; the rectangle is bottom aligned
+	// inside it.
+	if got, want := res.Size.H, float32(35); !approx(got, want) {
+		t.Errorf("size.H = %v, want %v", got, want)
+	}
+	if got, want := origins[1].Y, float32(25); !approx(got, want) {
+		t.Errorf("origins[1].Y = %v, want %v (bottom of the band, not a guessed baseline)", got, want)
+	}
+}
+
+// TestStackBaselineFallsBackWhenNobodyHasOne: a row of rectangles must behave
+// exactly as it did before the option existed, not collapse onto a line at
+// zero.
+func TestStackBaselineFallsBackWhenNobodyHasOne(t *testing.T) {
+	want := []geom.Size{{W: 10, H: 30}, {W: 10, H: 10}}
+	spec := layout.StackSpec{Axis: layout.Horizontal, Alignment: geom.Alignment{Y: 0.5}}
+	_, plain := runBaseline(t, spec, geom.Loose(geom.Sz(300, 300)), want, []float32{-1, -1})
+	spec.CrossAlign = layout.CrossAlignBaseline
+	_, baseline := runBaseline(t, spec, geom.Loose(geom.Sz(300, 300)), want, []float32{-1, -1})
+
+	for i := range plain {
+		if !approxPt(plain[i], baseline[i]) {
+			t.Fatalf("origins[%d] = %v with baselines and %v without; with no baseline anywhere the two must agree",
+				i, baseline[i], plain[i])
+		}
+	}
+}
+
+// TestStackBaselineDoesNotMakeSizesDependOnSiblings pins the overflow model of
+// the project plan, section 7, rule 1, against the obvious wrong
+// implementation of baselines: a second measuring pass that offers a child
+// what is left after its siblings.
+func TestStackBaselineDoesNotMakeSizesDependOnSiblings(t *testing.T) {
+	spec := layout.StackSpec{Axis: layout.Horizontal, CrossAlign: layout.CrossAlignBaseline}
+	n := 3
+	m := &baselined{
+		fake:      fake{want: []geom.Size{{W: 100, H: 40}, {W: 100, H: 20}, {W: 100, H: 30}}},
+		baselines: []float32{30, 15, 25},
+	}
+	items := make([]layout.Item, n)
+	origins := make([]geom.Point, n)
+	layout.Stack(spec, geom.Loose(geom.Sz(120, 300)), n, m, items, origins)
+
+	if len(m.got) != n {
+		t.Fatalf("the children were measured %d times for %d children; a baseline pass must not re-measure", len(m.got), n)
+	}
+	first := m.got[0]
+	for i, c := range m.got {
+		if c != first {
+			t.Fatalf("child %d was measured with %v and child 0 with %v; every inflexible child must see the same constraints", i, c, first)
+		}
+	}
+	for i := range n {
+		if got, want := items[i].Size.W, float32(100); !approx(got, want) {
+			t.Errorf("items[%d].Size.W = %v, want %v; the child kept its honest width", i, got, want)
+		}
+	}
+}
+
+// TestStackBaselineIgnoredOnAVerticalStack. The cross axis of a vertical stack
+// is horizontal and has no baseline; the spec value is inert there rather than
+// doing something arbitrary.
+func TestStackBaselineIgnoredOnAVerticalStack(t *testing.T) {
+	want := []geom.Size{{W: 30, H: 10}, {W: 10, H: 10}}
+	spec := layout.StackSpec{Axis: layout.Vertical, Alignment: geom.Alignment{X: 0.5}}
+	_, plain := runBaseline(t, spec, geom.Loose(geom.Sz(300, 300)), want, []float32{8, 8})
+	spec.CrossAlign = layout.CrossAlignBaseline
+	_, baseline := runBaseline(t, spec, geom.Loose(geom.Sz(300, 300)), want, []float32{8, 8})
+	for i := range plain {
+		if !approxPt(plain[i], baseline[i]) {
+			t.Fatalf("origins[%d] differ: %v vs %v", i, baseline[i], plain[i])
+		}
+	}
+}
+
+// TestStackBaselineIsAllocationFree keeps the package's promise that nothing
+// in it allocates.
+func TestStackBaselineIsAllocationFree(t *testing.T) {
+	spec := layout.StackSpec{Axis: layout.Horizontal, CrossAlign: layout.CrossAlignBaseline}
+	m := &baselined{fake: fake{want: []geom.Size{{W: 10, H: 30}, {W: 10, H: 10}}}, baselines: []float32{20, 8}}
+	items := make([]layout.Item, 2)
+	origins := make([]geom.Point, 2)
+	c := geom.Loose(geom.Sz(300, 300))
+	call := func() {
+		m.got = m.got[:0]
+		m.order = m.order[:0]
+		layout.Stack(spec, c, 2, m, items, origins)
+	}
+	for range 8 {
+		call()
+	}
+	if got := testing.AllocsPerRun(500, call); got != 0 {
+		t.Fatalf("baseline aligned Stack allocated %v times per run, want 0", got)
+	}
+}

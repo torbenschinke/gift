@@ -46,6 +46,24 @@
 // explanation, because the alternative — measuring it as empty — is a blank
 // area with no diagnosis.
 //
+// # Input
+//
+// [Button] is the only interactive view so far. It is the full control the
+// project plan, section 7, describes and not a click handler: a press captures
+// the pointer, so a release somewhere else does not activate; a tap works
+// without ever producing a hover; tab reaches it and space or enter fires it;
+// and [ButtonView.Disabled] takes it out of all of that at once.
+//
+// Hover, pressed and disabled are presentation state living in the retained
+// node, so they repaint and never rebuild. The consequence for the API is that
+// the looks are declared up front, with [ButtonView.HoverStyle],
+// [ButtonView.PressedStyle] and [ButtonView.DisabledStyle], rather than chosen
+// per frame by the application.
+//
+// Only a view that declares an interactor is a hit target. A plain [VStack] is
+// transparent to input: a click in its padding or in the gap between two
+// children hits whatever is behind it, not the stack.
+//
 // # Content that does not fit
 //
 // Nothing is clipped unless Clip(true) was asked for, and no container starves

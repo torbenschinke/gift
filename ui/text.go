@@ -114,7 +114,7 @@ func (t TextView) Build(*gift.BuildContext) gift.Element {
 			Size: size,
 		},
 	}
-	return gift.Element{Key: t.key, Flex: t.flex, Layouter: n, Painter: n}
+	return gift.Element{Key: t.key, Flex: t.flex, Layouter: n, Painter: n, Clip: t.style.clip}
 }
 
 // textNode is the retained half of a [TextView]: its layouter and its painter.

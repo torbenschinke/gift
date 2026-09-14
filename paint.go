@@ -102,6 +102,14 @@ func (p *PaintContext) PaintChild(i int) {
 // ChildCount returns the number of children of the node being painted.
 func (p *PaintContext) ChildCount() int { return len(p.nd.children) }
 
+// Interaction returns the hover, press, focus and disabled state gift
+// maintains for the node being painted.
+//
+// This is how a control draws itself differently per state without a rebuild.
+// The dispatcher wrote these bools during Update and marked the node for
+// repaint; nothing was built and nothing was measured. See [Interaction].
+func (p *PaintContext) Interaction() Interaction { return p.nd.ia }
+
 // GlyphsLen returns the current length of the glyph side table of the display
 // list, which is the index the next [PaintContext.AppendGlyph] writes to.
 func (p *PaintContext) GlyphsLen() uint32 { return p.list.GlyphsLen() }
@@ -135,6 +143,16 @@ func (a *App) paintNode(h scene.Handle) {
 		panic(fmt.Sprintf(
 			"gift: paint recursion deeper than %d levels; a painter is descending into a cycle or an unbounded tree",
 			scene.MaxDepth))
+	}
+
+	// The transform of a node applies to the node and its whole subtree, in
+	// both halves of the frame: this pushes it into the display list and
+	// [App.hitNode] composes the very same matrix. One declaration, two
+	// readers, no second traversal to drift from the first.
+	prevXform := a.pctx.xform
+	if nd.xform != nil {
+		a.pctx.xform = a.list.PushXform(nd.xform.Mul(a.list.Xform(prevXform)))
+		defer func() { a.pctx.xform = prevXform }()
 	}
 
 	if nd.painter == nil {
