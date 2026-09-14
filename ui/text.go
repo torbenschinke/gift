@@ -114,7 +114,17 @@ func (t TextView) Build(*gift.BuildContext) gift.Element {
 			Size: size,
 		},
 	}
-	return gift.Element{Key: t.key, Flex: t.flex, Layouter: n, Painter: n, Clip: t.style.clip}
+	return gift.Element{
+		Key:      t.key,
+		Flex:     t.flex,
+		Layouter: n,
+		Painter:  n,
+		Clip:     t.style.clip,
+		// The semantic half of a label: the very string the glyphs below
+		// spell. It costs one string header per build and is read by nothing
+		// in the frame path; see [gift.Element.Label].
+		Label: t.s,
+	}
 }
 
 // textNode is the retained half of a [TextView]: its layouter and its painter.

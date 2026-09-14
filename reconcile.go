@@ -140,6 +140,7 @@ func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *
 	nd.view = desc.view
 	nd.layouter = desc.elem.Layouter
 	nd.painter = desc.elem.Painter
+	nd.label = desc.elem.Label
 	nd.flex = desc.elem.Flex
 	// The input declaration is refreshed from the new element, but the
 	// interaction state is not: hover, press and focus belong to the node and

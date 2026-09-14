@@ -780,6 +780,39 @@ Eine isolierte Counter-Demo gilt nicht als Erfuellung dieses Plans.
 
 ## 13. Tests, Budgets und Review-Kriterien
 
+### Paket `gifttest`: Testwerkzeug fuer Anwender
+
+Erweiterung ueber den urspruenglichen Plan hinaus, beauftragt nach Schritt 2.
+Dieser Abschnitt regelte bisher nur, wie Gift **sich selbst** testet. `gifttest`
+ist das Gegenstueck fuer Anwendungen, die auf Gift aufbauen, im Geist von
+Playwright.
+
+- **Headless ist der Normalfall.** Layout, Paint und Assertions laufen auf der
+  Display-Liste, ohne GPU und ohne Fenster, also in gewoehnlicher CI mit
+  `go test ./...`. Pixelvergleiche sind optional hinter `giftgpu`.
+- **Selektoren statt Koordinaten.** `ByText`, `ByKey`, `ByType`, kombinierbar.
+  Koordinatengebundene Tests sind genau das, was vermieden werden soll. Dafuer
+  traegt `gift.Element` ein `Label`-Feld; das ist bewusst im Runtime-Vertrag
+  und nicht in `ui`, weil ein Selektor ueber den ganzen Baum laufen muss und
+  eine spaetere Accessibility-Bruecke dieselbe Information braucht. Es kostet
+  im Frame-Pfad nichts und ist so gemessen.
+- **Deterministische Zeit.** `App.BeginInput(now)` nimmt die Zeit als Parameter,
+  also sind Long-Press und spaeter Animationen ohne `time.Sleep` testbar.
+- **Fehlermeldungen sind das eigentliche Produkt.** Ein mehrdeutiger Selektor
+  nennt alle Treffer mit Bounds, markiert sie im Baumauszug und nennt den
+  unterscheidenden Vorfahren - der zugleich die Loesung ist. Ein Null-Treffer
+  nennt die tatsaechlich vorhandenen Labels, Keys oder Typen. `Settle` bricht
+  eine Endlos-Rebuild-Schleife mit Diagnose ab, statt zu haengen.
+- **Golden-Bilder** mit Toleranz 4 je Kanal und **ohne Ausreisser-Budget.** Ein
+  Prozentsatz erlaubter Abweichung ist genau der Mechanismus, der eine
+  verschobene Form durchwinkt: eine versetzte Kante trifft nur die Pixel entlang
+  einer Linie. Geprueft: zwei Pixel Versatz erzeugen 4,1 % abweichende Pixel bei
+  maximaler Differenz 255. Bei Fehlschlag werden Ist-Bild und Diff geschrieben
+  und benannt, bei Erfolg wieder entfernt.
+- **Strukturelle Assertions haben Vorrang vor Bildern.** Ein Golden sagt "das
+  hat sich geaendert", nie "das ist falsch", und laeuft im Normalbuild gar
+  nicht. Assertions auf der Display-Liste sagen warum.
+
 Automatisierte Korrektheitstests:
 
 - State-Key-Isolation, Unmount, geaenderte Abhaengigkeiten und stale Async-Resultate.

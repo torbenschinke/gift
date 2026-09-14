@@ -26,6 +26,11 @@ type nodeData struct {
 	layouter Layouter
 	painter  Painter
 
+	// label is [Element.Label]: what a person would call this node. It is
+	// written once per build and read by nothing in the frame path; see the
+	// documentation of that field.
+	label string
+
 	// interactor, focusable, disabled and clip are the input half of the
 	// element; see [Element]. They are plain fields in the payload, so the
 	// hit test reads them without an interface dispatch and the dispatcher
@@ -107,6 +112,7 @@ func (nd *nodeData) release() {
 	nd.scope = nil
 	nd.layouter = nil
 	nd.painter = nil
+	nd.label = ""
 	nd.interactor = nil
 	nd.focusable = false
 	nd.disabled = false

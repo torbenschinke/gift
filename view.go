@@ -37,6 +37,34 @@ type Element struct {
 	// not globally.
 	Key string
 
+	// Label is the human readable text this node stands for.
+	//
+	// It is a *semantic* field, not a visual one: nothing in the layout or
+	// the paint path reads it, and setting it changes no pixel. A view sets
+	// it to whatever a person would call the node — [ui.Text] sets it to its
+	// string, a [ui.Button] with an icon sets it to the name of the command
+	// — so that something outside the frame path can find a node by what it
+	// says rather than by where it happens to sit.
+	//
+	// Today the only consumer is the test harness in package gifttest, whose
+	// ByText selector is the whole reason coordinate free UI tests are
+	// possible. It is deliberately declared here on Element rather than as a
+	// private field of one ui view, because the next two consumers are known
+	// in advance and want exactly the same string: a button that wants an
+	// accessible name distinct from its label view, and the accessibility
+	// bridge the project plan, section 14, excludes from the MVP but does not
+	// rule out forever.
+	//
+	// # Cost
+	//
+	// A string header, copied from the element onto the node during a build
+	// and never touched again. A build already copies eight other fields out
+	// of the same struct; this is a ninth, and it allocates nothing — the
+	// bytes belong to the view, which owns them for as long as the node does.
+	// Update, layout and paint never read it. See the allocation contract of
+	// the project plan, section 11, and TestLabelCostsNothingPerFrame.
+	Label string
+
 	// Layouter measures this node and places its children. A nil Layouter
 	// means the node has zero size and its children are neither measured nor
 	// placed.

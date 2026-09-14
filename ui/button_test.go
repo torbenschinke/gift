@@ -5,6 +5,7 @@ import (
 
 	"github.com/torbenschinke/gift"
 	"github.com/torbenschinke/gift/geom"
+	"github.com/torbenschinke/gift/gifttest"
 	"github.com/torbenschinke/gift/render"
 	"github.com/torbenschinke/gift/ui"
 )
@@ -17,14 +18,27 @@ func buttonApp(t *testing.T, v gift.View) *gift.App {
 	return a
 }
 
+// The four tests below are written with the gifttest harness rather than by
+// driving gift.App directly, and they are the proof that the harness is usable
+// from outside its own package. They read better for the same reason the
+// harness exists: "find the button, press it, move away, release" is what the
+// test is about, and the three coordinates it used to contain were all the
+// same made up point. The tests further down keep driving the App by hand,
+// because their subject is the display list and the frame counters rather than
+// the interaction.
+
+// harness mounts v as the whole application, ready for interaction.
+func harness(t *testing.T, v gift.View) *gifttest.Harness {
+	t.Helper()
+	return gifttest.New(t, gifttest.Options{View: v, Size: geom.Sz(400, 300)})
+}
+
 // TestButtonClickActivates is the shortest statement of what a button is.
 func TestButtonClickActivates(t *testing.T) {
 	n := 0
-	a := buttonApp(t, ui.ZStack(ui.Button(probe(40, 20), func() { n++ }).Frame(80, 40)))
+	h := harness(t, ui.ZStack(ui.Button(probe(40, 20), func() { n++ }).Key("b").Frame(80, 40)))
 
-	a.BeginInput(0)
-	a.PointerDown(gift.MousePointer, gift.PointerMouse, geom.Pt(40, 20))
-	a.PointerUp(gift.MousePointer, gift.PointerMouse, geom.Pt(40, 20))
+	h.Find(gifttest.ByKey("b")).Click()
 	if n != 1 {
 		t.Fatalf("a click activated the button %d times, want 1", n)
 	}
@@ -34,12 +48,13 @@ func TestButtonClickActivates(t *testing.T) {
 // it: press, slide off, let go, nothing happens.
 func TestButtonReleaseOutsideDoesNotActivate(t *testing.T) {
 	n := 0
-	a := buttonApp(t, ui.ZStack(ui.Button(probe(40, 20), func() { n++ }).Frame(80, 40)))
+	h := harness(t, ui.ZStack(ui.Button(probe(40, 20), func() { n++ }).Key("b").Frame(80, 40)))
 
-	a.BeginInput(0)
-	a.PointerDown(gift.MousePointer, gift.PointerMouse, geom.Pt(40, 20))
-	a.PointerMove(gift.MousePointer, gift.PointerMouse, geom.Pt(300, 200))
-	a.PointerUp(gift.MousePointer, gift.PointerMouse, geom.Pt(300, 200))
+	h.Find(gifttest.ByKey("b")).Press().AssertPressed()
+	h.MoveTo(geom.Pt(300, 200))
+	h.Find(gifttest.ByKey("b")).AssertNotPressed()
+	h.Release()
+
 	if n != 0 {
 		t.Fatalf("a release outside activated the button %d times, want 0", n)
 	}
@@ -51,14 +66,12 @@ func TestButtonReleaseOutsideDoesNotActivate(t *testing.T) {
 func TestButtonKeyboardActivation(t *testing.T) {
 	for _, k := range []gift.Key{gift.KeySpace, gift.KeyEnter} {
 		n := 0
-		a := buttonApp(t, ui.ZStack(ui.Button(probe(40, 20), func() { n++ })))
-		a.BeginInput(0)
-		a.KeyDown(gift.KeyTab, 0)
-		if _, ok := a.Focus(); !ok {
-			t.Fatalf("tab did not reach the button")
-		}
-		a.KeyDown(k, 0)
-		a.KeyUp(k, 0)
+		h := harness(t, ui.ZStack(ui.Button(probe(40, 20), func() { n++ }).Key("b")))
+
+		h.Tab()
+		h.AssertFocus(gifttest.ByKey("b"))
+		h.Key(k)
+
 		if n != 1 {
 			t.Fatalf("key %v activated %d times, want 1", k, n)
 		}
@@ -67,15 +80,14 @@ func TestButtonKeyboardActivation(t *testing.T) {
 
 func TestDisabledButtonIsInert(t *testing.T) {
 	n := 0
-	a := buttonApp(t, ui.ZStack(ui.Button(probe(40, 20), func() { n++ }).Frame(80, 40).Disabled(true)))
+	h := harness(t, ui.ZStack(
+		ui.Button(probe(40, 20), func() { n++ }).Key("b").Frame(80, 40).Disabled(true)))
 
-	a.BeginInput(0)
-	a.KeyDown(gift.KeyTab, 0)
-	if h, ok := a.Focus(); ok {
-		t.Fatalf("tab focused a disabled button: %v", a.NodeKey(h))
-	}
-	a.PointerDown(gift.MousePointer, gift.PointerMouse, geom.Pt(40, 20))
-	a.PointerUp(gift.MousePointer, gift.PointerMouse, geom.Pt(40, 20))
+	h.Find(gifttest.ByKey("b")).AssertDisabled()
+	h.Tab()
+	h.AssertNoFocus()
+	h.Find(gifttest.ByKey("b")).Click()
+
 	if n != 0 {
 		t.Fatalf("a disabled button activated %d times", n)
 	}

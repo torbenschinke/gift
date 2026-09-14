@@ -503,3 +503,94 @@ func BenchmarkUnmountRemount(b *testing.B) {
 		cycle()
 	}
 }
+
+// labelled is a leaf that carries a semantic label, and unlabelled is the same
+// leaf without one. They exist to measure the price of [gift.Element.Label].
+type labelled struct {
+	key   string
+	label string
+	l     gift.Layouter
+}
+
+func (labelled) ViewType() gift.TypeID { return boxType }
+
+func (x labelled) Build(*gift.BuildContext) gift.Element {
+	return gift.Element{Key: x.key, Label: x.label, Layouter: x.l, Painter: fillPainter{}}
+}
+
+var (
+	labelledTree = newGroup("labelled", 4,
+		labelled{key: "a", label: "Save", l: fixedSize{w: 40, h: 20}},
+		labelled{key: "b", label: "Cancel", l: fixedSize{w: 40, h: 20}},
+		labelled{key: "c", label: "Delete every invoice older than a year", l: fixedSize{w: 40, h: 20}},
+	)
+	unlabelledTree = newGroup("labelled", 4,
+		labelled{key: "a", l: fixedSize{w: 40, h: 20}},
+		labelled{key: "b", l: fixedSize{w: 40, h: 20}},
+		labelled{key: "c", l: fixedSize{w: 40, h: 20}},
+	)
+)
+
+// TestLabelCostsNothingPerFrame is the price tag of [gift.Element.Label].
+//
+// The field exists for the test harness in package gifttest and, later, for an
+// accessibility bridge. Neither is a reason to make a frame more expensive, so
+// this pins two things:
+//
+//  1. A frame over a tree that carries labels allocates nothing, exactly like
+//     the frame path tests above. Nothing in update, layout or paint reads the
+//     field at all.
+//  2. A *build* of a tree with labels costs exactly as many allocations as the
+//     same tree without them. A string header is copied from the element onto
+//     the node; the bytes belong to the view, which already owns them.
+func TestLabelCostsNothingPerFrame(t *testing.T) {
+	build := func(tree gift.View) func() {
+		var st *gift.State[int]
+		root := func(c *gift.Context) gift.View {
+			st = c.State("n", 0)
+			_ = c.Read(st)
+			return tree
+		}
+		a := gift.New(gift.Options{Root: root})
+		if err := a.Update(viewport()); err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		return func() {
+			n++
+			st.Set(n)
+			if err := a.Update(viewport()); err != nil {
+				t.Fatal(err)
+			}
+			a.Paint()
+		}
+	}
+
+	withLabels, withoutLabels := build(labelledTree), build(unlabelledTree)
+	for range 32 {
+		withLabels()
+		withoutLabels()
+	}
+	got := testing.AllocsPerRun(300, withLabels)
+	want := testing.AllocsPerRun(300, withoutLabels)
+	t.Logf("rebuild plus frame: %.2f allocations with labels, %.2f without", got, want)
+	if got != want {
+		t.Fatalf("labels cost %.2f allocations per rebuild; a string header is a copy, not an allocation", got-want)
+	}
+
+	// And the steady state frame, which is the contract of the project plan,
+	// section 11: no build, no label read, nothing allocated.
+	a := gift.New(gift.Options{Root: func(*gift.Context) gift.View { return labelledTree }})
+	frame := func() {
+		if err := a.Update(viewport()); err != nil {
+			t.Fatal(err)
+		}
+		a.Paint()
+	}
+	for range 16 {
+		frame()
+	}
+	if n := testing.AllocsPerRun(200, frame); n != 0 {
+		t.Fatalf("a frame over a labelled tree allocated %v times per run, want 0", n)
+	}
+}

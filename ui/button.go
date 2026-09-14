@@ -97,6 +97,8 @@ type ButtonView struct {
 	base
 	label  gift.View
 	action func()
+	// name is the accessible name; see [ButtonView.Label].
+	name string
 
 	hover, pressed, disabledStyle          ButtonStyle
 	hasHover, hasPressed, hasDisabledStyle bool
@@ -183,6 +185,12 @@ func (b ButtonView) Build(*gift.BuildContext) gift.Element {
 		Layouter: n,
 		Painter:  n,
 		Children: n.kids[:],
+		// The accessible name of the command, if the caller gave one. A
+		// button whose label is a [TextView] needs none: the text node
+		// underneath carries the same string already. One whose label is an
+		// icon has nothing that could, which is what [ButtonView.Label] is
+		// for. See [gift.Element.Label].
+		Label: b.name,
 		// Input. A button is the reason [gift.Interactor] exists: it opts in
 		// explicitly, it is focusable unless disabled, and a disabled button
 		// still blocks clicks instead of letting them fall through to
@@ -388,6 +396,16 @@ func (b ButtonView) DisabledStyle(v ButtonStyle) ButtonView {
 // hovered *and* focused, and folding the ring into the state styles would make
 // that combination impossible to express without writing the ring four times.
 func (b ButtonView) FocusRing(v Border) ButtonView { b.focusRing, b.hasFocusRing = v, true; return b }
+
+// Label sets the accessible name of the button, the string a person would use
+// to refer to the command.
+//
+// It changes nothing visual and is never drawn. A button whose label view is a
+// [TextView] does not need it — the text node underneath already carries the
+// same string, and a test or an accessibility bridge finds the button through
+// it. An icon button carries no such string anywhere, and this is where it
+// goes. See [gift.Element.Label].
+func (b ButtonView) Label(v string) ButtonView { b.name = v; return b }
 
 // Disabled takes the button out of input. It is skipped by the focus order,
 // receives no events and draws in its disabled style. It still occupies its
