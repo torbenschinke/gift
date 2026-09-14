@@ -198,7 +198,7 @@ func Run(app *gift.App, cfg Config) error {
 				Capacity:  metrics.DefaultFrameHistory,
 				Warmup:    cfg.WarmupFrames,
 			},
-			App:      app,
+			Core:     func() metrics.CoreStats { return coreMetrics(app) },
 			Renderer: func() metrics.RendererStats { return rendererMetrics(r.Stats(), r.Atlas().Stats()) },
 			// The shaper is the process wide one of internal/text, which is
 			// what ui.Text measures through. The backend may not import ui —
@@ -431,5 +431,27 @@ func shaperMetrics(s text.Stats) metrics.ShaperStats {
 		ShapedGlyphs: s.ShapedGlyphs,
 		Entries:      s.Entries,
 		Bytes:        uint64(s.Bytes),
+	}
+}
+
+// coreMetrics converts gift's own counters into the plain struct the metrics
+// package declares. The conversion lives here, and not there, because
+// metrics deliberately imports nothing from the framework it measures; the
+// backend is the one place that holds both.
+func coreMetrics(app *gift.App) metrics.CoreStats {
+	d := app.Diagnostics()
+	return metrics.CoreStats{
+		Frames:         d.Frames,
+		Builds:         d.Builds,
+		Layouts:        d.Layouts,
+		PaintedNodes:   d.PaintedNodes,
+		PaintedOps:     d.PaintedOps,
+		LiveNodes:      d.LiveNodes,
+		LiveScopes:     d.LiveScopes,
+		OverflowNodes:  d.OverflowNodes,
+		OverflowExtent: d.OverflowExtent,
+		Scrolls:        d.Scrolls,
+		HitTests:       d.HitTests,
+		InputEvents:    d.InputEvents,
 	}
 }

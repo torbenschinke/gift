@@ -2,8 +2,6 @@ package metrics
 
 import (
 	"time"
-
-	"github.com/torbenschinke/gift"
 )
 
 // DefaultFrameHistory is the number of samples a [FrameTimer] keeps per
@@ -286,12 +284,35 @@ type ShaperStats struct {
 // where it goes is not in here: that is read from the environment, because a
 // library must not take command line flags away from its host program. See
 // the package documentation.
+// CoreStats is the runtime half of a report. It mirrors gift.Diagnostics
+// field for field; the consumer converts, because this package deliberately
+// imports nothing from the framework it measures.
+type CoreStats struct {
+	Frames         uint64
+	Builds         uint64
+	Layouts        uint64
+	PaintedNodes   uint64
+	PaintedOps     uint64
+	LiveNodes      uint64
+	LiveScopes     uint64
+	OverflowNodes  uint64
+	OverflowExtent float32
+	Scrolls        uint64
+	HitTests       uint64
+	InputEvents    uint64
+}
+
 type Options struct {
 	// Timer configures the frame timer.
 	Timer FrameTimerOptions
 
-	// App supplies [gift.Diagnostics]. It may be nil.
-	App *gift.App
+	// Core supplies the runtime counters. It may be nil.
+	//
+	// It is a function returning a plain struct, like every other source
+	// here, so that this package imports nothing from the framework it
+	// measures. The consumer owns the App and converts; see
+	// backend/ebiten.Run, which is the only caller that has one.
+	Core func() CoreStats
 
 	// Renderer supplies the renderer counters. It may be nil.
 	//
@@ -302,4 +323,57 @@ type Options struct {
 
 	// Shaper supplies the text shaping counters. It may be nil.
 	Shaper func() ShaperStats
+
+	// Asset supplies the image pipeline counters. It may be nil.
+	//
+	// It is a function for the same reason Renderer is: the numbers are
+	// read at report time, out of band, and the application is the only
+	// thing that knows which pipeline it built. See [AssetStats].
+	Asset func() AssetStats
+}
+
+// AssetStats are the image pipeline numbers of one report.
+//
+// It is a plain struct for the same reason [RendererStats] and [ShaperStats]
+// are: this package imports gift, the asset package must not, and the project
+// plan, section 3, draws that line. The *consumer* converts
+// [asset.Pipeline.Stats] into this shape, which is the same seam the backend
+// uses for its own counters:
+//
+//	pipe := asset.NewPipeline(asset.Config{Deliver: app.Post, ...})
+//	opts.Asset = func() metrics.AssetStats {
+//	    s := pipe.Stats()
+//	    return metrics.AssetStats{Present: true, Requests: s.Requests, ...}
+//	}
+type AssetStats struct {
+	// Present says whether a pipeline supplied these numbers at all.
+	Present bool
+	// Requests, Deduplicated and Promotions describe the demand: how much
+	// was asked for, how much of it was already in flight, and how often a
+	// speculative prefetch turned out to be needed after all.
+	Requests, Deduplicated, Promotions uint64
+	// Dropped, Cancelled and ReadyDropped are the saturation outcomes. A non
+	// zero Dropped means the request queue was full; the project plan,
+	// section 13, requires a budget violation to be visible rather than
+	// silently absorbed.
+	Dropped, Cancelled, ReadyDropped uint64
+	// Completed, Failed and BackoffRefused are the delivered outcomes.
+	Completed, Failed, BackoffRefused uint64
+	// Decodes, MemoryHits and DiskHits are where the pixels came from. This
+	// is the cold versus warm distinction of the project plan, section 13.
+	Decodes, MemoryHits, DiskHits uint64
+	// DecodedPixels and ScaledPixels are the work volumes. A decode count
+	// says nothing about how large the pictures were.
+	DecodedPixels, ScaledPixels uint64
+	// InputBytes, DecodeBytes and PixelBytes are the current occupancies of
+	// the three byte budgets, and the Peak fields their high water marks.
+	// The project plan, section 9, gives every stage a byte budget, and a
+	// budget that is not reported cannot be checked.
+	InputBytes, InputPeak, InputLimit    int64
+	DecodeBytes, DecodePeak, DecodeLimit int64
+	PixelBytes, PixelPeak, PixelLimit    int64
+	// CacheEntries is the CPU pixel cache occupancy and DiskBytes the
+	// persistent one, against DiskBudget.
+	CacheEntries          int
+	DiskBytes, DiskBudget int64
 }

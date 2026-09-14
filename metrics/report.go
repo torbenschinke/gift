@@ -236,6 +236,36 @@ type shaperCounters struct {
 	Bytes        uint64 `json:"bytes"`
 }
 
+// assetCounters is the image pipeline section of a report.
+type assetCounters struct {
+	Requests       uint64 `json:"requests"`
+	Deduplicated   uint64 `json:"deduplicated"`
+	Promotions     uint64 `json:"promotions"`
+	Dropped        uint64 `json:"dropped"`
+	Cancelled      uint64 `json:"cancelled"`
+	ReadyDropped   uint64 `json:"ready_dropped"`
+	Completed      uint64 `json:"completed"`
+	Failed         uint64 `json:"failed"`
+	BackoffRefused uint64 `json:"backoff_refused"`
+	Decodes        uint64 `json:"decodes"`
+	MemoryHits     uint64 `json:"memory_hits"`
+	DiskHits       uint64 `json:"disk_hits"`
+	DecodedPixels  uint64 `json:"decoded_pixels"`
+	ScaledPixels   uint64 `json:"scaled_pixels"`
+	InputBytes     int64  `json:"input_bytes"`
+	InputPeak      int64  `json:"input_peak_bytes"`
+	InputLimit     int64  `json:"input_limit_bytes"`
+	DecodeBytes    int64  `json:"decode_bytes"`
+	DecodePeak     int64  `json:"decode_peak_bytes"`
+	DecodeLimit    int64  `json:"decode_limit_bytes"`
+	PixelBytes     int64  `json:"pixel_bytes"`
+	PixelPeak      int64  `json:"pixel_peak_bytes"`
+	PixelLimit     int64  `json:"pixel_limit_bytes"`
+	CacheEntries   int    `json:"cache_entries"`
+	DiskBytes      int64  `json:"disk_bytes"`
+	DiskBudget     int64  `json:"disk_budget_bytes"`
+}
+
 // report is one line of output.
 //
 // The three timing series are separate fields on purpose: CPU time in the
@@ -249,6 +279,7 @@ type report struct {
 	Gift     *giftCounters     `json:"gift,omitempty"`
 	Renderer *rendererCounters `json:"renderer,omitempty"`
 	Shaper   *shaperCounters   `json:"shaper,omitempty"`
+	Asset    *assetCounters    `json:"asset,omitempty"`
 
 	UpdateCPU     statsMillis `json:"update_cpu"`
 	DrawCPU       statsMillis `json:"draw_cpu"`
@@ -296,8 +327,8 @@ func (r *Recorder) emit(kind string) {
 	m.Kind = kind
 	m.ElapsedS = time.Since(r.start).Seconds()
 
-	if r.opt.App != nil {
-		d := r.opt.App.Diagnostics()
+	if r.opt.Core != nil {
+		d := r.opt.Core()
 		m.Gift = &giftCounters{
 			Frames: d.Frames, Builds: d.Builds, Layouts: d.Layouts,
 			PaintedNodes: d.PaintedNodes, PaintedOps: d.PaintedOps,
@@ -340,6 +371,25 @@ func (r *Recorder) emit(kind string) {
 				Evictions: ss.Evictions, AgeEvictions: ss.AgeEvictions,
 				ShapedGlyphs: ss.ShapedGlyphs,
 				Entries:      ss.Entries, Bytes: ss.Bytes,
+			}
+		}
+	}
+
+	if r.opt.Asset != nil {
+		if as := r.opt.Asset(); as.Present {
+			m.Asset = &assetCounters{
+				Requests: as.Requests, Deduplicated: as.Deduplicated,
+				Promotions: as.Promotions, Dropped: as.Dropped,
+				Cancelled: as.Cancelled, ReadyDropped: as.ReadyDropped,
+				Completed: as.Completed, Failed: as.Failed,
+				BackoffRefused: as.BackoffRefused,
+				Decodes:        as.Decodes, MemoryHits: as.MemoryHits, DiskHits: as.DiskHits,
+				DecodedPixels: as.DecodedPixels, ScaledPixels: as.ScaledPixels,
+				InputBytes: as.InputBytes, InputPeak: as.InputPeak, InputLimit: as.InputLimit,
+				DecodeBytes: as.DecodeBytes, DecodePeak: as.DecodePeak, DecodeLimit: as.DecodeLimit,
+				PixelBytes: as.PixelBytes, PixelPeak: as.PixelPeak, PixelLimit: as.PixelLimit,
+				CacheEntries: as.CacheEntries,
+				DiskBytes:    as.DiskBytes, DiskBudget: as.DiskBudget,
 			}
 		}
 	}
