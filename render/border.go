@@ -11,9 +11,8 @@ package render
 // project plan, section 8. A Border with a Width of zero or a fully
 // transparent Color draws nothing.
 //
-// Shadow is deliberately absent. It belongs to step 2 of the project plan,
-// section 12, and a struct that exists but is ignored is worse than one that
-// does not compile yet.
+// [Shadow], the other style value of the project plan, section 8, lives next
+// to this one in shadow.go.
 type Border struct {
 	// Width is the stroke width in logical pixels.
 	Width float32

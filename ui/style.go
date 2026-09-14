@@ -18,6 +18,16 @@ type Color = render.Color
 // section 8.
 type Border = render.Border
 
+// Shadow is a blurred copy of the shape of a view, drawn behind it. It is
+// [render.Shadow], re-exported under the spelling of the project plan,
+// section 8:
+//
+//	.Shadow(ui.Shadow{Blur: 16, OffsetY: 4, Color: ui.RGBA(0, 0, 0, 70)})
+//
+// It extends the paint bounds and neither the layout size nor the hit area,
+// and a parent clip cuts it like it cuts anything else.
+type Shadow = render.Shadow
+
 // RGBA returns the Color for the given straight alpha 8 bit components. The
 // colour channels are premultiplied on construction, never in the frame path.
 func RGBA(r, g, b, a uint8) Color { return render.RGBA(r, g, b, a) }
@@ -30,6 +40,7 @@ func RGB(r, g, b uint8) Color { return render.RGB(r, g, b) }
 type styleSpec struct {
 	background Color
 	border     Border
+	shadow     Shadow
 	radius     float32
 	clip       bool
 }
@@ -41,7 +52,8 @@ type styleSpec struct {
 // node. Allocating a painter that only forwards to its children would cost an
 // interface call and a heap object per structural container.
 func (s styleSpec) needsPainter() bool {
-	return !s.background.IsTransparent() || s.border.IsVisible() || s.clip
+	return !s.background.IsTransparent() || s.border.IsVisible() ||
+		s.shadow.IsVisible() || s.clip
 }
 
 // frameSpec is the size contract a node imposes on itself.
@@ -197,6 +209,32 @@ func checkPadding(what string, v float32) float32 {
 	return v
 }
 
+// checkShadow rejects a shadow whose numbers are not finite, and a negative
+// blur.
+//
+// The same argument as [checkGap]: an infinite blur produces an infinite quad,
+// a NaN one produces NaN vertex positions, and both surface as an empty window
+// several layers below the mistake. [render.Shadow.IsVisible] would already
+// refuse to draw such a shadow, so this check buys a diagnosis rather than
+// correctness — but it buys it at the call site, during build, which is
+// outside the frame path.
+//
+// A negative Spread is legal and useful: it tucks the shadow under its own
+// node so that only the offset side shows. A negative Blur is not, because
+// there is no shape it could mean.
+func checkShadow(v Shadow) Shadow {
+	switch {
+	case !isFinite(v.Blur) || v.Blur < 0:
+		panic(fmt.Sprintf("gift/ui: Shadow.Blur(%v) must be a finite, non negative number", v.Blur))
+	case !isFinite(v.Spread):
+		panic(fmt.Sprintf("gift/ui: Shadow.Spread(%v) is not a finite number; "+
+			"a negative spread is allowed and tucks the shadow under its node", v.Spread))
+	case !isFinite(v.OffsetX) || !isFinite(v.OffsetY):
+		panic(fmt.Sprintf("gift/ui: Shadow offset (%v, %v) is not finite", v.OffsetX, v.OffsetY))
+	}
+	return v
+}
+
 // checkFlex rejects a flex that is not a finite number. A negative or zero
 // flex means inflexible, which is the documented default and not an error.
 func checkFlex(v float32) float32 {
@@ -207,6 +245,7 @@ func checkFlex(v float32) float32 {
 }
 func (b *base) setBackground(v Color)     { b.style.background = v }
 func (b *base) setBorder(v Border)        { b.style.border = v }
+func (b *base) setShadow(v Shadow)        { b.style.shadow = checkShadow(v) }
 func (b *base) setCornerRadius(v float32) { b.style.radius = v }
 func (b *base) setClip(v bool)            { b.style.clip = v }
 
@@ -257,10 +296,25 @@ func paintStyle(ctx *gift.PaintContext, st styleSpec) {
 }
 
 // paintBackground emits the shadow and background steps of the drawing order.
+//
+// The shadow comes first, always, and that is a property of the node and not
+// of the order in which the modifiers were called: the full order is shadow,
+// background, content, border, and the project plan, section 8, fixes it.
+//
+// The emitted shadow operation carries the *shape* — the bounds inflated by
+// the spread and moved by the offset — and the blur separately, because the
+// backend has to grow its geometry by the falloff and would otherwise have to
+// reverse that arithmetic. See [render.OpShadow].
 func paintBackground(ctx *gift.PaintContext, st styleSpec, b geom.Rect) {
-	// Step 2 inserts the shadow pass here, before the background. The order
-	// is shadow, background, content, border and is a property of the node,
-	// not of the order in which the modifiers were called.
+	if sh := st.shadow; sh.IsVisible() {
+		ctx.Add(render.Op{
+			Kind:         render.OpShadow,
+			Bounds:       sh.Shape(b),
+			Color:        sh.Color,
+			CornerRadius: sh.Radius(st.radius),
+			Blur:         sh.Blur,
+		})
+	}
 
 	if !st.background.IsTransparent() {
 		op := render.Op{Kind: render.OpFillRect, Bounds: b, Color: st.background}

@@ -406,6 +406,8 @@ func rendererMetrics(s RendererStats, a AtlasStats) metrics.RendererStats {
 		ShapeDrawCalls:     s.ShapeBatches,
 		GlyphDrawCalls:     s.GlyphBatches,
 		GlyphQuads:         s.GlyphQuads,
+		ShadowOps:          s.ShadowOps,
+		ShadowSharpOps:     s.ShadowSharpOps,
 		Atlas: metrics.AtlasStats{
 			Hits: a.Hits, Misses: a.Misses,
 			Rasterised: a.Rasterised, UploadedBytes: a.UploadedBytes,

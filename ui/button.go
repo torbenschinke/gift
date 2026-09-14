@@ -170,6 +170,7 @@ func (b ButtonView) Build(*gift.BuildContext) gift.Element {
 	case !b.hasStyle:
 		n.disabledStyle = defaultButtonDisabled
 	}
+	n.shadow = b.style.shadow
 	n.focusRing = defaultButtonFocusRing
 	if b.hasFocusRing {
 		n.focusRing = b.focusRing
@@ -207,6 +208,14 @@ type buttonNode struct {
 
 	normal, hover, pressed, disabledStyle ButtonStyle
 	focusRing                             Border
+	// shadow is the one part of the look that is not per state.
+	//
+	// [ButtonStyle] deliberately does not carry one. A shadow that changed
+	// with hover would make the button jump under the pointer, which is an
+	// animation and not a state style, and the project plan, section 14,
+	// excludes animation curves from the MVP. A caller who wants a pressed
+	// button to sit lower writes two views, or waits for animation.
+	shadow Shadow
 
 	action   func()
 	disabled bool
@@ -275,16 +284,20 @@ func (n *buttonNode) Paint(ctx *gift.PaintContext) {
 // disabled, pressed, hover, normal: a disabled control cannot be pressed, and
 // a pressed one is pressed whether or not the pointer is also hovering.
 func (n *buttonNode) styleFor(ia gift.Interaction) styleSpec {
+	var st styleSpec
 	switch {
 	case ia.Disabled:
-		return styleOf(n.disabledStyle)
+		st = styleOf(n.disabledStyle)
 	case ia.Pressed:
-		return styleOf(n.pressed)
+		st = styleOf(n.pressed)
 	case ia.Hover:
-		return styleOf(n.hover)
+		st = styleOf(n.hover)
 	default:
-		return styleOf(n.normal)
+		st = styleOf(n.normal)
 	}
+	// The shadow is state independent; see [buttonNode.shadow].
+	st.shadow = n.shadow
+	return st
 }
 
 func styleOf(s ButtonStyle) styleSpec {
@@ -422,6 +435,13 @@ func (b ButtonView) Background(v Color) ButtonView { b.setBackground(v); b.hasSt
 
 // Border strokes the inside of the bounds in the normal state.
 func (b ButtonView) Border(v Border) ButtonView { b.setBorder(v); b.hasStyle = true; return b }
+
+// Shadow draws a blurred copy of the button's box behind it.
+//
+// Unlike Background, Border and CornerRadius it is not part of [ButtonStyle]
+// and does not change with hover, press or disabled; see [buttonNode.shadow].
+// It extends the paint bounds but not the layout size and not the hit area.
+func (b ButtonView) Shadow(v Shadow) ButtonView { b.setShadow(v); return b }
 
 // CornerRadius rounds the background and the border in every state that does
 // not override it.

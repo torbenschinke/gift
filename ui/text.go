@@ -379,6 +379,13 @@ func (t TextView) Background(v Color) TextView { t.setBackground(v); return t }
 // not change the layout.
 func (t TextView) Border(v Border) TextView { t.setBorder(v); return t }
 
+// Shadow draws a blurred copy of the background shape behind the view.
+//
+// It extends the paint bounds but not the layout size and not the hit area, so
+// a shadow never moves a sibling and never makes a gap clickable; the project
+// plan, section 8, fixes that. A parent clip cuts it.
+func (t TextView) Shadow(v Shadow) TextView { t.setShadow(v); return t }
+
 // CornerRadius rounds the background and the border.
 func (t TextView) CornerRadius(v float32) TextView { t.setCornerRadius(v); return t }
 

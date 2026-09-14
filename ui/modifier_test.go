@@ -83,6 +83,7 @@ var styledModifiers = []struct {
 	{"MaxHeight", []reflect.Type{float32Type}},
 	{"Background", []reflect.Type{colorType}},
 	{"Border", []reflect.Type{borderType}},
+	{"Shadow", []reflect.Type{shadowType}},
 	{"CornerRadius", []reflect.Type{float32Type}},
 	{"Clip", []reflect.Type{boolType}},
 }
@@ -94,6 +95,7 @@ var (
 	insetsType  = reflect.TypeOf(geom.Insets{})
 	colorType   = reflect.TypeOf(ui.Color{})
 	borderType  = reflect.TypeOf(ui.Border{})
+	shadowType  = reflect.TypeOf(ui.Shadow{})
 )
 
 func TestViewsCarryTheSharedModifierSet(t *testing.T) {

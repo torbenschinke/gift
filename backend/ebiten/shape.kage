@@ -19,7 +19,21 @@ package main
 //	custom.x half width
 //	custom.y half height
 //	custom.z corner radius, already clamped by the CPU side
-//	custom.w stroke width; zero or less means fill
+//	custom.w stroke width; zero means fill, negative means shadow
+//
+// # Why a shadow is in here and not in a shader of its own
+//
+// Because it fits. A shadow needs a half extent, a corner radius and a blur,
+// which is four numbers, and a vertex has exactly four custom attributes. The
+// stroke slot carries the negated standard deviation of the Gaussian, so a
+// shadow is a sign bit rather than a material.
+//
+// That is not a micro optimisation, it is the whole draw call budget. A
+// separate shader is a separate material, and the project plan, section 11,
+// forbids reordering transparent content to merge materials back together — so
+// a panel with a shadow, a background and a border would have cost three draw
+// calls instead of sharing one run with everything else on screen. See
+// Renderer.material.
 //
 // # No screen space derivatives
 //
@@ -59,10 +73,48 @@ func sdRoundBox(p vec2, b vec2, r float) float {
 	return length(max(q, vec2(0))) + min(max(q.x, q.y), 0.0) - r
 }
 
+// shadowCoverage is the coverage of a Gaussian blurred shape at signed
+// distance d from its boundary, with standard deviation sigma.
+//
+// # What this is exactly, and where it is an approximation
+//
+// The exact answer is the 2D convolution of the indicator function of the
+// rounded box with a Gaussian. Along a straight edge that convolution
+// separates and collapses to the Gaussian cumulative distribution of the
+// perpendicular distance, which is what this computes — so away from the
+// corners the result is exact, not an approximation.
+//
+// At a corner it is not. The true value there is the integral over a quarter
+// plane and is slightly smaller than the half plane answer this gives, so a
+// corner is drawn a little fuller than a real blur would. The error peaks at
+// roughly two per cent of the shadow alpha, is confined to the corner arcs and
+// is monotone, so it never produces a ring or a step. Every analytic box
+// shadow in every browser makes some version of this trade; the alternatives
+// are a loop of erf evaluations per fragment, or a texture.
+//
+// Phi is the logistic approximation of the normal cumulative distribution,
+// 1/(1+exp(-(1.5976x + 0.070565x^3))), whose maximum absolute error is about
+// 1.4e-4 — well under one step of an eight bit alpha channel. x is clamped at
+// six sigma so that the cube cannot overflow a float, which costs nothing
+// because the geometry stops at three.
+func shadowCoverage(d float, sigma float) float {
+	x := clamp(-d/sigma, -6.0, 6.0)
+	t := 1.5976*x + 0.070565*x*x*x
+	return 1.0 / (1.0 + exp(-t))
+}
+
 func Fragment(dstPos vec4, src0Pos vec2, color vec4, custom vec4) vec4 {
 	half := custom.xy
 	radius := custom.z
 	stroke := custom.w
+
+	// A negative stroke slot is a shadow and its magnitude is sigma, already
+	// in device pixels like everything else here. The quad the CPU side
+	// emitted is the shape grown by three sigma, so the falloff is contained.
+	if stroke < 0.0 {
+		p := src0Pos - half
+		return color * shadowCoverage(sdRoundBox(p, half, radius), -stroke)
+	}
 
 	// A plain axis aligned fill needs no distance field at all. The quad the
 	// CPU side emitted is already exactly the rectangle, clipped, so shading

@@ -17,7 +17,8 @@ func TestOpIsStillPlainOldData(t *testing.T) {
 	// stable proxy is that Op is exactly as large as the sum of its scalar
 	// fields with the documented alignment, which a pointer field would
 	// change.
-	const want = 60
+	// 52 before OpGlyphs, 60 after, 64 since OpShadow added Blur.
+	const want = 64
 	if got := unsafe.Sizeof(Op{}); got != want {
 		t.Errorf("sizeof(Op) = %d, want %d; if this grew on purpose, update the number and the note on Op", got, want)
 	}

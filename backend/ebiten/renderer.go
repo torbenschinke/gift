@@ -113,6 +113,14 @@ type Renderer struct {
 	shapeBatches uint64
 	glyphBatches uint64
 	glyphQuads   uint64
+
+	// shadowOps counts shadow operations that produced geometry and
+	// shadowSharpOps the subset of them with no blur at all. There is no
+	// cache counter next to them, and that absence is the point: the blur is
+	// evaluated in the shader, so there is nothing to hit, miss, upload or
+	// evict. See the shadow section of the package documentation.
+	shadowOps      uint64
+	shadowSharpOps uint64
 }
 
 // Material is what a batch is drawn with. A batch ends where the material
@@ -234,7 +242,7 @@ func (r *Renderer) EndFrame() {
 
 // appendOp translates one operation into vertices.
 func (r *Renderer) appendOp(l *render.List, op render.Op) {
-	var radius, stroke float32
+	var radius, stroke, sigma float32
 	switch op.Kind {
 	case render.OpNone:
 		// Counted, not silently dropped: Ops + Skipped + UnknownKinds has to
@@ -252,6 +260,16 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 		if stroke <= 0 {
 			r.skipZeroStroke++
 			return
+		}
+	case render.OpShadow:
+		// The shape and the blur arrive separately; see [render.OpShadow].
+		// Nothing is cached, uploaded or rasterised here — the blur is
+		// evaluated analytically in the shape shader, so a shadow is one quad
+		// in the same batch as everything else. See shape.kage.
+		radius = op.CornerRadius
+		sigma = op.Blur * 0.5
+		if !(sigma > 0) {
+			sigma = 0
 		}
 	case render.OpGlyphs:
 		r.appendGlyphs(l, op)
@@ -313,6 +331,14 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 	if radius > 0 || stroke > 0 {
 		padX, padY = aaPad/sx, aaPad/sy
 	}
+	if sigma > 0 {
+		// A shadow needs no antialiasing pad — it has no hard edge — but it
+		// does need room for the falloff. The shader measures in device
+		// pixels, so the device pad is ShadowSigmas*sigma*sr and the local pad
+		// is that divided by the scale of the axis.
+		dev := render.ShadowSigmas * sigma * sr
+		padX, padY = dev/sx, dev/sy
+	}
 	quad := geom.Rect{
 		Min: geom.Point{X: b.Min.X - padX, Y: b.Min.Y - padY},
 		Max: geom.Point{X: b.Max.X + padX, Y: b.Max.Y + padY},
@@ -333,6 +359,16 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 		originY: b.Min.Y,
 		scaleX:  sx,
 		scaleY:  sy,
+	}
+	if op.Kind == render.OpShadow {
+		// The shadow encoding: a negative stroke slot carrying sigma. A zero
+		// sigma leaves the slot at zero, which is a hard edged rounded fill
+		// and is exactly what a shadow with a spread but no blur is.
+		shape.stroke = -sigma * sr
+		r.shadowOps++
+		if sigma == 0 {
+			r.shadowSharpOps++
+		}
 	}
 
 	r.material(MaterialShape, nil)
@@ -864,6 +900,16 @@ type RendererStats struct {
 	// GlyphQuads is the number of glyph quads emitted. Together with Ops it
 	// says how much of a frame is text.
 	GlyphQuads uint64
+	// ShadowOps is the number of [render.OpShadow] operations that produced
+	// geometry, and ShadowSharpOps the subset of them whose blur was zero or
+	// less and which therefore drew a hard edged rounded rectangle.
+	//
+	// There is deliberately no cache hit ratio beside these. gift evaluates
+	// the Gaussian analytically in the shape shader, so a shadow allocates no
+	// texture, uploads no pixels and evicts nothing; the only cost it has is
+	// the fill rate of its own quad, which is what ShadowOps and the extent
+	// of the operations together describe. See the package documentation.
+	ShadowOps, ShadowSharpOps uint64
 	// Ops is the number of operations that produced geometry.
 	Ops uint64
 
@@ -935,5 +981,7 @@ func (r *Renderer) Stats() RendererStats {
 		ShapeBatches:       r.shapeBatches,
 		GlyphBatches:       r.glyphBatches,
 		GlyphQuads:         r.glyphQuads,
+		ShadowOps:          r.shadowOps,
+		ShadowSharpOps:     r.shadowSharpOps,
 	}
 }

@@ -193,6 +193,15 @@ type RendererStats struct {
 	ShapeDrawCalls, GlyphDrawCalls uint64
 	// GlyphQuads is the number of glyph quads emitted.
 	GlyphQuads uint64
+	// ShadowOps is the number of shadow operations that produced geometry
+	// and ShadowSharpOps the subset of them with no blur.
+	//
+	// There is no cache ratio next to them because there is no cache: gift
+	// evaluates the Gaussian analytically in the shared shape shader, so a
+	// shadow costs fill rate and nothing else. The project plan, section 8,
+	// proposed a cached shape mask instead; see the backend's package
+	// documentation for why that was not built.
+	ShadowOps, ShadowSharpOps uint64
 	// Ops is the number of operations that produced geometry.
 	Ops uint64
 

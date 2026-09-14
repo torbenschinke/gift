@@ -203,6 +203,10 @@ type rendererCounters struct {
 	ShapeDrawCalls uint64 `json:"shape_draw_calls"`
 	GlyphDrawCalls uint64 `json:"glyph_draw_calls"`
 	GlyphQuads     uint64 `json:"glyph_quads"`
+	// ShadowOps and ShadowSharpOps are the shadow counters. There is no
+	// shadow cache and therefore no hit ratio; see [RendererStats].
+	ShadowOps      uint64 `json:"shadow_ops"`
+	ShadowSharpOps uint64 `json:"shadow_sharp_ops"`
 
 	Atlas atlasCounters `json:"atlas"`
 }
@@ -318,6 +322,8 @@ func (r *Recorder) emit(kind string) {
 			ShapeDrawCalls:     rs.ShapeDrawCalls,
 			GlyphDrawCalls:     rs.GlyphDrawCalls,
 			GlyphQuads:         rs.GlyphQuads,
+			ShadowOps:          rs.ShadowOps,
+			ShadowSharpOps:     rs.ShadowSharpOps,
 			Atlas: atlasCounters{
 				Hits: rs.Atlas.Hits, Misses: rs.Atlas.Misses,
 				Rasterised: rs.Atlas.Rasterised, UploadedBytes: rs.Atlas.UploadedBytes,

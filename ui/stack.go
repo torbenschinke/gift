@@ -146,6 +146,13 @@ func (s Stack) Background(v Color) Stack { s.setBackground(v); return s }
 // does not change the layout.
 func (s Stack) Border(v Border) Stack { s.setBorder(v); return s }
 
+// Shadow draws a blurred copy of the background shape behind the view.
+//
+// It extends the paint bounds but not the layout size and not the hit area, so
+// a shadow never moves a sibling and never makes a gap clickable; the project
+// plan, section 8, fixes that. A parent clip cuts it.
+func (s Stack) Shadow(v Shadow) Stack { s.setShadow(v); return s }
+
 // CornerRadius rounds the background and the border.
 func (s Stack) CornerRadius(v float32) Stack { s.setCornerRadius(v); return s }
 

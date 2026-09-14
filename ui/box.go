@@ -92,6 +92,13 @@ func (b BoxView) Background(v Color) BoxView { b.setBackground(v); return b }
 // Border strokes the inside of the bounds.
 func (b BoxView) Border(v Border) BoxView { b.setBorder(v); return b }
 
+// Shadow draws a blurred copy of the background shape behind the view.
+//
+// It extends the paint bounds but not the layout size and not the hit area, so
+// a shadow never moves a sibling and never makes a gap clickable; the project
+// plan, section 8, fixes that. A parent clip cuts it.
+func (b BoxView) Shadow(v Shadow) BoxView { b.setShadow(v); return b }
+
 // CornerRadius rounds the background and the border.
 func (b BoxView) CornerRadius(v float32) BoxView { b.setCornerRadius(v); return b }
 

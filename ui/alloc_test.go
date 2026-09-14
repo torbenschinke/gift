@@ -17,6 +17,12 @@ import (
 //
 //	1 outer VStack + 20 HStacks + 20*(9 boxes + 1 spacer) = 221 nodes,
 //	plus the root component node.
+//
+// Twenty one of those nodes carry a shadow, which is the section 13 scenario
+// count and is here rather than in a test of its own so that every allocation
+// contract in this file covers the shadow path automatically. There is nothing
+// to warm up: the blur is evaluated in the shape shader, so a shadow has no
+// cache that could allocate on a miss.
 func tree(*gift.Context) gift.View {
 	rows := make([]gift.View, 0, 20)
 	for r := range 20 {
@@ -27,7 +33,9 @@ func tree(*gift.Context) gift.View {
 				Background(ui.RGB(uint8(c*20), 40, 60)).
 				Key(strconv.Itoa(c))
 			if c == 4 {
-				b = b.CornerRadius(3).Border(ui.Border{Width: 1, Color: ui.RGB(255, 255, 255)})
+				b = b.CornerRadius(3).
+					Border(ui.Border{Width: 1, Color: ui.RGB(255, 255, 255)}).
+					Shadow(ui.Shadow{Blur: 16, OffsetY: 4, Color: ui.RGBA(0, 0, 0, 70)})
 			}
 			cols = append(cols, b)
 			if c == 4 {
@@ -42,6 +50,7 @@ func tree(*gift.Context) gift.View {
 		Background(ui.RGBA(0, 0, 0, 40)).
 		Border(ui.Border{Width: 1, Color: ui.RGB(80, 80, 80)}).
 		CornerRadius(6).
+		Shadow(ui.Shadow{Blur: 24, OffsetY: 8, Color: ui.RGBA(0, 0, 0, 90)}).
 		Clip(true)
 }
 
@@ -66,7 +75,9 @@ func flexTree(*gift.Context) gift.View {
 				Background(ui.RGB(uint8(c*20), 40, 60)).
 				Key(strconv.Itoa(c))
 			if c == 4 {
-				b = b.CornerRadius(3).Border(ui.Border{Width: 1, Color: ui.RGB(255, 255, 255)})
+				b = b.CornerRadius(3).
+					Border(ui.Border{Width: 1, Color: ui.RGB(255, 255, 255)}).
+					Shadow(ui.Shadow{Blur: 16, OffsetY: 4, Color: ui.RGBA(0, 0, 0, 70)})
 			}
 			cols = append(cols, b)
 			if c == 4 {

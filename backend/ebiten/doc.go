@@ -31,6 +31,32 @@
 // draw calls — a label sorted into a late text pass would slide in front of
 // panels declared after it. See [Renderer.material] and [RendererStats.DrawCalls].
 //
+// A shadow is a shape operation too, and that is a deliberate departure from
+// the project plan, section 8, which proposes "wiederverwendbare, gecachte
+// Formmaske; Blur nur bei Form-/Parameterwechsel" for it. gift evaluates the
+// Gaussian analytically in the same shape shader instead, from the same signed
+// distance field the rounded rectangle already uses, with the standard
+// deviation carried in the sign bit of the stroke slot.
+//
+// The reasons are in the plan rather than against it. A cached mask is a
+// texture per distinct shape-and-blur pair, and section 11 warns that the
+// OpenGL upload path may call glFinish before a pixel update — so the cache
+// would stall the frame that missed, which is every frame a panel resizes or a
+// list scrolls a new card into view. It would also be a third material, and
+// since section 11 forbids reordering transparent content to merge materials,
+// every shadowed panel would have cost its own draw call. And section 8 itself
+// prescribes "analytische Geometrie im gemeinsamen Shape-Shader" one row above,
+// for the border and the radius, on exactly this reasoning.
+//
+// The price is stated rather than hidden. The analytic form is the Gaussian
+// cumulative distribution of the signed distance, which is exact along a
+// straight edge and about two per cent too full inside a corner arc, where the
+// true convolution is a quarter plane integral rather than a half plane one.
+// There is no cache, so there is nothing to hit, miss, upload or evict, and
+// [RendererStats] has no shadow cache counters for that reason; what a shadow
+// costs is the fill rate of its own quad, which is the shape grown by three
+// standard deviations. See shape.kage and [render.Shadow].
+//
 // Nothing allocates an image, a texture or a render target per widget, per
 // operation or per frame, which is what the project plan, sections 8 and 11,
 // require. The glyph atlas is a bounded, evicting pool of pages; see

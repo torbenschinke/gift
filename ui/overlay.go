@@ -76,6 +76,13 @@ func (o Overlay) Background(v Color) Overlay { o.setBackground(v); return o }
 // Border strokes the inside of the bounds after the children were drawn.
 func (o Overlay) Border(v Border) Overlay { o.setBorder(v); return o }
 
+// Shadow draws a blurred copy of the background shape behind the view.
+//
+// It extends the paint bounds but not the layout size and not the hit area, so
+// a shadow never moves a sibling and never makes a gap clickable; the project
+// plan, section 8, fixes that. A parent clip cuts it.
+func (o Overlay) Shadow(v Shadow) Overlay { o.setShadow(v); return o }
+
 // CornerRadius rounds the background and the border.
 func (o Overlay) CornerRadius(v float32) Overlay { o.setCornerRadius(v); return o }
 
