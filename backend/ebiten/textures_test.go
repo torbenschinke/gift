@@ -91,14 +91,29 @@ func TestUploadByteBudget(t *testing.T) {
 		t.Error("a second upload was admitted past the byte budget")
 	}
 
-	// A picture larger than the entire frame budget still gets a frame to
-	// itself, or a 512 pixel thumbnail under a small budget would be a
-	// placeholder for ever.
+	// A picture larger than the entire frame budget is admitted, or a 512
+	// pixel thumbnail under a small budget would be a placeholder for ever.
 	tc.Tick()
 	tc.BeginFrame()
 	if _, ok := tc.Acquire(pixels(32)); !ok {
-		t.Error("a picture larger than the whole frame budget was refused; it must get a frame " +
-			"of its own instead of never being drawn")
+		t.Error("a picture larger than the whole frame budget was refused; it can never fit " +
+			"and would never be drawn")
+	}
+
+	// And it is admitted even when something smaller was uploaded first,
+	// which is the WU-R correction: paint order is tree order, so a small
+	// picture consistently ahead of a large one used to starve it for ever.
+	tc2 := NewTextureCache(TextureConfig{UploadBytesPerFrame: 1500, UploadsPerFrame: -1})
+	for frame := range 5 {
+		tc2.Tick()
+		tc2.BeginFrame()
+		if _, ok := tc2.Acquire(pixels(16)); !ok {
+			t.Fatalf("frame %d: the small picture was refused", frame)
+		}
+		if _, ok := tc2.Acquire(pixels(32)); !ok {
+			t.Fatalf("frame %d: a picture larger than the whole frame budget starved behind "+
+				"a smaller one painted first", frame)
+		}
 	}
 }
 

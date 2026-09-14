@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -65,6 +66,9 @@ type diskCache struct {
 
 	hits, misses, writes, evictions, corrupt, errs atomic.Uint64
 	bytesRead, bytesWritten                        atomic.Uint64
+	// sweptTemps counts the half written files a crashed process left
+	// behind and this one deleted; see [diskCache.scan].
+	sweptTemps atomic.Uint64
 }
 
 type diskEntry struct {
@@ -73,6 +77,10 @@ type diskEntry struct {
 }
 
 const (
+	// tmpPrefix is the prefix of the temporary file a write goes through.
+	// It is not a valid cache key — keys are hex — so a leftover can be
+	// told apart from an entry by its name alone.
+	tmpPrefix   = ".tmp-"
 	diskMagic   = 0x47494654 // "GIFT"
 	diskVersion = 1
 	// diskHeaderFixed is magic, version, width, height, orientation, ladder
@@ -125,11 +133,24 @@ func (d *diskCache) scan() {
 			continue
 		}
 		for _, f := range files {
+			name := f.Name()
+			if strings.HasPrefix(name, tmpPrefix) {
+				// A half written entry from a process that died
+				// between CreateTemp and Rename. It is not an entry:
+				// its name is not a cache key, so [diskCache.path]
+				// would resolve it to the wrong directory and
+				// [diskCache.remove] would silently fail, leaving the
+				// bytes on disk and counted in total for ever.
+				// Collect it here, which is the only place that knows
+				// where it really is.
+				_ = os.Remove(filepath.Join(d.dir, sub.Name(), name))
+				d.sweptTemps.Add(1)
+				continue
+			}
 			fi, err := f.Info()
 			if err != nil {
 				continue
 			}
-			name := f.Name()
 			d.entries[name] = diskEntry{size: fi.Size(), used: fi.ModTime()}
 			d.total += fi.Size()
 		}
@@ -190,7 +211,7 @@ func (d *diskCache) put(k Key, t *Thumbnail) error {
 	// Write to a temporary file in the same directory and rename, so a
 	// crash leaves either the old entry or the new one and never half of
 	// either. A reader that still sees a torn file is caught by the CRC.
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	tmp, err := os.CreateTemp(dir, tmpPrefix+"*")
 	if err != nil {
 		d.errs.Add(1)
 		return err
@@ -427,6 +448,11 @@ type DiskCacheStats struct {
 	Errors uint64
 	// BytesRead and BytesWritten are the transfer volumes.
 	BytesRead, BytesWritten uint64
+	// SweptTemps is the number of half written files left by a process that
+	// died mid write and deleted by the first scan of this one. A steady
+	// trickle means something is killing the application during a cache
+	// write.
+	SweptTemps uint64
 	// Bytes and Entries are the current occupancy, and Budget the ceiling.
 	Bytes   int64
 	Entries int
@@ -447,6 +473,7 @@ func (d *diskCache) snapshot() DiskCacheStats {
 		Evictions:    d.evictions.Load(),
 		Corrupt:      d.corrupt.Load(),
 		Errors:       d.errs.Load(),
+		SweptTemps:   d.sweptTemps.Load(),
 		BytesRead:    d.bytesRead.Load(),
 		BytesWritten: d.bytesWritten.Load(),
 		Bytes:        d.total,

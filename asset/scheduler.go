@@ -57,6 +57,19 @@ type scheduler struct {
 	pre   []*job
 	limit int
 
+	// live is the number of jobs that are still waiting for a worker.
+	//
+	// It is an explicit counter and deliberately not len(vis)+len(pre).
+	// Cancellation, eviction and promotion all leave an entry behind in the
+	// slices — a tombstone whose job is no longer queued — and only [pop]
+	// removes one. While every worker is busy nothing pops, so a length
+	// based occupancy grows monotonically and the effective queue limit
+	// shrinks to zero: a gallery that cancels on every unbind, which is
+	// every fling, would end up refusing *visible* requests with
+	// [ErrQueueFull] on an empty queue. The counter is maintained wherever
+	// job.queued changes; see TestCancelledWorkDoesNotOccupyTheQueue.
+	live int
+
 	nextID uint64
 	closed bool
 }
@@ -118,30 +131,66 @@ func (s *scheduler) add(id ID, rung int, req Request) (
 	j = &job{id: id, rung: rung, src: req.Source, prio: req.Priority,
 		waiters: []waiter{w}, queued: true}
 	s.jobs[k] = j
+	s.live++
 	if req.Priority == Visible {
 		s.vis = append(s.vis, j)
 	} else {
 		s.pre = append(s.pre, j)
 	}
+	s.compact()
 	s.cond.Signal()
 	return j, wid, evicted, false, false, true
 }
 
-func (s *scheduler) queued() int { return len(s.vis) + len(s.pre) }
+// queued is the number of jobs waiting for a worker. See [scheduler.live].
+func (s *scheduler) queued() int { return s.live }
+
+// compact drops tombstones from both queues.
+//
+// Occupancy is tracked by [scheduler.live] and does not need this; what needs
+// it is memory. A cancelled job stays reachable through its slice entry until
+// a worker pops past it, and during a fling nothing pops. The threshold keeps
+// the amortised cost at O(1) per add.
+func (s *scheduler) compact() {
+	if len(s.vis)+len(s.pre) <= 2*s.limit+16 {
+		return
+	}
+	s.vis = keepQueued(s.vis)
+	s.pre = keepQueued(s.pre)
+}
+
+func keepQueued(q []*job) []*job {
+	out := q[:0]
+	for _, j := range q {
+		if j.queued {
+			out = append(out, j)
+		}
+	}
+	clear(q[len(out):])
+	return out
+}
 
 // evictOldestPrefetch removes the least recent waiting prefetch job and
 // returns it, or nil when there is none.
+//
+// It compacts as it goes. Skipping a tombstone without removing it was the
+// other half of the defect described on [scheduler.live]: a prefetch queue
+// made entirely of tombstones answered nil, and the visible request that
+// wanted the room was refused.
 func (s *scheduler) evictOldestPrefetch() *job {
 	for i, j := range s.pre {
 		if !j.queued {
 			continue
 		}
-		s.pre = append(s.pre[:i], s.pre[i+1:]...)
+		// Everything before i was a tombstone, so the head goes with it.
+		s.pre = s.pre[i+1:]
 		j.queued = false
 		j.done = true
+		s.live--
 		delete(s.jobs, jobKey{j.id, j.rung})
 		return j
 	}
+	s.pre = s.pre[:0]
 	return nil
 }
 
@@ -176,6 +225,7 @@ func (s *scheduler) pop(q *[]*job) *job {
 			continue // cancelled, evicted, or the duplicate of a promotion
 		}
 		j.queued = false
+		s.live--
 		j.running = true
 		return j
 	}
@@ -224,6 +274,7 @@ func (s *scheduler) remove(j *job, wid uint64) bool {
 	}
 	if len(j.waiters) == 0 && j.queued {
 		j.queued = false
+		s.live--
 		j.done = true
 		if cur, ok := s.jobs[jobKey{j.id, j.rung}]; ok && cur == j {
 			delete(s.jobs, jobKey{j.id, j.rung})
@@ -243,6 +294,7 @@ func (s *scheduler) close() []*job {
 		for _, j := range q {
 			if j.queued {
 				j.queued = false
+				s.live--
 				out = append(out, j)
 			}
 		}

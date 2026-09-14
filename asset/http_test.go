@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -76,8 +77,8 @@ func TestHTTPSourceLoadsAPicture(t *testing.T) {
 	p.Request(asset.Request{Source: asset.HTTP(srv.URL + "/a.jpg"), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if r.Err != nil {
-		t.Fatal(r.Err)
+	if r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	if r.Metadata.Revision != `etag:"v1"` {
 		t.Errorf("Revision = %q, want the ETag", r.Metadata.Revision)
@@ -101,8 +102,8 @@ func TestHTTPFreshHintSkipsTheNetwork(t *testing.T) {
 	p1 := asset.NewPipeline(diskConfig(c, cache, 0))
 	p1.Request(asset.Request{Source: asset.HTTP(srv.URL + "/a.jpg"), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
-	if r := c.waitFor(t, 1)[0]; r.Err != nil {
-		t.Fatal(r.Err)
+	if r := c.waitFor(t, 1)[0]; r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	p1.Close()
 	if ps.gets.Load() != 1 {
@@ -115,8 +116,8 @@ func TestHTTPFreshHintSkipsTheNetwork(t *testing.T) {
 	p2.Request(asset.Request{Source: asset.HTTP(srv.URL + "/a.jpg"), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if r.Err != nil {
-		t.Fatal(r.Err)
+	if r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	if !r.FromDisk {
 		t.Error("the warm start did not come from the disk cache")
@@ -137,8 +138,8 @@ func TestHTTPStaleHintRevalidatesAndAcceptsNotModified(t *testing.T) {
 	p1 := asset.NewPipeline(diskConfig(c, cache, 0))
 	p1.Request(asset.Request{Source: asset.HTTP(srv.URL + "/a.jpg"), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
-	if r := c.waitFor(t, 1)[0]; r.Err != nil {
-		t.Fatal(r.Err)
+	if r := c.waitFor(t, 1)[0]; r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	p1.Close()
 
@@ -148,8 +149,8 @@ func TestHTTPStaleHintRevalidatesAndAcceptsNotModified(t *testing.T) {
 	p2.Request(asset.Request{Source: asset.HTTP(srv.URL + "/a.jpg"), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if r.Err != nil {
-		t.Fatal(r.Err)
+	if r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	if ps.condGets.Load() != 1 || ps.notMod.Load() != 1 {
 		t.Errorf("conditional=%d notModified=%d, want 1 and 1",
@@ -179,8 +180,8 @@ func TestHTTPChangedValidatorRefetches(t *testing.T) {
 	url := srv.URL + "/a.jpg"
 	p.Request(asset.Request{Source: asset.HTTP(url), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
-	if r := c.waitFor(t, 1)[0]; r.Err != nil {
-		t.Fatal(r.Err)
+	if r := c.waitFor(t, 1)[0]; r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 
 	ps.etag.Store(`"v2"`)
@@ -190,8 +191,8 @@ func TestHTTPChangedValidatorRefetches(t *testing.T) {
 	p.Request(asset.Request{Source: asset.HTTP(url), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if r.Err != nil {
-		t.Fatal(r.Err)
+	if r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	if r.Metadata.Revision != `etag:"v2"` {
 		t.Errorf("Revision = %q, want the new ETag", r.Metadata.Revision)
@@ -214,8 +215,8 @@ func TestHTTPWithoutValidatorIsNotDiskCached(t *testing.T) {
 	p.Request(asset.Request{Source: asset.HTTP(srv.URL + "/a.jpg"), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if r.Err != nil {
-		t.Fatal(r.Err)
+	if r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	if r.Metadata.Revision != "" {
 		t.Errorf("Revision = %q, want empty without a validator", r.Metadata.Revision)
@@ -237,12 +238,12 @@ func TestHTTPErrorStatus(t *testing.T) {
 	p.Request(asset.Request{Source: asset.HTTP(srv.URL + "/missing.jpg"), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if r.Err == nil {
+	if r.Err() == nil {
 		t.Fatal("a 404 produced a success")
 	}
 	var se *asset.StatusError
-	if !errors.As(r.Err, &se) || se.Status != 404 {
-		t.Fatalf("err = %v, want a StatusError 404", r.Err)
+	if !errors.As(r.Err(), &se) || se.Status != 404 {
+		t.Fatalf("err = %v, want a StatusError 404", r.Err())
 	}
 	if se.Temporary() {
 		t.Error("a 404 must not be temporary")
@@ -258,7 +259,7 @@ func TestHTTPBadURL(t *testing.T) {
 		p.Request(asset.Request{Source: asset.HTTP(u), Size: 64,
 			Priority: asset.Visible, OnResult: c.onResult})
 		r := c.waitFor(t, 1)[0]
-		if r.Err == nil {
+		if r.Err() == nil {
 			t.Errorf("%q produced a success", u)
 		}
 	}
@@ -270,6 +271,12 @@ func TestHTTPBadURL(t *testing.T) {
 var secrets = []string{
 	"hunter2", "s3cr3t-token", "AKIAIOSFODNN7EXAMPLE", "sigv4signature",
 	"Bearer s3cr3t-token", "sessioncookievalue",
+	// The undeclared one. WU-R: a signature parameter that nobody thought to
+	// name in WithSecretQuery used to travel into the ID and into every
+	// error, which made the safe behaviour the one the caller has to
+	// remember. Redaction is now the default and this string must not appear
+	// anywhere either.
+	"SEKRIT",
 }
 
 func containsSecret(s string) string {
@@ -284,8 +291,11 @@ func containsSecret(s string) string {
 // TestCredentialsNeverLeak is the assertion the brief demands: no credential in
 // a cache file name and none in any diagnostic string.
 func TestCredentialsNeverLeak(t *testing.T) {
-	src := asset.HTTP("https://user:hunter2@images.example.com/private/a.jpg?sig=sigv4signature&w=200").
+	const rawURL = "https://user:hunter2@images.example.com/private/a.jpg?" +
+		"sig=sigv4signature&signature=SEKRIT&w=200"
+	src := asset.HTTP(rawURL).
 		WithSecretQuery("sig").
+		WithPublicQuery("w").
 		WithHeader("Authorization", "Bearer s3cr3t-token").
 		WithHeader("Cookie", "session=sessioncookievalue").
 		WithCredential("AKIAIOSFODNN7EXAMPLE")
@@ -327,6 +337,26 @@ func TestCredentialsNeverLeak(t *testing.T) {
 		}
 	}
 
+	// The parameter that was declared public is still legible, which is what
+	// makes the ID usable in a diagnostic at all.
+	if !strings.Contains(id, "w=200") {
+		t.Errorf("the ID %q dropped the parameter declared public", id)
+	}
+
+	// Redaction must not collapse two different URLs into one identity, or
+	// the second picture would be served the first one's thumbnail.
+	a := asset.HTTP("https://images.example.com/p/a.jpg?token=aaa")
+	b := asset.HTTP("https://images.example.com/p/a.jpg?token=bbb")
+	if a.Metadata().ID == b.Metadata().ID {
+		t.Error("two URLs with different undeclared queries produced the same ID")
+	}
+	if strings.Contains(string(a.Metadata().ID), "aaa") {
+		t.Errorf("an undeclared query value survived in %q", a.Metadata().ID)
+	}
+	if asset.HTTP("https://images.example.com/p/a.jpg?token=aaa").Metadata().ID != a.Metadata().ID {
+		t.Error("the same URL built twice produced different identities")
+	}
+
 	// Two sources that differ only in their credential must not share a key.
 	other := asset.HTTP("https://images.example.com/private/a.jpg?w=200").
 		WithHeader("Authorization", "Bearer someone-else")
@@ -335,8 +365,9 @@ func TestCredentialsNeverLeak(t *testing.T) {
 	}
 	// And the same credential twice must produce the same key, or nothing
 	// would ever hit.
-	again := asset.HTTP("https://user:hunter2@images.example.com/private/a.jpg?sig=sigv4signature&w=200").
+	again := asset.HTTP(rawURL).
 		WithSecretQuery("sig").
+		WithPublicQuery("w").
 		WithHeader("Authorization", "Bearer s3cr3t-token").
 		WithHeader("Cookie", "session=sessioncookievalue").
 		WithCredential("AKIAIOSFODNN7EXAMPLE")
@@ -357,16 +388,16 @@ func TestCredentialsDoNotLeakThroughErrors(t *testing.T) {
 	defer p.Close()
 
 	// 127.0.0.1:1 refuses connections, which produces a transport error.
-	src := asset.HTTP("http://user:hunter2@127.0.0.1:1/a.jpg?sig=sigv4signature").
+	src := asset.HTTP("http://user:hunter2@127.0.0.1:1/a.jpg?sig=sigv4signature&signature=SEKRIT").
 		WithSecretQuery("sig").
 		WithHeader("Authorization", "Bearer s3cr3t-token")
 	p.Request(asset.Request{Source: src, Size: 64, Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if r.Err == nil {
+	if r.Err() == nil {
 		t.Fatal("connecting to a closed port succeeded")
 	}
-	if s := containsSecret(r.Err.Error()); s != "" {
-		t.Fatalf("the error %q contains the secret %q", r.Err, s)
+	if s := containsSecret(r.Err().Error()); s != "" {
+		t.Fatalf("the error %q contains the secret %q", r.Err(), s)
 	}
 	if s := containsSecret(string(r.ID)); s != "" {
 		t.Fatalf("the result ID contains the secret %q", s)
@@ -386,12 +417,12 @@ func TestNoCredentialInAnyCacheFileName(t *testing.T) {
 	cache := t.TempDir()
 	c := newCollector()
 	p := asset.NewPipeline(diskConfig(c, cache, 0))
-	src := asset.HTTP(srv.URL+"/a.jpg?sig=sigv4signature").
+	src := asset.HTTP(srv.URL+"/a.jpg?sig=sigv4signature&signature=SEKRIT").
 		WithSecretQuery("sig").
 		WithHeader("Authorization", "Bearer s3cr3t-token")
 	p.Request(asset.Request{Source: src, Size: 64, Priority: asset.Visible, OnResult: c.onResult})
-	if r := c.waitFor(t, 1)[0]; r.Err != nil {
-		t.Fatal(r.Err)
+	if r := c.waitFor(t, 1)[0]; r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	p.Close()
 
@@ -413,5 +444,76 @@ func TestNoCredentialInAnyCacheFileName(t *testing.T) {
 	}
 	if files == 0 {
 		t.Fatal("nothing was written, so the assertion proves nothing")
+	}
+}
+
+// TestConcurrentHTTPFetchesShareTheInputBudget is WU-R's regression test for a
+// reservation that ignored what it was reserving for.
+//
+// [asset.Fetcher] does not know its size in stage one, and the pipeline used
+// to reserve [asset.Config.MaxEncodedBytes] for it — 64 MiB of a 96 MiB
+// default budget. Two HTTP fetches could then never be in flight at once
+// whatever Workers said, which the live example reported as an input peak of
+// 67108877 bytes against a limit of 100663296.
+//
+// The server here blocks until every worker has arrived, so the test cannot
+// pass by being fast: if the budget serialises the fetches, nobody arrives
+// second and it times out.
+func TestConcurrentHTTPFetchesShareTheInputBudget(t *testing.T) {
+	const workers = 4
+	body := jpegBytes(t, 120, 90)
+	var inFlight atomic.Int64
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if inFlight.Add(1) >= workers {
+			once.Do(func() { close(arrived) })
+		}
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+		}
+		<-release
+		w.Header().Set("ETag", `"v1"`)
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		w.WriteHeader(200)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := newCollector()
+	cfg := baseConfig(c)
+	cfg.Sizes = []int{64}
+	cfg.Workers = workers
+	cfg.MaxEncodedBytes = 64 << 20
+	cfg.InputBudget = 96 << 20
+	p := asset.NewPipeline(cfg)
+	defer p.Close()
+
+	for i := range workers {
+		p.Request(asset.Request{Source: asset.HTTP(fmt.Sprintf("%s/p%d.jpg", srv.URL, i)),
+			Size: 64, Priority: asset.Visible, Generation: uint64(i), OnResult: c.onResult})
+	}
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		close(release)
+		t.Fatalf("only %d of %d fetches were in flight at once: the input budget serialised them",
+			inFlight.Load(), workers)
+	}
+	close(release)
+
+	for _, r := range c.waitFor(t, workers) {
+		if r.Err() != nil {
+			t.Fatalf("generation %d: %v", r.Generation, r.Err())
+		}
+	}
+	// And the reservation is the size of the pictures, not the size of the
+	// limit: four fetches of a few kilobytes each must not peak near 64 MiB.
+	if st := p.Stats(); st.Input.Peak > int64(workers*len(body)+4*64<<10) {
+		t.Errorf("input peak %d bytes for %d pictures of %d bytes",
+			st.Input.Peak, workers, len(body))
 	}
 }

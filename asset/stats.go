@@ -12,10 +12,13 @@ func runtimeProcs() int { return runtime.GOMAXPROCS(0) }
 // where the one [slog.Record] of a report is affordable.
 //
 // The consumer converts it into whatever its metrics package wants. This
-// package cannot hand it to gift/metrics itself: metrics imports gift, asset
-// must not, and the project plan, section 3, draws that line. It is the same
-// arrangement the renderer and the shaper already use — see
-// [metrics.RendererStats].
+// package does not hand it to gift/metrics itself, and the direction of the
+// rule is worth stating correctly, since both copies of this comment had it
+// upside down until WU-R: gift/metrics imports nothing from this repository at
+// all. It declares plain counter structs and the *application* fills them in,
+// which is what keeps a measurement package from depending on the thing it
+// measures. See [metrics.AssetStats] and ui.ImagePipelineStats, which is the
+// conversion.
 type Stats struct {
 	// Requests is every call to [Pipeline.Request] that named a source.
 	Requests uint64

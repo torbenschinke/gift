@@ -285,12 +285,19 @@ func (t *TextureCache) Acquire(px render.Pixels) (render.ImageHandle, bool) {
 		return render.ImageHandle{}, false
 	}
 	if t.cfg.UploadBytesPerFrame >= 0 && t.frameBytes+need > t.cfg.UploadBytesPerFrame &&
-		t.frameBytes > 0 {
-		// The "and something was already uploaded" clause matters: a single
-		// picture larger than the whole frame budget must still get in
-		// eventually, or a 512 pixel thumbnail with a 512 KiB budget would
-		// never be drawn and the tile would be a placeholder for ever. It
-		// gets a frame to itself instead.
+		need <= t.cfg.UploadBytesPerFrame {
+		// The second clause is the escape hatch for a picture that is larger
+		// than the whole per frame budget: it can never fit and deferring it
+		// would leave the tile a placeholder for ever, so it is admitted and
+		// overshoots the budget once.
+		//
+		// WU-R corrected the condition. It used to read "and something was
+		// already uploaded this frame", which grants the large picture a
+		// frame to itself — but only if it is ever asked for in a frame
+		// where nothing else came first, and paint order is tree order. A
+		// smaller picture consistently ahead of it starves it for ever.
+		// Whether the overshoot is affordable is a property of the picture
+		// and not of the order its neighbours happen to be painted in.
 		t.stats.Deferred++
 		return render.ImageHandle{}, false
 	}

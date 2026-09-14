@@ -55,7 +55,7 @@ func TestPixelBudgetSaturatesAndNeverExceedsItsLimit(t *testing.T) {
 	// what the budget allows.
 	ok := 0
 	for _, r := range res {
-		if r.Err == nil {
+		if r.Err() == nil {
 			ok++
 		}
 	}
@@ -142,7 +142,7 @@ func TestBudgetsAreReleasedOnError(t *testing.T) {
 	}
 	res := c.waitFor(t, n)
 	for _, r := range res {
-		if r.Err == nil {
+		if r.Err() == nil {
 			t.Fatalf("%s decoded successfully", r.ID)
 		}
 	}
@@ -167,8 +167,8 @@ func TestDeliveredThumbnailsAreReleasedAfterTheCallback(t *testing.T) {
 	var kept *asset.Thumbnail
 	p.Request(asset.Request{Source: asset.File(path), Size: 64, Priority: asset.Visible,
 		OnResult: func(r asset.Result) {
-			if r.Err != nil {
-				t.Errorf("unexpected error %v", r.Err)
+			if r.Err() != nil {
+				t.Errorf("unexpected error %v", r.Err())
 				return
 			}
 			// This is what a GPU uploader does: retain inside the
@@ -227,7 +227,7 @@ func TestQueueSaturationRefusesPrefetchAndEvictsForVisible(t *testing.T) {
 	c.resMu.Lock()
 	var refused []asset.Result
 	for _, r := range c.results {
-		if errors.Is(r.Err, asset.ErrQueueFull) {
+		if errors.Is(r.Err(), asset.ErrQueueFull) {
 			refused = append(refused, r)
 		}
 	}
@@ -245,10 +245,10 @@ func TestQueueSaturationRefusesPrefetchAndEvictsForVisible(t *testing.T) {
 
 	var evicted, served bool
 	for _, r := range res {
-		if r.Generation == 10 && errors.Is(r.Err, asset.ErrQueueFull) {
+		if r.Generation == 10 && errors.Is(r.Err(), asset.ErrQueueFull) {
 			evicted = true
 		}
-		if r.Generation == 1000 && r.Err == nil {
+		if r.Generation == 1000 && r.Err() == nil {
 			served = true
 		}
 	}
@@ -296,7 +296,7 @@ func TestShutdownAnswersEveryQueuedRequestAndReleasesEverything(t *testing.T) {
 	res := c.waitFor(t, n+1)
 	closed := 0
 	for _, r := range res {
-		if errors.Is(r.Err, asset.ErrClosed) {
+		if errors.Is(r.Err(), asset.ErrClosed) {
 			closed++
 		}
 	}
@@ -320,8 +320,8 @@ func TestShutdownAnswersEveryQueuedRequestAndReleasesEverything(t *testing.T) {
 	s := newBlocking("late", jpegBytes(t, 8, 8))
 	s.gate = nil
 	p.Request(asset.Request{Source: s, Size: 64, Priority: asset.Visible, OnResult: c.onResult})
-	if r := c.waitFor(t, 1)[0]; !errors.Is(r.Err, asset.ErrClosed) {
-		t.Errorf("a request after Close got %v, want ErrClosed", r.Err)
+	if r := c.waitFor(t, 1)[0]; !errors.Is(r.Err(), asset.ErrClosed) {
+		t.Errorf("a request after Close got %v, want ErrClosed", r.Err())
 	}
 }
 
@@ -401,7 +401,7 @@ func TestConcurrentLoad(t *testing.T) {
 					Source: srcs[idx], Size: size, Priority: prio,
 					Generation: uint64(g*1000 + i),
 					OnResult: func(r asset.Result) {
-						if r.Err == nil && r.Image != nil {
+						if r.Err() == nil && r.Image != nil {
 							// Hold some of them past the callback,
 							// which is what the GPU side will do.
 							if r.Generation%17 == 0 {
@@ -452,4 +452,122 @@ func TestConcurrentLoad(t *testing.T) {
 		PeakPixels                                                              int64
 	}{st.Requests, st.Deduplicated, st.Decodes, st.MemoryHits, st.DiskHits,
 		st.Failed, st.Dropped, st.Cancelled, st.Pixels.Peak})
+}
+
+// TestCancelledWorkDoesNotOccupyTheQueue is WU-R's regression test for a
+// scheduler that counted tombstones.
+//
+// Cancellation and promotion both leave the job in its queue slice, and only a
+// worker looking for work removes one. While every worker is busy — the cold
+// gallery, which is the case the queue exists for — nothing is removed, so an
+// occupancy computed from the slice lengths only ever grows. The effect is
+// visible from outside and is the opposite of what [asset.Pipeline.Request]
+// documents: a *visible* request is refused with ErrQueueFull although the
+// queue holds nothing at all.
+//
+// The gallery does exactly this on every fling; see ui.Gallery.dropImage.
+func TestCancelledWorkDoesNotOccupyTheQueue(t *testing.T) {
+	held := newBlocking("held", jpegBytes(t, 64, 64))
+	c := newCollector()
+	cfg := baseConfig(c)
+	cfg.Workers = 1
+	cfg.QueueLimit = 4
+	p := asset.NewPipeline(cfg)
+	defer p.Close()
+
+	// Occupy the single worker, so that nothing is ever popped.
+	p.Request(asset.Request{Source: held, Size: 64, Priority: asset.Visible,
+		Generation: 1, OnResult: c.onResult})
+	waitUntil(t, func() bool { return held.openCount() == 1 })
+
+	mk := func(name string) *blockingSource {
+		s := newBlocking(name, jpegBytes(t, 64, 64))
+		s.gate = nil
+		return s
+	}
+	// Fill the queue and withdraw all of it again, several times over, which
+	// is what a few seconds of scrolling does.
+	for round := range 5 {
+		var tickets []asset.Ticket
+		for i := range cfg.QueueLimit {
+			tickets = append(tickets, p.Request(asset.Request{
+				Source:     mk(fmt.Sprintf("r%dp%d", round, i)),
+				Size:       64,
+				Priority:   asset.Prefetch,
+				Generation: uint64(100*round + i),
+				OnResult:   c.onResult,
+			}))
+		}
+		if st := p.Stats(); st.QueuedPrefetch != cfg.QueueLimit {
+			t.Fatalf("round %d: QueuedPrefetch = %d, want %d", round, st.QueuedPrefetch, cfg.QueueLimit)
+		}
+		for _, tk := range tickets {
+			tk.Cancel()
+		}
+		if st := p.Stats(); st.QueuedPrefetch != 0 {
+			t.Fatalf("round %d: QueuedPrefetch = %d after cancelling everything, want 0",
+				round, st.QueuedPrefetch)
+		}
+	}
+	if st := p.Stats(); st.Cancelled != uint64(5*cfg.QueueLimit) {
+		t.Fatalf("Cancelled = %d, want %d", st.Cancelled, 5*cfg.QueueLimit)
+	}
+
+	// The queue is empty, so a visible request must be accepted. Before the
+	// fix this was refused: queued() was twenty and the limit was four.
+	p.Request(asset.Request{Source: mk("urgent"), Size: 64, Priority: asset.Visible,
+		Generation: 9999, OnResult: c.onResult})
+	if st := p.Stats(); st.Dropped != 0 {
+		t.Errorf("Dropped = %d after %d cancellations inside a full queue, want 0",
+			st.Dropped, 5*cfg.QueueLimit)
+	}
+	if st := p.Stats(); st.QueuedVisible != 1 {
+		t.Errorf("QueuedVisible = %d, want 1: the visible request was refused", st.QueuedVisible)
+	}
+	held.release()
+	for _, r := range c.waitFor(t, 2) {
+		if errors.Is(r.Err(), asset.ErrQueueFull) {
+			t.Errorf("generation %d was refused with ErrQueueFull on an empty queue", r.Generation)
+		}
+	}
+}
+
+// TestWithheldThumbnailIsNotAnError pins the other half of WU-R's error seam:
+// a successful result whose ready slot was unavailable must not arrive as a
+// failure. The pixels are in the CPU cache and Lookup finds them.
+func TestWithheldThumbnailIsNotAnError(t *testing.T) {
+	c := newCollector()
+	cfg := baseConfig(c)
+	cfg.Workers = 1
+	cfg.ReadyLimit = 1
+	p := asset.NewPipeline(cfg)
+	defer p.Close()
+
+	dir := t.TempDir()
+	var withheld int
+	for i := range 24 {
+		src := asset.File(writeFile(t, dir, fmt.Sprintf("p%d.png", i), pngBytes(t, 32, 32)))
+		p.Request(asset.Request{Source: src, Size: 64, Priority: asset.Prefetch,
+			Generation: uint64(i), OnResult: c.onResult})
+	}
+	for _, r := range c.waitFor(t, 24) {
+		if r.ImageWithheld {
+			withheld++
+			if !r.OK() {
+				t.Fatalf("a withheld thumbnail arrived as an error: %v", r.Err())
+			}
+			if r.Metadata.Width == 0 {
+				t.Fatalf("a withheld result lost its metadata: %+v", r)
+			}
+			if _, ok := p.Lookup(r.ID, r.Size); !ok {
+				t.Errorf("%s was withheld but is not in the CPU cache", r.ID)
+			}
+		}
+	}
+	if st := p.Stats(); st.ReadyDropped != uint64(withheld) {
+		t.Errorf("ReadyDropped = %d, withheld results = %d", st.ReadyDropped, withheld)
+	}
+	if withheld == 0 {
+		t.Skip("the ready queue never saturated on this machine")
+	}
 }

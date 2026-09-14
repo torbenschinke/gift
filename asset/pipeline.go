@@ -65,13 +65,81 @@ type Result struct {
 	Metadata Metadata
 	// Orientation is the EXIF orientation that was applied.
 	Orientation Orientation
-	// Err is nil on success. It is an ordinary value and never a panic; see
-	// the project plan, section 15.
-	Err error
+
+	// Retry and Failure are the two kinds of "no picture this time", and
+	// they are two fields rather than one so that a consumer cannot treat
+	// them alike by accident.
+	//
+	// Retry is pressure inside the pipeline that passes by itself:
+	// [ErrQueueFull] because the queue was saturated, [ErrBackoff] because
+	// the source failed a moment ago and is waiting out its delay. Nothing
+	// is wrong with the picture. A consumer must *not* remember it: it
+	// clears its state and asks again on a later frame, rate limited by a
+	// frame or layout counter. Latching one blanks a tile for the life of
+	// the process, which is the defect this split exists to prevent.
+	//
+	// Failure is the outcome that will repeat until the revision changes or
+	// [Pipeline.Forget] is called: not a picture, over the limits, a bad
+	// URL, a quarantined source, a closed pipeline. A consumer may and
+	// should remember it and show an error state.
+	//
+	// Both are ordinary values and never panics; see the project plan,
+	// section 15. At most one of them is set. Use [Result.Err] when all that
+	// is wanted is something to log, and [Retryable] to classify an error
+	// that arrived by some other route.
+	Retry, Failure error
+
+	// ImageWithheld reports a *successful* result whose thumbnail could not
+	// be handed over because the ready queue was full; see
+	// [Config.ReadyLimit].
+	//
+	// It is not an error and Failure and Retry are nil. The pixels are in
+	// the CPU cache and everything else in this Result — the identity, the
+	// rung, the revision, the metadata — is exactly what a successful
+	// delivery carries. A consumer treats it as success and picks the
+	// picture up with [Pipeline.Lookup] on the next frame.
+	ImageWithheld bool
 	// FromDisk and FromMemory report which cache answered, for diagnostics
 	// and for the cold versus warm measurements of the project plan,
 	// section 13.
 	FromDisk, FromMemory bool
+}
+
+// Err returns whichever of [Result.Failure] and [Result.Retry] is set, or nil.
+//
+// It exists for logging and for a test that only wants to know whether
+// something went wrong. It is deliberately a method and not the field it
+// replaced: a field named Err invites "if r.Err != nil { give up }", and that
+// one line, written twice in this repository, is what turned a moment of queue
+// saturation into a permanently blank picture.
+func (r Result) Err() error {
+	if r.Failure != nil {
+		return r.Failure
+	}
+	return r.Retry
+}
+
+// OK reports whether the request produced a picture. A result with
+// [Result.ImageWithheld] is OK; its pixels are in the CPU cache.
+func (r Result) OK() bool { return r.Failure == nil && r.Retry == nil }
+
+// setErr files err under Retry or Failure according to [Retryable].
+func (r *Result) setErr(err error) {
+	if err == nil {
+		return
+	}
+	if Retryable(err) {
+		r.Retry = err
+	} else {
+		r.Failure = err
+	}
+}
+
+// errResult is the shorthand for the many "nothing came of it" returns.
+func errResult(err error, meta Metadata) Result {
+	r := Result{Metadata: meta}
+	r.setErr(err)
+	return r
 }
 
 // Correction turns the metadata of a result into a catalogue correction, so
@@ -117,14 +185,27 @@ type Ticket struct {
 	id uint64
 }
 
-// Cancel withdraws the request. The callback will not run afterwards, and if
-// nothing else wants the same work it is dropped from the queue or its context
-// is cancelled.
+// Cancel withdraws the request. If nothing else wants the same work it is
+// dropped from the queue.
 //
-// Cancelling work that has already started does not stop it: the standard
+// # What it does and does not promise
+//
+// It does *not* promise that the callback will not run. The waiter is removed
+// from the job, so a job that has not finished will not call it — but a job
+// whose worker has already taken the waiters out of the scheduler delivers to
+// all of them, and the delivery executor may run that closure later still.
+// Cancel and an in flight delivery are a race, and the loser is whichever
+// arrived second.
+//
+// What makes that harmless is [Request.Generation], and it is the reason the
+// pipeline insists on one: the consumer compares the generation it gets back
+// against the one the tile or the scope has now and drops the answer if they
+// differ. Both consumers in this repository do; see ui.Gallery.onImage.
+//
+// Cancelling work that has already started also does not stop it: the standard
 // decoders are not interruptible, and the project plan, section 9, says so
-// explicitly. What cancelling guarantees is that the result is not published,
-// which is the property the view needs.
+// explicitly. What cancelling guarantees is that the work is dropped if nobody
+// else wants it and that no *new* work is started for it.
 func (t Ticket) Cancel() {
 	if t.p == nil {
 		return
@@ -261,7 +342,8 @@ type Config struct {
 	// ones delivered during [Pipeline.Close]. The delivery reference on a
 	// [Thumbnail] is released inside the closure, so an executor that
 	// silently drops one holds those pixels against [Config.PixelBudget]
-	// until the process exits. Drain the executor once more after Close.
+	// until the process exits. Drain the executor once more after Close; for a
+	// gift application that is gift.App.DrainPosts.
 	Deliver func(func())
 
 	// Logger receives pipeline diagnostics. Nil disables logging entirely.
@@ -319,6 +401,12 @@ const (
 
 	// DefaultTimeout bounds one request at thirty seconds.
 	DefaultTimeout = 30 * time.Second
+
+	// inputProbeBytes is what a fetch of unknown length reserves against
+	// [Config.InputBudget] until its Content-Length is known. It is a token
+	// and not a guess at a picture size: it only has to cover the moment
+	// between issuing the request and reading the response headers.
+	inputProbeBytes int64 = 64 << 10
 )
 
 func (c Config) withDefaults() Config {
@@ -463,7 +551,7 @@ func (p *Pipeline) Close() error {
 	}
 	p.stop()
 	for _, j := range p.sched.close() {
-		p.finish(j, Result{ID: j.id, Err: ErrClosed}, nil)
+		p.finish(j, errResult(ErrClosed, Metadata{ID: j.id}), nil)
 	}
 	p.input.close()
 	p.decode.close()
@@ -548,30 +636,37 @@ func (p *Pipeline) Request(req Request) Ticket {
 	meta := req.Source.Metadata()
 	id := meta.ID
 	if id == "" {
-		p.deliver(req, Result{Generation: req.Generation,
-			Err: fmt.Errorf("gift/asset: %w: source has an empty ID", ErrNotAPicture)})
+		r := errResult(fmt.Errorf("gift/asset: %w: source has an empty ID", ErrNotAPicture), Metadata{})
+		r.Generation = req.Generation
+		p.deliver(req, r)
 		return Ticket{}
 	}
 	if p.closed.Load() {
-		p.deliver(req, Result{ID: id, Generation: req.Generation, Err: ErrClosed})
+		r := errResult(ErrClosed, Metadata{ID: id})
+		r.ID, r.Generation = id, req.Generation
+		p.deliver(req, r)
 		return Ticket{}
 	}
 	rung := p.rungFor(id, req.Size)
 
 	if err := p.backoffCheck(id, req.Source); err != nil {
 		p.counters.backoff.Add(1)
-		p.deliver(req, Result{ID: id, Generation: req.Generation, Size: rung, Err: err})
+		r := errResult(err, Metadata{ID: id})
+		r.ID, r.Generation, r.Size = id, req.Generation, rung
+		p.deliver(req, r)
 		return Ticket{}
 	}
 
 	j, wid, evicted, joined, promoted, ok := p.sched.add(id, rung, req)
 	for _, e := range evicted {
 		p.counters.dropped.Add(1)
-		p.finish(e, Result{ID: e.id, Size: e.rung, Err: ErrQueueFull}, nil)
+		p.finish(e, errResult(ErrQueueFull, Metadata{ID: e.id}), nil)
 	}
 	if !ok {
 		p.counters.dropped.Add(1)
-		p.deliver(req, Result{ID: id, Generation: req.Generation, Size: rung, Err: ErrQueueFull})
+		r := errResult(ErrQueueFull, Metadata{ID: id})
+		r.ID, r.Generation, r.Size = id, req.Generation, rung
+		p.deliver(req, r)
 		return Ticket{}
 	}
 	if joined {
@@ -641,7 +736,7 @@ func (p *Pipeline) backoffCheck(id ID, src Source) error {
 		if _, canProbe := src.(Prober); canProbe {
 			return nil
 		}
-		return fmt.Errorf("%w: %v", ErrBackoff, f.last)
+		return fmt.Errorf("%w: %v", ErrQuarantined, f.last)
 	}
 	return nil
 }
@@ -659,7 +754,7 @@ func (p *Pipeline) quarantineCheck(id ID, rev string) error {
 		delete(p.fails, id)
 		return nil
 	}
-	return fmt.Errorf("%w: %v", ErrBackoff, f.last)
+	return fmt.Errorf("%w: %v", ErrQuarantined, f.last)
 }
 
 // noteFailure records a failure and computes the next retry moment.
@@ -736,7 +831,7 @@ func (p *Pipeline) finish(j *job, res Result, t *Thumbnail) {
 	ws := p.sched.done(j)
 	res.ID = j.id
 	res.Size = j.rung
-	if res.Err != nil {
+	if !res.OK() {
 		p.counters.failed.Add(1)
 	} else {
 		p.counters.completed.Add(1)
@@ -762,11 +857,16 @@ func (p *Pipeline) finish(j *job, res Result, t *Thumbnail) {
 // point 5.
 //
 // A visible result waits for a slot. A prefetch result that finds the queue
-// full is delivered *without* its image and with [ErrQueueFull]: the thumbnail
-// stays in the CPU cache, so a later request for it is a memory hit, and the
-// requester learns that it has to ask again rather than waiting for a callback
-// that never comes. Dropping the callback silently would be the one behaviour
-// that cannot be debugged.
+// full is delivered *without* its image and with [Result.ImageWithheld] set:
+// the thumbnail stays in the CPU cache, so [Pipeline.Lookup] finds it on the
+// next frame, and the requester learns that the picture is there rather than
+// waiting for a callback that never comes. Dropping the callback silently
+// would be the one behaviour that cannot be debugged.
+//
+// What it must not do is stamp an error on a result that succeeded. That was
+// the defect WU-R fixes: a withheld thumbnail arrived as [ErrQueueFull], every
+// consumer read "this picture failed", and the picture it was about was
+// already decoded and resident.
 func (p *Pipeline) deliverBounded(prio Priority, fn func(Result), r Result, t *Thumbnail) {
 	acquired := false
 	select {
@@ -787,8 +887,11 @@ func (p *Pipeline) deliverBounded(prio Priority, fn func(Result), r Result, t *T
 			t.Release()
 		}
 		r.Image = nil
-		if r.Err == nil {
-			r.Err = ErrQueueFull
+		if r.OK() {
+			// A successful result whose slot was unavailable. Stamping
+			// an error on it would be a lie: the thumbnail is in the
+			// CPU cache and Lookup finds it.
+			r.ImageWithheld = true
 		}
 		p.call(func() { fn(r) })
 		return
@@ -832,12 +935,12 @@ func (p *Pipeline) produce(ctx context.Context, j *job) (Result, *Thumbnail) {
 	rev, known := p.resolve(ctx, j, ns)
 	if known.err != nil {
 		p.noteFailure(j.id, rev, known.err)
-		return Result{Err: known.err, Metadata: meta}, nil
+		return errResult(known.err, meta), nil
 	}
 	p.clearFailureOnNewRevision(j.id, rev)
 	if err := p.quarantineCheck(j.id, rev); err != nil {
 		p.counters.backoff.Add(1)
-		return Result{Err: err, Metadata: meta}, nil
+		return errResult(err, meta), nil
 	}
 
 	if rev != "" && known.haveShape {
@@ -865,7 +968,7 @@ func (p *Pipeline) produce(ctx context.Context, j *job) (Result, *Thumbnail) {
 	t, out, err := p.fetchDecode(ctx, j, ns, rev, known)
 	if err != nil {
 		p.noteFailure(j.id, rev, err)
-		return Result{Err: err, Metadata: meta}, nil
+		return errResult(err, meta), nil
 	}
 	p.noteSuccess(j.id)
 	return out, t
@@ -959,7 +1062,8 @@ func (p *Pipeline) fromDisk(ctx context.Context, key Key) (*Thumbnail, bool) {
 		return nil, false
 	}
 	t := &Thumbnail{pix: pix, w: w, h: h, stride: w * 4, bytes: n,
-		orientation: key.Orientation, ladder: key.Size, owner: p.pixels}
+		orientation: key.Orientation, ladder: key.Size, revision: key.Revision,
+		owner: p.pixels}
 	t.refs.Store(1)
 	p.pix.put(key, t)
 	return t, true
@@ -972,11 +1076,25 @@ func (p *Pipeline) fromDisk(ctx context.Context, key Key) (*Thumbnail, bool) {
 // deadlock: the cache is discardable memory and the request is not, so the
 // cache gives way.
 func (p *Pipeline) reservePixels(ctx context.Context, n int64) error {
-	if p.pixels.tryAcquire(n) {
-		return nil
+	if n > p.cfg.PixelBudget {
+		return ErrTooLarge
 	}
-	p.pix.evictFor(p.pixels, n)
-	return p.pixels.acquire(ctx, n)
+	for {
+		if p.pixels.tryAcquire(n) {
+			return nil
+		}
+		p.pix.evictFor(p.pixels, n)
+		if p.pixels.tryAcquire(n) {
+			return nil
+		}
+		// Wait for *any* release and then evict again. Evicting once and
+		// then blocking inside acquire is what made this stall: by the
+		// time bytes came back the cache had refilled behind the waiter,
+		// and the waiter had already had its one look at it.
+		if err := p.pixels.waitRelease(ctx); err != nil {
+			return err
+		}
+	}
 }
 
 // fetchDecode is stages two and three.
@@ -987,22 +1105,49 @@ func (p *Pipeline) fetchDecode(ctx context.Context, j *job, ns, rev string, know
 		known.skipNetwork = false
 	}
 
-	// Reserve the encoded bytes before opening anything. An unknown length
-	// costs a reservation of the whole limit, which is coarse on purpose:
-	// the alternative is reading an unknown quantity into memory and finding
-	// out afterwards.
-	reserve := j.encoded
-	if reserve <= 0 || reserve > p.cfg.MaxEncodedBytes {
-		reserve = p.cfg.MaxEncodedBytes
+	// Reserve the encoded bytes against [Config.InputBudget].
+	//
+	// A [Prober] told us the size in stage one, so its reservation is exact.
+	// A [Fetcher] did not, and reserving [Config.MaxEncodedBytes] on the way
+	// in — which is what this did before WU-R — reserves 64 MiB of a 96 MiB
+	// budget for a 90 KiB JPEG and makes HTTP single threaded whatever
+	// [Config.Workers] says. It is measurable from outside: the example
+	// gallery reported an input peak of 64 MiB plus one file.
+	//
+	// So an unknown size reserves a token, and the reservation is corrected
+	// once the response headers have arrived and Content-Length is known.
+	// The correction *releases before it acquires*. Growing a held
+	// reservation would be hold-and-wait, and N workers each holding part of
+	// the budget and waiting for the rest is a deadlock that no amount of
+	// budget makes impossible.
+	held := int64(0)
+	defer func() { p.input.release(held) }()
+	reserve := func(n int64) error {
+		if n <= 0 || n > p.cfg.MaxEncodedBytes {
+			n = p.cfg.MaxEncodedBytes
+		}
+		if n == held {
+			return nil
+		}
+		p.input.release(held)
+		held = 0
+		if err := p.input.acquire(ctx, n); err != nil {
+			return err
+		}
+		held = n
+		return nil
 	}
 	if j.encoded > p.cfg.MaxEncodedBytes {
 		return nil, Result{}, fmt.Errorf("%w: %d encoded bytes exceed the limit of %d",
 			ErrTooLarge, j.encoded, p.cfg.MaxEncodedBytes)
 	}
-	if err := p.input.acquire(ctx, reserve); err != nil {
+	first := j.encoded
+	if first <= 0 {
+		first = min(inputProbeBytes, p.cfg.MaxEncodedBytes)
+	}
+	if err := reserve(first); err != nil {
 		return nil, Result{}, err
 	}
-	defer p.input.release(reserve)
 
 	var (
 		body io.ReadCloser
@@ -1065,19 +1210,28 @@ func (p *Pipeline) fetchDecode(ctx context.Context, j *job, ns, rev string, know
 		return nil, Result{}, fmt.Errorf("%w: %d encoded bytes exceed the limit of %d",
 			ErrTooLarge, j.encoded, p.cfg.MaxEncodedBytes)
 	}
+	// Now that the length is known — or known to be unknown — correct the
+	// reservation to the real one.
+	if err := reserve(j.encoded); err != nil {
+		return nil, Result{}, err
+	}
 
 	// Read the whole encoded picture, bounded. It is read into memory rather
 	// than streamed so that the input budget accounts real bytes and so that
 	// the header can be probed and then decoded without a second open; the
 	// project plan, section 9, asks for "begrenzte komprimierte
 	// Eingabedaten" and this is the form in which that is checkable.
-	raw, err := readAllLimited(body, p.cfg.MaxEncodedBytes)
+	// The read is bounded by what was reserved, not by the configured
+	// maximum, so that the budget tells the truth: a source that declares
+	// 90 KiB and then sends 60 MiB would otherwise occupy memory nobody
+	// accounted for. When the length was unknown the reservation is the
+	// configured maximum and this is the old bound exactly.
+	raw, err := readAllLimited(body, held)
 	if err != nil {
 		return nil, Result{}, err
 	}
 
-	hdr := header{buf: raw, rest: bytes.NewReader(raw)}
-	info, err := probeHeader(hdr, known.mime, false)
+	info, err := probeHeader(raw, known.mime)
 	if err != nil {
 		return nil, Result{}, err
 	}

@@ -95,7 +95,20 @@ type imageRequest struct {
 	inFlight bool
 	key      imageKey
 	ok       bool
-	err      error
+	// failure is a permanent failure — [asset.Result.Failure] — and is the
+	// only thing that latches. A retryable one never gets here; see
+	// [imageService.request].
+	failure error
+	// retryPass is the layout pass at which another attempt is allowed
+	// after a retryable refusal. It is the frame counter the retry is rate
+	// limited by: at most one request per picture per layout pass.
+	//
+	// The retry loop terminates without a cap on the number of attempts,
+	// because every retryable condition is itself bounded. Queue saturation
+	// passes when the queue drains; a timed backoff ends after
+	// [asset.BackoffPolicy].Attempts, and the source is then quarantined,
+	// which arrives as a [asset.Result.Failure] and settles here for good.
+	retryPass uint64
 	// w and h are the oriented pixel dimensions the pipeline reported, used
 	// for the aspect ratio before a texture exists.
 	w, h uint32
@@ -236,17 +249,29 @@ func (s *imageService) state(id asset.ID, size int) *imageRequest {
 // request schedules a fetch for src at size, unless one is already in flight
 // or has already settled.
 //
-// A settled failure is *not* retried here. [asset.BackoffPolicy] already
-// refuses a hammered source, and retrying from the frame loop would turn one
-// failing picture into one refused request per frame for the life of the
-// process. The way back is [asset.Pipeline.Forget] plus [ForgetImage].
-func (s *imageService) request(src asset.Source, size int, notify func()) *imageRequest {
+// # What latches and what does not
+//
+// A *permanent* failure — [asset.Result.Failure] — settles and is not retried.
+// [asset.BackoffPolicy] already refuses a hammered source, and retrying from
+// the frame loop would turn one broken picture into one refused request per
+// frame for the life of the process. The way back is
+// [asset.Pipeline.Forget] plus [ForgetImage].
+//
+// A *retryable* refusal — [asset.Result.Retry], which is queue saturation or a
+// source waiting out its backoff — does not settle anything, because it says
+// nothing about the picture. The state is cleared and the next layout pass
+// asks again, at most once per pass. That is the whole fix: a moment of
+// pressure used to blank a picture until the process ended.
+//
+// pass is [gift.LayoutContext.Pass]; it is the frame counter the retry is
+// rate limited by.
+func (s *imageService) request(src asset.Source, size int, pass uint64, notify func()) *imageRequest {
 	id := src.Metadata().ID
 	r := s.state(id, size)
 	if notify != nil {
 		r.notify = append(r.notify, notify)
 	}
-	if s.pipe == nil || r.inFlight || r.ok || r.err != nil {
+	if s.pipe == nil || r.inFlight || r.ok || r.failure != nil || pass < r.retryPass {
 		return r
 	}
 	r.inFlight = true
@@ -258,9 +283,19 @@ func (s *imageService) request(src asset.Source, size int, notify func()) *image
 			// On the UI executor: asset.Config.Deliver is gift.App.Post.
 			r.inFlight = false
 			r.ticket = asset.Ticket{}
-			if res.Err != nil {
-				r.err = res.Err
-			} else {
+			switch {
+			case res.Failure != nil:
+				r.failure = res.Failure
+			case res.Retry != nil:
+				// Nothing is known about the picture and nothing is
+				// remembered about it. The notifications below wake
+				// the waiting nodes and the next layout pass asks
+				// again.
+				r.retryPass = pass + 1
+			default:
+				// A result with ImageWithheld set is a success: the
+				// pixels are in the CPU cache and resolve finds them
+				// with Lookup on the next frame.
 				r.key = imageKey{id: res.ID, rung: res.Size, rev: res.Metadata.Revision}
 				r.w, r.h = res.Metadata.Width, res.Metadata.Height
 				r.ok = true
@@ -564,7 +599,7 @@ func (n *imageNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Siz
 			want = 1
 		}
 	}
-	n.req = images.request(n.src, want, ctx.Invalidator())
+	n.req = images.request(n.src, want, ctx.Pass(), ctx.Invalidator())
 	ctx.ReportOverflow(geom.Size{})
 	return out
 }
@@ -651,6 +686,8 @@ func ImagePipelineStats() metrics.AssetStats {
 		Failed:       s.Failed,
 
 		BackoffRefused: s.BackoffRefused,
+		Quarantined:    s.Quarantined,
+		NotModified:    s.NotModified,
 		Decodes:        s.Decodes,
 		MemoryHits:     s.MemoryHits,
 		DiskHits:       s.DiskHits,
@@ -660,6 +697,7 @@ func ImagePipelineStats() metrics.AssetStats {
 		InputBytes: s.Input.InUse, InputPeak: s.Input.Peak, InputLimit: s.Input.Limit,
 		DecodeBytes: s.Decode.InUse, DecodePeak: s.Decode.Peak, DecodeLimit: s.Decode.Limit,
 		PixelBytes: s.Pixels.InUse, PixelPeak: s.Pixels.Peak, PixelLimit: s.Pixels.Limit,
+		InputWaits: s.Input.Waits, DecodeWaits: s.Decode.Waits, PixelWaits: s.Pixels.Waits,
 
 		CacheEntries: s.CacheEntries,
 		DiskBytes:    s.Disk.Bytes,

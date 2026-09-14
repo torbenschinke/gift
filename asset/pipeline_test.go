@@ -1,7 +1,12 @@
 package asset_test
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"strings"
 	"testing"
 	"time"
@@ -78,8 +83,8 @@ func TestPipelineDecodesJPEGAndPNG(t *testing.T) {
 
 	res := c.waitFor(t, 2)
 	for _, r := range res {
-		if r.Err != nil {
-			t.Fatalf("%s: %v", r.ID, r.Err)
+		if r.Err() != nil {
+			t.Fatalf("%s: %v", r.ID, r.Err())
 		}
 		if r.Image == nil {
 			t.Fatalf("%s: no image", r.ID)
@@ -122,8 +127,8 @@ func TestSmallPictureIsNotEnlarged(t *testing.T) {
 	p.Request(asset.Request{Source: asset.File(path), Size: 256,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if r.Err != nil {
-		t.Fatal(r.Err)
+	if r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	if r.Image.Width() != 16 || r.Image.Height() != 9 {
 		t.Errorf("thumbnail = %dx%d, want the original 16x9", r.Image.Width(), r.Image.Height())
@@ -150,8 +155,8 @@ func TestPixelLimitIsRefusedBeforeAllocating(t *testing.T) {
 	p.Request(asset.Request{Source: asset.File(path), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if !errors.Is(r.Err, asset.ErrTooLarge) {
-		t.Fatalf("err = %v, want ErrTooLarge", r.Err)
+	if !errors.Is(r.Err(), asset.ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", r.Err())
 	}
 	if r.Image != nil {
 		t.Error("a refused picture must not carry an image")
@@ -178,8 +183,8 @@ func TestEncodedSizeLimitIsEnforced(t *testing.T) {
 	p.Request(asset.Request{Source: asset.File(path), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if !errors.Is(r.Err, asset.ErrTooLarge) {
-		t.Fatalf("err = %v, want ErrTooLarge", r.Err)
+	if !errors.Is(r.Err(), asset.ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", r.Err())
 	}
 }
 
@@ -199,7 +204,7 @@ func TestCorruptPictureFails(t *testing.T) {
 		Size: 64, Priority: asset.Visible, OnResult: c.onResult})
 
 	for _, r := range c.waitFor(t, 2) {
-		if r.Err == nil {
+		if r.Err() == nil {
 			t.Errorf("%s: decoded successfully, want an error", r.ID)
 		}
 		if r.Image != nil {
@@ -226,8 +231,8 @@ func TestOrientationSwapsProbedDimensions(t *testing.T) {
 		Priority: asset.Visible, OnResult: c.onResult})
 
 	r := c.waitFor(t, 1)[0]
-	if r.Err != nil {
-		t.Fatal(r.Err)
+	if r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	if r.Orientation != asset.OrientationRightTop {
 		t.Fatalf("Orientation = %v, want right-top", r.Orientation)
@@ -273,8 +278,8 @@ func TestOrientationPixelsAreActuallyRotated(t *testing.T) {
 		Size: 64, Priority: asset.Visible, OnResult: c.onResult})
 	turned := c.waitFor(t, 1)[0]
 
-	if plain.Err != nil || turned.Err != nil {
-		t.Fatalf("errors: %v / %v", plain.Err, turned.Err)
+	if plain.Err() != nil || turned.Err() != nil {
+		t.Fatalf("errors: %v / %v", plain.Err(), turned.Err())
 	}
 	pp, tp := plain.Image.Pix(), turned.Image.Pix()
 	w, h := plain.Image.Width(), plain.Image.Height()
@@ -368,8 +373,8 @@ func TestRequestsAreDeduplicated(t *testing.T) {
 	}
 	seen := make(map[uint64]bool)
 	for _, r := range res {
-		if r.Err != nil {
-			t.Fatalf("result error: %v", r.Err)
+		if r.Err() != nil {
+			t.Fatalf("result error: %v", r.Err())
 		}
 		if seen[r.Generation] {
 			t.Errorf("generation %d delivered twice", r.Generation)
@@ -570,10 +575,10 @@ func TestFailingSourceIsNotHammered(t *testing.T) {
 	res := c.waitFor(t, n)
 	backoffs := 0
 	for _, r := range res {
-		if r.Err == nil {
+		if r.Err() == nil {
 			t.Fatal("a failing source produced a success")
 		}
-		if errors.Is(r.Err, asset.ErrBackoff) {
+		if errors.Is(r.Err(), asset.ErrBackoff) {
 			backoffs++
 		}
 	}
@@ -606,8 +611,8 @@ func TestPermanentFailureIsRetriedOnlyAfterARevisionChange(t *testing.T) {
 		t.Fatalf("first request opened %d times", got)
 	}
 	r := req(2)
-	if !errors.Is(r.Err, asset.ErrBackoff) {
-		t.Errorf("second request err = %v, want ErrBackoff", r.Err)
+	if !errors.Is(r.Err(), asset.ErrBackoff) {
+		t.Errorf("second request err = %v, want ErrBackoff", r.Err())
 	}
 	if got := src.count(); got != 1 {
 		t.Errorf("quarantined source was opened again (%d)", got)
@@ -682,8 +687,8 @@ func TestUnknownDimensionsAreCorrectedThroughTheCollection(t *testing.T) {
 	for i, s := range srcs {
 		p.Request(asset.Request{Source: s, Size: 64, Priority: asset.Visible,
 			Generation: uint64(i), OnResult: func(r asset.Result) {
-				if r.Err != nil {
-					t.Errorf("%s: %v", r.ID, r.Err)
+				if r.Err() != nil {
+					t.Errorf("%s: %v", r.ID, r.Err())
 					return
 				}
 				batch = append(batch, r.Correction())
@@ -713,4 +718,176 @@ func TestUnknownDimensionsAreCorrectedThroughTheCollection(t *testing.T) {
 	if coll.StructureVersion() != beforeStruct {
 		t.Error("a correction batch moved the structure version; tiles would be unbound for nothing")
 	}
+}
+
+// --- WU-R: every EXIF orientation, in pixels ---------------------------------
+
+// edge names where the EXIF specification puts the stored 0th row and 0th
+// column of a picture. That sentence *is* the definition of tag 0x0112, and
+// deriving the transform from it here rather than from the eight cases in
+// asset/orientation.go is the point: a test that repeats the implementation's
+// arithmetic proves that the code equals itself.
+type edge int
+
+const (
+	edgeTop edge = iota
+	edgeBottom
+	edgeLeft
+	edgeRight
+)
+
+// exifPlacement is the table of EXIF 2.32, tag Orientation, verbatim:
+// where the 0th row and the 0th column of the stored grid end up in the
+// picture the viewer sees.
+var exifPlacement = map[asset.Orientation]struct{ row, col edge }{
+	asset.OrientationTopLeft:     {edgeTop, edgeLeft},
+	asset.OrientationTopRight:    {edgeTop, edgeRight},
+	asset.OrientationBottomRight: {edgeBottom, edgeRight},
+	asset.OrientationBottomLeft:  {edgeBottom, edgeLeft},
+	asset.OrientationLeftTop:     {edgeLeft, edgeTop},
+	asset.OrientationRightTop:    {edgeRight, edgeTop},
+	asset.OrientationRightBottom: {edgeRight, edgeBottom},
+	asset.OrientationLeftBottom:  {edgeLeft, edgeBottom},
+}
+
+// displayPos maps a stored pixel to its displayed position, from the placement
+// sentence alone.
+//
+// The stored row index runs along whichever display axis its 0th row was
+// placed on, and likewise the column index. A placement on "top" or "left"
+// counts up from there, one on "bottom" or "right" counts down — and the
+// extent it counts down from is the *displayed* extent, which is why the axis
+// swapping cases use the other dimension.
+func displayPos(o asset.Orientation, x, y, w, h int) (int, int) {
+	pl := exifPlacement[o]
+	dw, dh := o.Oriented(w, h)
+	var dx, dy int
+	switch pl.row {
+	case edgeTop:
+		dy = y
+	case edgeBottom:
+		dy = dh - 1 - y
+	case edgeLeft:
+		dx = y
+	case edgeRight:
+		dx = dw - 1 - y
+	}
+	switch pl.col {
+	case edgeLeft:
+		dx = x
+	case edgeRight:
+		dx = dw - 1 - x
+	case edgeTop:
+		dy = x
+	case edgeBottom:
+		dy = dh - 1 - x
+	}
+	return dx, dy
+}
+
+// TestEveryOrientationProducesTheRightPixels is the test WU-R adds because
+// TestOrientationOfEveryValue promises "every value" and checks enum
+// arithmetic. Only orientation 3 had a pixel test, and 3 is its own inverse,
+// so it is the one value that cannot tell a rotation from a mirror plus a
+// rotation. The four mirrored values — where transpose and transverse are
+// classically swapped — had no pixel coverage at all.
+func TestEveryOrientationProducesTheRightPixels(t *testing.T) {
+	const w, h = 64, 32
+	// Four flat quadrants, so that a lossy codec still answers the question
+	// "which corner is this" unambiguously.
+	quad := [4]color.RGBA{
+		{220, 30, 30, 255},  // stored top left
+		{30, 200, 60, 255},  // stored top right
+		{40, 60, 220, 255},  // stored bottom left
+		{230, 210, 40, 255}, // stored bottom right
+	}
+	src := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			i := 0
+			if x >= w/2 {
+				i |= 1
+			}
+			if y >= h/2 {
+				i |= 2
+			}
+			src.SetRGBA(x, y, quad[i])
+		}
+	}
+	var enc bytes.Buffer
+	if err := jpeg.Encode(&enc, src, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	for o := asset.OrientationTopLeft; o <= asset.OrientationLeftBottom; o++ {
+		t.Run(o.String(), func(t *testing.T) {
+			path := writeFile(t, dir, fmt.Sprintf("o%d.jpg", o),
+				withEXIFOrientation(t, enc.Bytes(), o))
+			c := newCollector()
+			cfg := baseConfig(c)
+			cfg.Sizes = []int{64}
+			p := asset.NewPipeline(cfg)
+			defer p.Close()
+			p.Request(asset.Request{Source: asset.File(path), Size: 64,
+				Priority: asset.Visible, OnResult: c.onResult})
+			r := c.waitFor(t, 1)[0]
+			if r.Err() != nil {
+				t.Fatal(r.Err())
+			}
+			if r.Orientation != o {
+				t.Fatalf("Orientation = %v, want %v", r.Orientation, o)
+			}
+			tn := r.Image
+			if tn == nil {
+				t.Fatal("no thumbnail")
+			}
+			dw, dh := o.Oriented(w, h)
+			if tn.Width() != dw || tn.Height() != dh {
+				t.Fatalf("thumbnail is %dx%d, want the oriented %dx%d",
+					tn.Width(), tn.Height(), dw, dh)
+			}
+			if r.Metadata.Width != uint32(dw) || r.Metadata.Height != uint32(dh) {
+				t.Errorf("metadata reports %dx%d, want %dx%d",
+					r.Metadata.Width, r.Metadata.Height, dw, dh)
+			}
+			// The centre of each stored quadrant must appear where the
+			// specification puts it, and nowhere else.
+			for i, want := range quad {
+				sx, sy := w/4, h/4
+				if i&1 != 0 {
+					sx = 3 * w / 4
+				}
+				if i&2 != 0 {
+					sy = 3 * h / 4
+				}
+				dx, dy := displayPos(o, sx, sy, w, h)
+				got := thumbPixel(t, tn, dx, dy)
+				if !nearColor(got, want, 24) {
+					t.Errorf("stored quadrant %d (%d,%d) shows %v at displayed (%d,%d), want %v",
+						i, sx, sy, got, dx, dy, want)
+				}
+			}
+		})
+	}
+}
+
+func thumbPixel(t testing.TB, tn *asset.Thumbnail, x, y int) color.RGBA {
+	t.Helper()
+	if x < 0 || y < 0 || x >= tn.Width() || y >= tn.Height() {
+		t.Fatalf("sample (%d,%d) is outside the %dx%d thumbnail", x, y, tn.Width(), tn.Height())
+	}
+	i := y*tn.Stride() + x*4
+	p := tn.Pix()
+	return color.RGBA{p[i], p[i+1], p[i+2], p[i+3]}
+}
+
+func nearColor(a, b color.RGBA, tol int) bool {
+	d := func(x, y uint8) int {
+		if x > y {
+			return int(x) - int(y)
+		}
+		return int(y) - int(x)
+	}
+	return d(a.R, b.R) <= tol && d(a.G, b.G) <= tol && d(a.B, b.B) <= tol
 }

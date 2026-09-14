@@ -1,9 +1,7 @@
 package asset
 
 import (
-	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -11,11 +9,6 @@ import (
 	"io"
 	"sync"
 )
-
-// headerBytes is how much of a file the pipeline buffers to answer "how big is
-// it and which way up". It covers a JPEG's SOI, its EXIF APP1 and its first
-// SOF marker, and a PNG's IHDR, for everything a camera or an editor produces.
-const headerBytes = 64 << 10
 
 // Decoder turns encoded bytes into an image.
 //
@@ -135,28 +128,8 @@ func (pngDecoder) Sniff(h []byte) bool {
 // room for the scratch.
 func (pngDecoder) MemoryFactor() float64 { return 9 }
 
-// header is the buffered head of a stream plus the reader that continues it.
-type header struct {
-	buf []byte
-	// rest replays buf and then continues with the original stream.
-	rest io.Reader
-}
-
-// readHeader buffers up to headerBytes from r without consuming them: the
-// returned reader replays everything.
-func readHeader(r io.Reader) (header, error) {
-	buf := make([]byte, headerBytes)
-	n, err := io.ReadFull(r, buf)
-	switch {
-	case err == nil || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF):
-	default:
-		return header{}, err
-	}
-	buf = buf[:n]
-	return header{buf: buf, rest: io.MultiReader(bytes.NewReader(buf), r)}, nil
-}
-
-// probeInfo is what the buffered head of a stream reveals.
+// probeInfo is what the encoded bytes of a picture reveal about it before it
+// is decoded.
 type probeInfo struct {
 	// W and H are the *oriented* dimensions, because that is what
 	// [Metadata] is defined to carry and what the gallery lays out with.
@@ -171,34 +144,30 @@ type probeInfo struct {
 	Dec              Decoder
 }
 
-// probeHeader answers dimensions, media type and orientation from the buffered
-// head of a stream.
+// probeHeader answers dimensions, media type and orientation from the encoded
+// bytes.
 //
-// allowStream permits a fallback that reads past the buffered head when the
-// head was too small to hold the configuration, which happens for a file with
-// a very large EXIF block. The fallback *consumes* the stream, so only the
-// probing path, which re-opens the source afterwards, may allow it.
-func probeHeader(h header, mimeType string, allowStream bool) (probeInfo, error) {
-	dec, mt, ok := decoderFor(h.buf, mimeType)
+// It takes the whole encoded picture, which the pipeline has in memory anyway
+// and has already bounded against [Config.MaxEncodedBytes]. An earlier version
+// took a buffered head and a reader for the rest, with a fallback that
+// consumed the stream when the head was too small; nothing has called it that
+// way since the input became a byte slice, and WU-R removed the unused half
+// rather than leave a second, untested path through this function.
+func probeHeader(raw []byte, mimeType string) (probeInfo, error) {
+	dec, mt, ok := decoderFor(raw, mimeType)
 	if !ok {
 		return probeInfo{}, ErrNotAPicture
 	}
 	info := probeInfo{MIME: mt, Dec: dec}
-	cfg, err := dec.DecodeConfig(bytes.NewReader(h.buf))
+	cfg, err := dec.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
-		if !allowStream {
-			return info, fmt.Errorf("%w: %v", ErrNotAPicture, err)
-		}
-		cfg, err = dec.DecodeConfig(bufio.NewReader(h.rest))
-		if err != nil {
-			return info, fmt.Errorf("%w: %v", ErrNotAPicture, err)
-		}
+		return info, fmt.Errorf("%w: %v", ErrNotAPicture, err)
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 {
 		return info, ErrNotAPicture
 	}
 	if mt == MIMEJPEG {
-		info.Orientation = exifOrientation(h.buf)
+		info.Orientation = exifOrientation(raw)
 	}
 	info.StoredW, info.StoredH = cfg.Width, cfg.Height
 	info.W, info.H = info.Orientation.Oriented(cfg.Width, cfg.Height)

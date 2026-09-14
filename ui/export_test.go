@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"github.com/torbenschinke/gift/asset"
 	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/internal/text"
 )
@@ -50,3 +51,34 @@ func ResetImageService() { images.setPipeline(nil) }
 // uploaded. It is the number the "ui.Image and the gallery share resources"
 // assertion is made on.
 func ImageServiceUploads() uint64 { return images.uploads }
+
+// TextureKeysForTest returns the number of resident texture keys and how many
+// distinct revisions the service holds for one picture.
+//
+// It is how the "one set of pixels, one texture" property of WU-R is asserted:
+// two entries for one picture and one rung means two keys were built from two
+// different revisions, which is the defect and not merely a cache miss.
+func TextureKeysForTest(id asset.ID, rung int) int {
+	n := 0
+	for k := range images.tex {
+		if k.id == id && k.rung == rung {
+			n++
+		}
+	}
+	return n
+}
+
+// WarmKeyRevisionForTest asks the service for the key a warm lookup produces,
+// which is the one the gallery writes at bind time.
+func WarmKeyRevisionForTest(id asset.ID, size int) (string, bool) {
+	if images.pipe == nil {
+		return "", false
+	}
+	t, ok := images.pipe.Lookup(id, size)
+	if !ok {
+		return "", false
+	}
+	rev := t.Revision()
+	t.Release()
+	return rev, true
+}

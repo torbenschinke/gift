@@ -1069,6 +1069,28 @@ Kompatibilitaetspolitik ersetzt.
   sichtbaren Fehlerzustand der betroffenen Kachel, nie zum Abbruch des Frames.
 - Ein Fehler erzeugt keinen Retry-Sturm. Fehlgeschlagene Quellen bekommen einen
   Backoff und werden bis zur Revisionsaenderung nicht erneut geladen.
+- **Vorlaeufig gegenueber dauerhaft ist ein Typ, kein Kommentar.** Nachtrag aus
+  Review-Gate 5. Die Pipeline unterscheidet sorgfaeltig zwischen Fehlern, die
+  ein erneuter Versuch behebt (Saettigung, Backoff), und solchen, die er nicht
+  behebt (kein Bild, zu gross, kaputte URL) - und reichte dem Konsumenten dann
+  ein blankes `error` in einem Feld. **Beide** Konsumenten haben daraufhin eine
+  voruebergehende Ablehnung dauerhaft gemerkt: ein schneller Scroll vergiftete
+  die Queue, die Queue lehnte ab, und die Kachel blieb fuer immer leer.
+
+  Konsequenz: `Result` hat kein Feld mehr, das "ein Fehler" bedeutet. Es hat
+  `Retry` und `Failure`, und beide Namen sagen, was zu tun ist. `Err` ist eine
+  Methode, sodass `if res.Err != nil` nicht mehr durch `go vet` kommt. Die
+  Regel dahinter gilt ueber diesen Fall hinaus: **wo zwei Pakete sich ueber die
+  Bedeutung eines Fehlers einig sein muessen, gehoert die Unterscheidung in den
+  Typ und nicht in die Dokumentation.** Ein dritter Konsument soll den Fehler
+  nicht wiederholen koennen, nicht bloss davor gewarnt werden.
+
+  Nachtrag dazu: nicht jeder Backoff ist voruebergehend. Eine unter Quarantaene
+  stehende Quelle liefert Backoff und kommt ohne Revisionsaenderung nie wieder
+  frei. Waere die als wiederholbar eingestuft worden, haette ein 404 in einem
+  stehenden Fenster eine abgelehnte Anfrage und ein Relayout **je Frame,
+  dauerhaft** erzeugt - eine leere Kachel gegen eine Endlosschleife getauscht.
+  Deshalb ist Quarantaene ein eigener, endgueltiger Fehler.
 - Gift ruft in keinem Pfad `os.Exit` oder `log.Fatal`.
 
 ### Logging

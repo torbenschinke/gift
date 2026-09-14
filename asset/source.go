@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -254,17 +255,44 @@ const MaxHTTPFreshness = 24 * time.Hour
 // # Credentials
 //
 // The URL used for the request and the URL used for identity are not the same
-// string. Userinfo is removed from the identity, and query parameters named by
-// [HTTPSource.WithSecretQuery] are replaced by a fixed placeholder. Neither the
-// [ID], nor [HTTPSource.String], nor any error this type produces contains a
-// credential, and errors from net/http are unwrapped rather than passed on,
-// because a *url.Error carries the requested URL. The project plan, section 9
-// and section 15, forbids credentials in cache file names and in diagnostic
+// string. What the identity contains is exactly this:
+//
+//   - The scheme, the lowercased host and port, and the path, verbatim.
+//   - No userinfo, and no fragment.
+//   - No query, unless a parameter was named by [HTTPSource.WithPublicQuery].
+//     Everything else collapses into a single opaque parameter holding a
+//     truncated SHA-256 of the redacted parameters, so that two URLs that
+//     differ only in their query still have different identities and their own
+//     cache entries, while nothing of what they differ in is legible.
+//
+// Redacting the query by default is a change WU-R made after a review
+// demonstrated the previous rule leaking. The previous rule redacted only the
+// parameters an application had declared with [HTTPSource.WithSecretQuery],
+// which makes the safe behaviour the one you have to remember: a pre-signed
+// URL whose signature parameter is spelled "signature" rather than "sig"
+// carried the signature into the ID, into every log line and into the fetch
+// error. The default is now redaction and legibility is the opt-in.
+//
+// # What is *not* redacted, and cannot be
+//
+// The path. It is the only part of a URL that distinguishes two pictures in a
+// readable way, and an ID that hashed it would be useless in a diagnostic and
+// would still not be a secret store. A credential that travels in a path
+// segment therefore appears in the [ID], in [HTTPSource.String] and in any
+// error naming the source. Put credentials in a header, in the query or in a
+// signing transport plus [HTTPSource.WithCredential]; do not put them in a
+// path.
+//
+// Errors from net/http are unwrapped rather than passed on, because a
+// *url.Error carries the requested URL. The project plan, section 9 and
+// section 15, forbids credentials in cache file names and in diagnostic
 // output; see TestCredentialsNeverLeak.
 //
 // The credentials still have to reach the cache *key*, or two users of the same
-// endpoint would share entries. They reach it through
-// [HTTPSource.WithCredential], which the pipeline hashes and never stores.
+// endpoint would share entries. A query credential reaches it by itself,
+// through the fingerprint above. One that travels by another route reaches it
+// through [HTTPSource.WithHeader] or [HTTPSource.WithCredential], which the
+// pipeline hashes and never stores.
 type HTTPSource struct {
 	req    *url.URL // the real URL, including any credentials
 	id     ID       // the redacted identity
@@ -272,6 +300,7 @@ type HTTPSource struct {
 	header http.Header
 	client *http.Client
 	secret []string
+	public []string
 	method string
 }
 
@@ -330,12 +359,32 @@ func (s *HTTPSource) WithCredential(fp string) *HTTPSource {
 	return s
 }
 
-// WithSecretQuery names query parameters that carry credentials, for example
-// the signature of a pre-signed URL.
+// WithPublicQuery names query parameters that are safe to keep legible in the
+// identity, for example a width or a format.
 //
-// They are removed from the identity and from every diagnostic string, and
-// their values are folded into the cache namespace instead. They are still
-// sent.
+// Every other parameter is redacted; see the type documentation. A parameter
+// named here is kept verbatim in the [ID], in [HTTPSource.String] and in every
+// error, so name only parameters that are certainly not credentials.
+func (s *HTTPSource) WithPublicQuery(names ...string) *HTTPSource {
+	s.public = append(s.public, names...)
+	if s.req != nil {
+		s.reid()
+	}
+	return s
+}
+
+// WithSecretQuery declares query parameters as credentials.
+//
+// Since WU-R it is no longer what keeps them out of the identity — the default
+// does that for every parameter — and it is not needed for cache separation
+// either, because a differing query already yields a differing [ID]. What it
+// still does is fold the values into the cache namespace, which matters when
+// the same picture is reachable under several equivalent signatures and the
+// application wants them separated by credential rather than by URL. It also
+// overrides [HTTPSource.WithPublicQuery] for the same name, so that a list of
+// public parameters cannot accidentally expose one.
+//
+// They are still sent.
 func (s *HTTPSource) WithSecretQuery(names ...string) *HTTPSource {
 	s.secret = append(s.secret, names...)
 	if s.req != nil {
@@ -357,15 +406,7 @@ func (s *HTTPSource) reid() {
 	if u.Host != "" {
 		u.Host = strings.ToLower(u.Host)
 	}
-	if len(s.secret) > 0 && u.RawQuery != "" {
-		q := u.Query()
-		for _, n := range s.secret {
-			if _, ok := q[n]; ok {
-				q.Set(n, "REDACTED")
-			}
-		}
-		u.RawQuery = q.Encode()
-	}
+	u.RawQuery = redactQuery(u.RawQuery, s.public, s.secret)
 	u.Fragment, u.RawFragment = "", ""
 	if u.Path == "" {
 		u.Path = "/"
@@ -563,6 +604,41 @@ func redactHTTPError(err error) error {
 		return ue.Err
 	}
 	return err
+}
+
+// redactedQueryParam holds the fingerprint of everything that was redacted.
+// It is named so that a reader of a log line can see that a query was there.
+const redactedQueryParam = "gift_redacted"
+
+// redactQuery keeps the allow-listed parameters and replaces the rest with one
+// fingerprint of them.
+//
+// The fingerprint, not a fixed placeholder: a placeholder would give two
+// different pre-signed URLs for two different pictures the same identity, and
+// the second one would be served the first one's thumbnail out of the cache.
+// Identity has to survive redaction; legibility does not.
+func redactQuery(raw string, public, secret []string) string {
+	if raw == "" {
+		return ""
+	}
+	q, err := url.ParseQuery(raw)
+	if err != nil {
+		// Unparseable: nothing can be classified, so nothing is kept.
+		return redactedQueryParam + "=" + fingerprint("", "query", raw)
+	}
+	keep := make(url.Values, len(public))
+	hide := make(url.Values, len(q))
+	for name, vs := range q {
+		if slices.Contains(public, name) && !slices.Contains(secret, name) {
+			keep[name] = vs
+			continue
+		}
+		hide[name] = vs
+	}
+	if len(hide) > 0 {
+		keep.Set(redactedQueryParam, fingerprint("", "query", hide.Encode()))
+	}
+	return keep.Encode()
 }
 
 // redactRawURL keeps enough of an unparseable URL to recognise it and drops

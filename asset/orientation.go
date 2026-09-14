@@ -147,8 +147,7 @@ func applyOrientation(src *image.RGBA, o Orientation) *image.RGBA {
 //
 // # What is handled
 //
-//   - JPEG only, and only the APP1 segment with the "Exif\0\0" identifier, in
-//     the header bytes the pipeline has already buffered.
+//   - JPEG only, and only the APP1 segment with the "Exif\0\0" identifier.
 //   - Both byte orders, IFD0 only, tag 0x0112 with SHORT or LONG type.
 //   - All eight values, including the four mirrored ones.
 //
@@ -161,10 +160,13 @@ func applyOrientation(src *image.RGBA, o Orientation) *image.RGBA {
 //     IFD0 carries the orientation of the main picture.
 //   - MakerNote, XMP and IPTC rotation hints. Where they disagree with EXIF,
 //     EXIF wins here.
-//   - Multi-Picture Format, EXIF beyond the first APP1 segment, and an APP1
-//     that starts further into the file than the buffered header. Those yield
+//   - Multi-Picture Format and EXIF beyond the first APP1 segment. Those yield
 //     [OrientationUnknown] and therefore no rotation, which is the same answer
 //     as a picture without EXIF and never a wrong rotation.
+//
+// There is no buffered-header limit any more, and the sentence claiming one
+// was stale: the caller hands over the whole encoded picture, so the scan is
+// bounded by the file and not by a window into it.
 //
 // It reads only from the byte slice it is given and allocates nothing.
 func exifOrientation(header []byte) Orientation {

@@ -346,6 +346,11 @@ type Gallery struct {
 	ownerPass uint64
 	haveOwner bool
 
+	// pass is the current layout pass number, copied at the top of every
+	// pass. It is the frame counter the retry of a refused thumbnail is
+	// rate limited by; see [Gallery.onImage].
+	pass uint64
+
 	// invalidate marks the gallery node for layout. It is handed over by the
 	// first layout pass — see [gift.LayoutContext.Invalidator] — and is what
 	// lets a mutation of the model reach the frame loop at all: a correction
@@ -438,6 +443,9 @@ func (g *Gallery) SetSelection(s *asset.Selection) {
 // A nil resolver, or one that returns nil for an entry, leaves that tile on
 // its placeholder. That is a normal state and not an error: a catalogue may
 // legitimately contain an entry nobody can open yet.
+//
+// Rebinding every tile is part of installing one: a slot that already has a
+// picture from the previous resolver must go back through it.
 func (g *Gallery) SetSources(resolve func(asset.ID) asset.Source) {
 	g.sources = resolve
 	for i := range g.slots {
@@ -469,6 +477,14 @@ type GalleryStats struct {
 	// Failed is the number of tiles showing an error state, and Cancelled the
 	// number of in flight requests withdrawn because their tile was recycled.
 	Failed, Cancelled uint64
+	// Refused is the number of results that carried a retryable
+	// [asset.Result.Retry] — queue saturation or a source in backoff. It is
+	// not a failure and the tile does not enter an error state: the request
+	// is simply made again on a later pass. A climbing Refused with a
+	// climbing Warm is the pipeline under pressure and recovering; a
+	// climbing Refused with nothing else moving is a queue that is too
+	// small for the viewport.
+	Refused uint64
 	// Corrections is the number of probed dimensions folded back into the
 	// catalogue.
 	Corrections uint64
@@ -511,7 +527,18 @@ func (g *Gallery) onImage(slot int, gen uint64, res asset.Result) {
 	}
 	s.requested = false
 	s.pending = asset.Ticket{}
-	if res.Err != nil {
+	if res.Retry != nil {
+		// Queue pressure, not a broken picture. Nothing is remembered:
+		// the slot goes back to "no request yet" and the next layout pass
+		// asks again. Marking it failed here is what left five of six
+		// tiles blank three seconds after the pressure had cleared.
+		s.imgOK = false
+		g.stats.Refused++
+		s.retryPass = g.pass + 1
+		g.Invalidate()
+		return
+	}
+	if res.Failure != nil {
 		s.failed = true
 		s.imgOK = false
 		g.stats.Failed++
@@ -559,6 +586,12 @@ func (g *Gallery) requestImage(slot int, prio asset.Priority) {
 	if !s.bound || s.imgOK || s.failed || s.requested || g.sources == nil {
 		return
 	}
+	if g.pass < s.retryPass {
+		// A retryable refusal was answered this pass already. One request
+		// per slot per layout pass is the rate limit; see
+		// [Gallery.onImage].
+		return
+	}
 	pipe := images.pipe
 	if pipe == nil {
 		return
@@ -574,7 +607,15 @@ func (g *Gallery) requestImage(slot int, prio asset.Priority) {
 	if t, ok := pipe.Lookup(s.id, size); ok {
 		// Already decoded. No request, no closure, no allocation: this is the
 		// warm scroll path and it is the common one.
-		s.img = imageKey{id: s.id, rung: t.LadderSize(), rev: s.revision}
+		//
+		// The revision comes from the thumbnail and not from the catalogue.
+		// They are two different facts and on a cold gallery they differ:
+		// the catalogue has not been corrected yet and still says nothing,
+		// while the pipeline probed the file and knows its mtime. Keying the
+		// texture by the catalogue's answer here and by the pipeline's answer
+		// in onImage produced two entries and two uploads for one set of
+		// pixels.
+		s.img = imageKey{id: s.id, rung: t.LadderSize(), rev: t.Revision()}
 		s.imgOK = true
 		t.Release()
 		g.stats.Warm++
@@ -619,8 +660,12 @@ func (g *Gallery) dropImage(slot int) {
 	s.requested = false
 	s.imgOK = false
 	s.failed = false
+	s.retryPass = 0
 	s.img = imageKey{}
 }
+
+// Sources returns the resolver installed by [Gallery.SetSources], or nil.
+func (g *Gallery) Sources() func(asset.ID) asset.Source { return g.sources }
 
 // ApplyCorrections folds a batch of late arriving dimensions into the
 // catalogue and schedules one incremental reflow for the whole batch.
@@ -896,6 +941,11 @@ type tileSlot struct {
 	imgOK bool
 	// failed marks a tile whose picture could not be loaded.
 	failed bool
+	// retryPass is the layout pass before which no new request is made for
+	// this binding after a retryable refusal. See [Gallery.onImage]: it is
+	// the frame counter that replaces the permanent "failed" flag this case
+	// used to set.
+	retryPass uint64
 	// pending is the ticket of the request in flight for this binding, and
 	// requested says one was issued at all. Both are dropped on unbind, which
 	// is where the ticket is cancelled.
@@ -1341,6 +1391,7 @@ type galleryNode struct {
 func (n *galleryNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 	g := n.g
 	g.checkSingleMount(ctx)
+	g.pass = ctx.Pass()
 	g.invalidate = ctx.Invalidator()
 	cc := n.fr.apply(c)
 

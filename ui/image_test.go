@@ -2,9 +2,11 @@ package ui_test
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -780,5 +782,258 @@ func TestGalleryFrameWithResidentImagesIsAllocationFree(t *testing.T) {
 	}
 	if got := testing.AllocsPerRun(200, step); got != 0 {
 		t.Errorf("a frame with %d resident pictures allocated %v times per run, want 0", drawn, got)
+	}
+}
+
+// --- WU-R: saturation must not latch -------------------------------------------
+
+// gatedSource holds every Open until the test opens the gate, which is how a
+// test produces queue saturation without a slow disk.
+type gatedSource struct {
+	inner asset.Source
+	gate  chan struct{}
+}
+
+func (g gatedSource) Metadata() asset.Metadata { return g.inner.Metadata() }
+
+func (g gatedSource) Open(ctx context.Context) (io.ReadCloser, error) {
+	select {
+	case <-g.gate:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return g.inner.Open(ctx)
+}
+
+// TestSaturationRefusalIsNotPermanent is the WU-R regression test for the
+// error seam between asset and ui.
+//
+// [asset.ErrQueueFull] is documented saturation behaviour, not a verdict on a
+// picture. Before WU-R both consumers stored any non-nil error and never asked
+// again, so a moment of pressure left a picture blank for the life of the
+// process: six views, a queue of one, five refusals, and nothing on screen
+// three seconds and a hundred and eighty frames after the pressure had
+// cleared.
+//
+// The assertion is the recovery: once the gate opens, every picture is
+// resident within a bounded number of frames.
+func TestSaturationRefusalIsNotPermanent(t *testing.T) {
+	const n = 6
+	_, items, srcs := writePictures(t, n)
+	gate := make(chan struct{})
+	views := make([]gift.View, 0, n)
+	for i, m := range items {
+		src := gatedSource{inner: srcs[m.ID], gate: gate}
+		views = append(views, ui.Image(src).Frame(40, 40).Key("pic"+strconv.Itoa(i)))
+	}
+
+	del := newDeliverer()
+	pipe := asset.NewPipeline(asset.Config{
+		Deliver:    del.deliver,
+		Sizes:      []int{64},
+		Workers:    1,
+		QueueLimit: 1,
+	})
+	defer func() { pipe.Close(); del.drain() }()
+	ui.ResetImageService()
+	ui.SetImagePipeline(pipe)
+	defer ui.ResetImageService()
+
+	imgs := newFakeImages()
+	h := gifttest.New(t, gifttest.Options{
+		View: ui.VStack(views...).Frame(300, 300),
+		Size: geom.Sz(300, 300),
+	})
+	h.App().SetImages(imgs)
+
+	// Under pressure: the queue holds one, the worker is blocked on the gate
+	// and the rest are refused. Run a few frames so that the refusals are
+	// delivered and, before WU-R, latched.
+	refused := 0
+	for range 10 {
+		del.drain()
+		imgs.beginFrame()
+		h.Frame()
+	}
+	if got := countImageOps(h); got != 0 {
+		t.Fatalf("%d pictures were drawn while every source was gated", got)
+	}
+	refused = int(pipe.Stats().Dropped)
+	if refused == 0 {
+		t.Fatal("no request was refused: the scenario did not saturate the queue")
+	}
+
+	// Pressure clears.
+	close(gate)
+	// Frames, generously: the reviewer measured none at all in a hundred and
+	// eighty. The recovery this asserts is a handful; the rest of the budget
+	// is there so that a loaded machine cannot turn "slow" into "latched".
+	const budget = 120
+	for frame := 1; frame <= budget; frame++ {
+		// A real frame is 16 ms long; the pipeline is allowed to use it.
+		time.Sleep(5 * time.Millisecond)
+		del.drain()
+		imgs.beginFrame()
+		h.Frame()
+		if countImageOps(h) == n {
+			t.Logf("%d refusals, all %d pictures resident %d frames after the pressure cleared",
+				refused, n, frame)
+			return
+		}
+	}
+	t.Fatalf("only %d of %d pictures are resident %d frames after the pressure cleared; "+
+		"a retryable refusal was latched\n%s", countImageOps(h), n, budget, h.Dump())
+}
+
+func countImageOps(h *gifttest.Harness) int {
+	n := 0
+	for _, op := range h.Ops() {
+		if op.Kind == render.OpImage {
+			n++
+		}
+	}
+	return n
+}
+
+// TestGallerySaturationDoesNotFailTiles is the same property for the other
+// consumer. A tile refused by a full queue must not enter the error state the
+// project plan, section 15, reserves for a source that really is broken.
+func TestGallerySaturationDoesNotFailTiles(t *testing.T) {
+	const n = 8
+	_, items, srcs := writePictures(t, n)
+	gate := make(chan struct{})
+	del := newDeliverer()
+	pipe := asset.NewPipeline(asset.Config{
+		Deliver:    del.deliver,
+		Sizes:      []int{64},
+		Workers:    1,
+		QueueLimit: 1,
+	})
+	defer func() { pipe.Close(); del.drain() }()
+	ui.ResetImageService()
+	ui.SetImagePipeline(pipe)
+	defer ui.ResetImageService()
+
+	g := ui.NewGallery(asset.NewCollection(items))
+	g.SetSources(func(id asset.ID) asset.Source {
+		return gatedSource{inner: srcs[id], gate: gate}
+	})
+	h := gifttest.New(t, gifttest.Options{
+		View: ui.ImageGallery(g).
+			Layout(ui.Masonry().MinColumnWidth(60).Gap(4)).
+			Frame(300, 300).Key("gallery"),
+		Size: geom.Sz(300, 300),
+	})
+	h.App().SetImages(newFakeImages())
+
+	for range 10 {
+		del.drain()
+		h.Frame()
+	}
+	if s := g.Stats(); s.Refused == 0 {
+		t.Fatalf("the queue never saturated: %+v", s)
+	} else if s.Failed != 0 {
+		t.Fatalf("Failed = %d: a saturation refusal was turned into an error tile", s.Failed)
+	}
+	for _, b := range g.Bindings(nil) {
+		if b.PictureFailed {
+			t.Fatalf("tile %d is in the error state after a queue refusal", b.Slot)
+		}
+	}
+
+	close(gate)
+	for frame := 1; frame <= 120; frame++ {
+		time.Sleep(5 * time.Millisecond)
+		del.drain()
+		h.Frame()
+		ready, total := 0, 0
+		for _, b := range g.Bindings(nil) {
+			total++
+			if b.PictureReady {
+				ready++
+			}
+		}
+		if total > 0 && ready == total {
+			t.Logf("%d tiles ready %d frames after the pressure cleared (%d refusals)",
+				ready, frame, g.Stats().Refused)
+			return
+		}
+	}
+	t.Fatalf("tiles are still without pictures 120 frames after the pressure cleared: %+v", g.Stats())
+}
+
+// TestWarmBindUsesThePipelineRevision covers the key mismatch WU-R found
+// between the two paths that write a tile's imageKey.
+//
+// The result path keys the texture by the revision the *pipeline* established.
+// The warm path — a tile bound to a picture that is already in the CPU pixel
+// cache, because another view loaded it — used the revision the *catalogue*
+// holds, which for an uncorrected entry is empty. Two keys, two texture slots
+// and two uploads for one set of pixels.
+//
+// The scenario is the ordinary one: ui.Image draws a picture, the gallery
+// scrolls the same picture into view, and the gallery has never had a
+// correction for it because it never requested it.
+func TestWarmBindUsesThePipelineRevision(t *testing.T) {
+	_, items, srcs := writePictures(t, 1)
+	src := srcs[items[0].ID]
+	// The catalogue knows the shape but not the revision, which is the state
+	// the project plan, section 9, calls "noch nicht validiert".
+	items[0].Revision = ""
+
+	del := newDeliverer()
+	pipe := asset.NewPipeline(asset.Config{Deliver: del.deliver, Sizes: []int{128}, Workers: 2})
+	defer func() { pipe.Close(); del.drain() }()
+	ui.ResetImageService()
+	ui.SetImagePipeline(pipe)
+	defer ui.ResetImageService()
+
+	// Prime the CPU pixel cache behind the user interface's back, so that the
+	// gallery's very first bind is a warm one.
+	done := make(chan struct{}, 1)
+	pipe.Request(asset.Request{Source: src, Size: 128, Priority: asset.Visible,
+		OnResult: func(asset.Result) { done <- struct{}{} }})
+	for len(done) == 0 {
+		time.Sleep(time.Millisecond)
+		del.drain()
+	}
+	<-done
+	if _, ok := pipe.Lookup(items[0].ID, 128); !ok {
+		t.Fatal("priming did not put the picture in the CPU cache")
+	} else {
+		t2, _ := pipe.Lookup(items[0].ID, 128)
+		t2.Release()
+		t2.Release()
+	}
+
+	g := ui.NewGallery(asset.NewCollection(items))
+	g.SetSources(func(id asset.ID) asset.Source { return srcs[id] })
+	imgs := newFakeImages()
+	h := gifttest.New(t, gifttest.Options{
+		View: ui.VStack(
+			ui.Image(src).Size(128).Frame(120, 120),
+			ui.ImageGallery(g).
+				Layout(ui.Masonry().MinColumnWidth(110).Gap(4)).
+				Frame(128, 140).Key("gallery"),
+		).Frame(160, 280),
+		Size: geom.Sz(160, 280),
+	})
+	h.App().SetImages(imgs)
+	for range 6 {
+		time.Sleep(2 * time.Millisecond)
+		del.drain()
+		imgs.beginFrame()
+		h.Frame()
+	}
+
+	if n := ui.TextureKeysForTest(items[0].ID, 128); n != 1 {
+		t.Errorf("%d texture keys for one picture at one rung: the warm bind and the "+
+			"result used different revisions", n)
+	}
+	if imgs.uploads != 1 {
+		t.Errorf("%d uploads for one set of pixels drawn twice", imgs.uploads)
+	}
+	if n := countImageOps(h); n != 2 {
+		t.Errorf("%d image operations, want 2 — both views drew the picture\n%s", n, h.Dump())
 	}
 }

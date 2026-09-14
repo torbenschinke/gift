@@ -271,6 +271,8 @@ type assetCounters struct {
 	Completed      uint64 `json:"completed"`
 	Failed         uint64 `json:"failed"`
 	BackoffRefused uint64 `json:"backoff_refused"`
+	Quarantined    uint64 `json:"quarantined"`
+	NotModified    uint64 `json:"not_modified"`
 	Decodes        uint64 `json:"decodes"`
 	MemoryHits     uint64 `json:"memory_hits"`
 	DiskHits       uint64 `json:"disk_hits"`
@@ -279,12 +281,15 @@ type assetCounters struct {
 	InputBytes     int64  `json:"input_bytes"`
 	InputPeak      int64  `json:"input_peak_bytes"`
 	InputLimit     int64  `json:"input_limit_bytes"`
+	InputWaits     uint64 `json:"input_waits"`
 	DecodeBytes    int64  `json:"decode_bytes"`
 	DecodePeak     int64  `json:"decode_peak_bytes"`
 	DecodeLimit    int64  `json:"decode_limit_bytes"`
+	DecodeWaits    uint64 `json:"decode_waits"`
 	PixelBytes     int64  `json:"pixel_bytes"`
 	PixelPeak      int64  `json:"pixel_peak_bytes"`
 	PixelLimit     int64  `json:"pixel_limit_bytes"`
+	PixelWaits     uint64 `json:"pixel_waits"`
 	CacheEntries   int    `json:"cache_entries"`
 	DiskBytes      int64  `json:"disk_bytes"`
 	DiskBudget     int64  `json:"disk_budget_bytes"`
@@ -420,11 +425,13 @@ func (r *Recorder) emit(kind string) {
 				Cancelled: as.Cancelled, ReadyDropped: as.ReadyDropped,
 				Completed: as.Completed, Failed: as.Failed,
 				BackoffRefused: as.BackoffRefused,
-				Decodes:        as.Decodes, MemoryHits: as.MemoryHits, DiskHits: as.DiskHits,
+				Quarantined:    as.Quarantined, NotModified: as.NotModified,
+				Decodes: as.Decodes, MemoryHits: as.MemoryHits, DiskHits: as.DiskHits,
 				DecodedPixels: as.DecodedPixels, ScaledPixels: as.ScaledPixels,
 				InputBytes: as.InputBytes, InputPeak: as.InputPeak, InputLimit: as.InputLimit,
 				DecodeBytes: as.DecodeBytes, DecodePeak: as.DecodePeak, DecodeLimit: as.DecodeLimit,
 				PixelBytes: as.PixelBytes, PixelPeak: as.PixelPeak, PixelLimit: as.PixelLimit,
+				InputWaits: as.InputWaits, DecodeWaits: as.DecodeWaits, PixelWaits: as.PixelWaits,
 				CacheEntries: as.CacheEntries,
 				DiskBytes:    as.DiskBytes, DiskBudget: as.DiskBudget,
 			}

@@ -91,8 +91,12 @@
 //	            if !ok || cur.Generation != r.Generation {
 //	                return // the tile was recycled; the answer is stale
 //	            }
-//	            if r.Err != nil {
-//	                markError(r.ID, r.Err)
+//	            if r.Failure != nil {
+//	                markError(r.ID, r.Failure) // until the revision changes
+//	                return
+//	            }
+//	            if r.Retry != nil {
+//	                retryLater(r.ID) // saturation; never remember it
 //	                return
 //	            }
 //	            corrections = append(corrections, r.Correction())
@@ -127,7 +131,8 @@
 //	                                              then the worker waits
 //	ready results      Config.ReadyLimit (count)  a prefetch result is
 //	                                              delivered without its image
-//	                                              and with ErrQueueFull; a
+//	                                              and with
+//	                                              Result.ImageWithheld; a
 //	                                              visible one waits
 //	disk cache         DiskCacheConfig.Budget     least recently used entries
 //	                                              are deleted
@@ -149,8 +154,10 @@
 // # Errors and logging
 //
 // Failures of the outside world are values. A request always gets exactly one
-// [Result], and a failed one carries an [Result.Err] and no image; nothing in
-// this package panics for an I/O, HTTP, decode or cache failure, and nothing
+// [Result], and a failed one carries no image and either a [Result.Failure],
+// which repeats until the revision changes, or a [Result.Retry], which is
+// queue pressure that lifts by itself and must not be remembered; see
+// [Retryable]. Nothing in this package panics for an I/O, HTTP, decode or cache failure, and nothing
 // calls os.Exit or log.Fatal. A source that failed gets a backoff and is not
 // hammered; see [BackoffPolicy].
 //

@@ -43,6 +43,10 @@ type Thumbnail struct {
 	// key check, not for rendering: the pixels are already oriented.
 	orientation Orientation
 	ladder      int
+	// revision is the content version the pixels were produced from. It is
+	// written when the thumbnail enters the CPU cache, which is the only
+	// place that knows the key.
+	revision string
 
 	refs atomic.Int32
 	// owner is the budget the bytes are charged against. It is nil for a
@@ -65,6 +69,17 @@ func (t *Thumbnail) Bytes() int64 { return t.bytes }
 
 // LadderSize is the rung of [Config.Sizes] this thumbnail was produced for.
 func (t *Thumbnail) LadderSize() int { return t.ladder }
+
+// Revision is the content version these pixels were produced from, or empty
+// for a source that has none.
+//
+// It is what a consumer needs to key a texture by the same identity the
+// pipeline used. A consumer that took the revision from its own catalogue
+// instead would key a warm [Pipeline.Lookup] hit differently from the result
+// of a request for the same picture, and upload the same pixels twice; WU-R
+// found ui.Gallery doing exactly that on a cold gallery, where the catalogue
+// revision is still empty and the probed one is not.
+func (t *Thumbnail) Revision() string { return t.revision }
 
 // Orientation is the EXIF orientation that was *applied*. The pixels are
 // upright; this is here so that a cache entry can be checked against the key
@@ -182,6 +197,7 @@ func (c *pixelCache) put(k Key, t *Thumbnail) {
 		c.byID[k.ID] = append(c.byID[k.ID], k)
 	}
 	c.removeLRU(k)
+	t.revision = k.Revision
 	t.Retain()
 	c.entries[k] = &pixelEntry{t: t}
 	c.lru = append(c.lru, k)

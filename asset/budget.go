@@ -84,6 +84,42 @@ func (b *budget) acquire(ctx context.Context, n int64) error {
 	}
 }
 
+// waitRelease blocks until some bytes are returned, the context ends or the
+// budget is closed.
+//
+// It is the half of [budget.acquire] a caller needs when it has something to
+// do between attempts — the pixel budget evicts its cache before each one; see
+// [Pipeline.reservePixels]. Waiting inside acquire would evict once and then
+// sleep against a cache that has filled up again behind it.
+func (b *budget) waitRelease(ctx context.Context) error {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return ErrClosed
+	}
+	wait := b.free
+	b.waiters++
+	b.mu.Unlock()
+
+	b.waits.Add(1)
+	select {
+	case <-ctx.Done():
+		b.mu.Lock()
+		b.waiters--
+		b.mu.Unlock()
+		return ctx.Err()
+	case <-wait:
+		b.mu.Lock()
+		closed := b.closed
+		b.waiters--
+		b.mu.Unlock()
+		if closed {
+			return ErrClosed
+		}
+		return nil
+	}
+}
+
 // tryAcquire reserves n bytes if they are available right now.
 func (b *budget) tryAcquire(n int64) bool {
 	if n <= 0 {

@@ -32,8 +32,8 @@ func TestDiskCacheMissThenHitAcrossPipelines(t *testing.T) {
 	p1.Request(asset.Request{Source: asset.File(path), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if r.Err != nil {
-		t.Fatal(r.Err)
+	if r.Err() != nil {
+		t.Fatal(r.Err())
 	}
 	if r.FromDisk {
 		t.Error("the first request must be a miss")
@@ -50,8 +50,8 @@ func TestDiskCacheMissThenHitAcrossPipelines(t *testing.T) {
 	p2.Request(asset.Request{Source: asset.File(path), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r2 := c.waitFor(t, 1)[0]
-	if r2.Err != nil {
-		t.Fatal(r2.Err)
+	if r2.Err() != nil {
+		t.Fatal(r2.Err())
 	}
 	if !r2.FromDisk {
 		t.Fatal("the second pipeline decoded again instead of reading the cache")
@@ -83,8 +83,8 @@ func TestDiskCacheRevalidatesAChangedFile(t *testing.T) {
 	p.Request(asset.Request{Source: asset.File(path), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	first := c.waitFor(t, 1)[0]
-	if first.Err != nil {
-		t.Fatal(first.Err)
+	if first.Err() != nil {
+		t.Fatal(first.Err())
 	}
 
 	// Replace the picture with one of a different shape. A file source is
@@ -98,8 +98,8 @@ func TestDiskCacheRevalidatesAChangedFile(t *testing.T) {
 	p.Request(asset.Request{Source: asset.File(path), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	second := c.waitFor(t, 1)[0]
-	if second.Err != nil {
-		t.Fatal(second.Err)
+	if second.Err() != nil {
+		t.Fatal(second.Err())
 	}
 	if second.Metadata.Revision == first.Metadata.Revision {
 		t.Fatal("the revision did not change although the file did")
@@ -185,8 +185,8 @@ func TestDiskCacheCorruptionIsTreatedAsAMiss(t *testing.T) {
 	p2.Request(asset.Request{Source: asset.File(path), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
 	r := c.waitFor(t, 1)[0]
-	if r.Err != nil {
-		t.Fatalf("a corrupt cache entry broke the request: %v", r.Err)
+	if r.Err() != nil {
+		t.Fatalf("a corrupt cache entry broke the request: %v", r.Err())
 	}
 	if r.FromDisk {
 		t.Error("a corrupt entry was served as a hit")
@@ -224,8 +224,8 @@ func TestDiskCacheTruncationIsTreatedAsAMiss(t *testing.T) {
 	defer p2.Close()
 	p2.Request(asset.Request{Source: asset.File(path), Size: 64,
 		Priority: asset.Visible, OnResult: c.onResult})
-	if r := c.waitFor(t, 1)[0]; r.Err != nil || r.FromDisk {
-		t.Errorf("truncated entry: err=%v fromDisk=%v", r.Err, r.FromDisk)
+	if r := c.waitFor(t, 1)[0]; r.Err() != nil || r.FromDisk {
+		t.Errorf("truncated entry: err=%v fromDisk=%v", r.Err(), r.FromDisk)
 	}
 }
 
@@ -248,8 +248,8 @@ func TestDiskCacheCanBeSwitchedOff(t *testing.T) {
 	}
 	res := c.waitFor(t, 3)
 	for _, r := range res {
-		if r.Err != nil {
-			t.Fatal(r.Err)
+		if r.Err() != nil {
+			t.Fatal(r.Err())
 		}
 		if r.FromDisk {
 			t.Error("a disabled disk cache produced a hit")
@@ -321,8 +321,8 @@ func TestMemoryCacheAnswersTheSecondRequest(t *testing.T) {
 		p.Request(asset.Request{Source: asset.File(path), Size: 64,
 			Priority: asset.Visible, Generation: uint64(i), OnResult: c.onResult})
 		r := c.waitFor(t, 1)[0]
-		if r.Err != nil {
-			t.Fatal(r.Err)
+		if r.Err() != nil {
+			t.Fatal(r.Err())
 		}
 		if i > 0 && !r.FromMemory {
 			t.Errorf("request %d did not come from the CPU cache", i)
@@ -334,5 +334,69 @@ func TestMemoryCacheAnswersTheSecondRequest(t *testing.T) {
 	}
 	if st.MemoryHits != 2 {
 		t.Errorf("MemoryHits = %d, want 2", st.MemoryHits)
+	}
+}
+
+// TestCrashedWriteLeftoverIsCollected covers the leftovers of a process that
+// died between the temporary write and the rename.
+//
+// Before WU-R the scan indexed them as if they were entries. Their names are
+// not cache keys, so path() resolved ".tmp-x" into the wrong sub directory and
+// remove() deleted nothing: the bytes stayed on disk for ever and the cache
+// counted them against its budget for ever, which eventually evicted real
+// entries to make room for garbage.
+func TestCrashedWriteLeftoverIsCollected(t *testing.T) {
+	pics := t.TempDir()
+	cache := t.TempDir()
+	path := writeFile(t, pics, "a.png", pngBytes(t, 120, 120))
+
+	// Write one entry so that the layout on disk is the real one.
+	c := newCollector()
+	p := asset.NewPipeline(diskConfig(c, cache, 0))
+	p.Request(asset.Request{Source: asset.File(path), Size: 64,
+		Priority: asset.Visible, OnResult: c.onResult})
+	if r := c.waitFor(t, 1)[0]; r.Err() != nil {
+		t.Fatal(r.Err())
+	}
+	p.Close()
+
+	// Now simulate the crash: a big temporary file next to the entry.
+	var dirs []string
+	root := filepath.Join(cache, "v1")
+	ents, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if e.IsDir() {
+			dirs = append(dirs, filepath.Join(root, e.Name()))
+		}
+	}
+	if len(dirs) == 0 {
+		t.Fatal("the disk cache wrote nothing")
+	}
+	junk := filepath.Join(dirs[0], ".tmp-1234567")
+	if err := os.WriteFile(junk, make([]byte, 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c2 := newCollector()
+	p2 := asset.NewPipeline(diskConfig(c2, cache, 0))
+	defer p2.Close()
+	p2.Request(asset.Request{Source: asset.File(path), Size: 64,
+		Priority: asset.Visible, OnResult: c2.onResult})
+	r := c2.waitFor(t, 1)[0]
+	if r.Err() != nil {
+		t.Fatal(r.Err())
+	}
+	st := p2.Stats().Disk
+	if st.SweptTemps != 1 {
+		t.Errorf("SweptTemps = %d, want 1", st.SweptTemps)
+	}
+	if _, err := os.Stat(junk); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the leftover %s was not deleted", junk)
+	}
+	if st.Bytes >= 1<<20 {
+		t.Errorf("the cache counts %d bytes; the leftover is still in the total", st.Bytes)
 	}
 }

@@ -98,7 +98,14 @@ func run() error {
 		Disk:    asset.DiskCacheConfig{Dir: *cache},
 		Logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
 	})
-	defer pipe.Close()
+	// Close and then drain, which is the contract [asset.Config.Deliver]
+	// states: the closures Close produces still have to run, because each one
+	// releases a thumbnail reference. The frame loop has stopped by then, so
+	// nothing else would run them.
+	defer func() {
+		pipe.Close()
+		app.DrainPosts()
+	}()
 	ui.SetImagePipeline(pipe)
 
 	gallery = ui.NewGallery(asset.NewCollection(items))

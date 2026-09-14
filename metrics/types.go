@@ -372,8 +372,9 @@ type Options struct {
 // AssetStats are the image pipeline numbers of one report.
 //
 // It is a plain struct for the same reason [RendererStats] and [ShaperStats]
-// are: this package imports gift, the asset package must not, and the project
-// plan, section 3, draws that line. The *consumer* converts
+// are: this package imports nothing from the framework it measures — not gift,
+// not asset, not the backend — so no dependency ever points from a measured
+// package to the measuring one. The *consumer* converts
 // [asset.Pipeline.Stats] into this shape, which is the same seam the backend
 // uses for its own counters:
 //
@@ -394,8 +395,16 @@ type AssetStats struct {
 	// section 13, requires a budget violation to be visible rather than
 	// silently absorbed.
 	Dropped, Cancelled, ReadyDropped uint64
-	// Completed, Failed and BackoffRefused are the delivered outcomes.
-	Completed, Failed, BackoffRefused uint64
+	// Completed, Failed and BackoffRefused are the delivered outcomes, and
+	// Quarantined the number of sources taken out of service until their
+	// revision changes. A Quarantined that climbs while Failed does not is a
+	// catalogue with dead entries in it, which is a different problem from a
+	// pipeline that is failing.
+	Completed, Failed, BackoffRefused, Quarantined uint64
+	// NotModified is the number of conditional fetches a server answered
+	// with 304 — the measure of whether the freshness policy of the project
+	// plan, section 9, is buying anything.
+	NotModified uint64
 	// Decodes, MemoryHits and DiskHits are where the pixels came from. This
 	// is the cold versus warm distinction of the project plan, section 13.
 	Decodes, MemoryHits, DiskHits uint64
@@ -409,6 +418,15 @@ type AssetStats struct {
 	InputBytes, InputPeak, InputLimit    int64
 	DecodeBytes, DecodePeak, DecodeLimit int64
 	PixelBytes, PixelPeak, PixelLimit    int64
+	// InputWaits, DecodeWaits and PixelWaits are how often a worker had to
+	// wait for bytes of each budget.
+	//
+	// They are here because WU-R found a reservation bug that made HTTP
+	// effectively single threaded, and no counter in this report showed it:
+	// the peak looked healthy and the throughput did not. A budget that is
+	// reported only by its occupancy hides contention, and contention is the
+	// thing a budget is tuned against.
+	InputWaits, DecodeWaits, PixelWaits uint64
 	// CacheEntries is the CPU pixel cache occupancy and DiskBytes the
 	// persistent one, against DiskBudget.
 	CacheEntries          int

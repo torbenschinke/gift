@@ -39,6 +39,26 @@ func (a *App) Post(fn func()) {
 	a.box.mu.Unlock()
 }
 
+// DrainPosts runs everything posted since the last update, outside a frame.
+//
+// An application needs it exactly once: after the last frame and after closing
+// the asset pipeline. [asset.Config.Deliver] requires that every closure it is
+// handed eventually runs, including the ones produced during Close, because a
+// delivered thumbnail releases its reference *inside* the closure — an
+// executor that drops one holds those pixels against the pixel budget until
+// the process exits. The frame loop has stopped by then, so nothing would run
+// them.
+//
+//	defer func() {
+//	    pipe.Close()
+//	    app.DrainPosts()
+//	}()
+//
+// It must be called from the goroutine that ran the frame loop, like
+// everything else that touches state. Calling it during a frame is pointless
+// but harmless: [App.Update] drains the same queue.
+func (a *App) DrainPosts() { a.drainPosts() }
+
 // drainPosts runs everything posted since the last update.
 func (a *App) drainPosts() {
 	a.box.mu.Lock()
