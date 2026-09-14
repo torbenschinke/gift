@@ -53,12 +53,124 @@ func (n Node) Type() string {
 	return gift.TypeName(n.h.app.NodeType(n.ref))
 }
 
-// Bounds returns the absolute rectangle of the node as of the last layout.
-func (n Node) Bounds() geom.Rect { n.check("Bounds"); return n.h.app.NodeBounds(n.ref) }
+// Bounds returns the rectangle of the node in device space: where it actually
+// is on screen, after the scroll offsets and transforms above it.
+//
+// It is [gift.App.NodeDeviceBounds]. Before scrolling existed it was the raw
+// layout rectangle and the two were the same number; inside a scroll container
+// they are not, and a test that aimed at the layout rectangle would click
+// where the node used to be. [Node.LayoutBounds] is the raw one for a test
+// whose subject really is the layout.
+func (n Node) Bounds() geom.Rect { n.check("Bounds"); return n.h.app.NodeDeviceBounds(n.ref) }
 
-// Center returns the point in the middle of the node's bounds, which is where
-// the pointer actions aim.
-func (n Node) Center() geom.Point { return center(n.Bounds()) }
+// LayoutBounds returns the rectangle the layout gave the node, without the
+// transforms of its ancestors. It is the right assertion for "the stack put
+// the second row 40 pixels down" and the wrong one for "the button is here".
+func (n Node) LayoutBounds() geom.Rect { n.check("LayoutBounds"); return n.h.app.NodeBounds(n.ref) }
+
+// VisibleBounds returns the part of the node that survives the clips of its
+// ancestors, and whether any of it does.
+func (n Node) VisibleBounds() (geom.Rect, bool) {
+	n.check("VisibleBounds")
+	return n.h.app.NodeVisibleBounds(n.ref)
+}
+
+// IsVisible reports whether any part of the node survives the clips above it.
+//
+// It is not an occlusion test. A node covered by an opaque sibling is visible
+// by this definition, because "is it clipped away" and "is something on top of
+// it" are different questions with different answers and different fixes; the
+// second one is what [Node.aim] checks with a hit test.
+func (n Node) IsVisible() bool {
+	_, ok := n.VisibleBounds()
+	return ok
+}
+
+// Center returns the point the pointer actions aim at: the middle of the
+// *visible* part of the node.
+//
+// The middle of the full bounds would be a point outside the viewport for a
+// node that is only half scrolled into view, and an action there would be
+// clipped away and land on nothing. Review Gate 3 named this specifically. For
+// a node that is entirely clipped away there is no visible part, and the
+// centre of the device bounds is returned so that the aim check further on can
+// produce the honest failure rather than this method producing a confusing
+// one.
+func (n Node) Center() geom.Point {
+	if vis, ok := n.VisibleBounds(); ok {
+		return center(vis)
+	}
+	return center(n.Bounds())
+}
+
+// --- scrolling ---------------------------------------------------------------
+
+// Scroller returns the nearest scroll container at or above this node, and
+// fails when there is none.
+func (n Node) Scroller() Node {
+	n.h.t.Helper()
+	n.check("Scroller")
+	r, ok := n.h.app.NodeScroller(n.ref)
+	if !ok {
+		n.h.t.Fatalf("gifttest: Scroller on %s, which is not inside a scroll container.\n%s",
+			n.describe(), n.h.Dump())
+		return Node{}
+	}
+	return Node{h: n.h, ref: r}
+}
+
+// ScrollIntoView scrolls every container above this node until it is visible.
+// It is a jump, not an animation; see [gift.App.ScrollIntoView].
+//
+// The pointer actions call it themselves, so a test normally does not have to.
+// It is exported for the case where the scroll itself is the subject.
+func (n Node) ScrollIntoView() Node {
+	n.h.t.Helper()
+	n.check("ScrollIntoView")
+	if n.h.app.ScrollIntoView(n.ref) {
+		n.h.Settle()
+	}
+	return n
+}
+
+// ScrollOffset returns the document offset of the nearest scroll container at
+// or above this node.
+func (n Node) ScrollOffset() float64 {
+	n.h.t.Helper()
+	info, ok := n.h.app.ScrollInfo(n.Scroller().ref)
+	if !ok {
+		return 0
+	}
+	return info.Offset
+}
+
+// ScrollInfo returns the full state of the nearest scroll container at or
+// above this node.
+func (n Node) ScrollInfo() gift.ScrollInfo {
+	n.h.t.Helper()
+	info, _ := n.h.app.ScrollInfo(n.Scroller().ref)
+	return info
+}
+
+// ScrollTo moves the nearest scroll container at or above this node to the
+// document offset off, clamped to its bounds.
+func (n Node) ScrollTo(off float64) Node {
+	n.h.t.Helper()
+	s := n.Scroller()
+	n.h.app.ScrollTo(s.ref, off)
+	n.h.Settle()
+	return n
+}
+
+// ScrollBy moves the nearest scroll container at or above this node by d
+// document units.
+func (n Node) ScrollBy(d float64) Node {
+	n.h.t.Helper()
+	s := n.Scroller()
+	n.h.app.ScrollBy(s.ref, d)
+	n.h.Settle()
+	return n
+}
 
 // Interaction returns the hover, press, focus and disabled state gift keeps
 // for the node.
@@ -174,6 +286,19 @@ func (n Node) target(what string) Node {
 // "what is actually at this point" without dispatching anything.
 func (n Node) aim(what string) geom.Point {
 	n.h.t.Helper()
+	// Bring the node into view before working out where to click. Without
+	// this an action on a node below the fold aims at a point its own viewport
+	// clips away, the hit test below reaches nothing, and the failure blames
+	// the application for a test that never scrolled. Review Gate 3 named this
+	// as the thing that breaks without a scroll container.
+	//
+	// It happens before the aim check rather than instead of it, so the two do
+	// not fight: the scroll decides *where* the node is and the hit test
+	// decides whether anything is on top of it there. Scrolling changes no
+	// bounds and rebuilds nothing, so the node reference stays valid.
+	if n.h.app.ScrollIntoView(n.ref) {
+		n.h.Settle()
+	}
 	p := n.Center()
 	got, ok := n.h.app.HitTest(p)
 	switch {
@@ -380,17 +505,17 @@ func (n Node) Swipe(d geom.Point) Node {
 	return n
 }
 
-// Wheel scrolls over the node by d. Positive Y is "wheel away from the user".
+// Wheel scrolls over the node by d. Positive Y is the wheel pushed away from
+// the user, which moves towards the beginning of the document.
 //
-// gift delivers it to the node under the pointer and bubbles it; nothing in
-// gift consumes it yet, because there is no scrollable view before step 3 of
-// the project plan. An application's own scroll container can be tested with
-// it today.
+// gift delivers it to the node under the pointer and bubbles it to the nearest
+// scrollable ancestor that can still move in that direction; see
+// [gift.Event.Delta] and the overscroll chaining rule in gift's scroll
+// handler.
 func (n Node) Wheel(d geom.Point) Node {
 	n.h.t.Helper()
 	n.check("Wheel")
-	p := center(n.h.app.NodeBounds(n.ref))
-	n.h.Wheel(p, d)
+	n.h.Wheel(n.Center(), d)
 	return n
 }
 
@@ -627,6 +752,11 @@ func (h *Harness) focusableCount() int {
 	return n
 }
 
+// Describe returns the one line form of the node used in failure messages:
+// type, key, label and device bounds. It is exported so that an application's
+// own assertion can name a node the same way this package does.
+func (n Node) Describe() string { return n.describe() }
+
 // describe is the one line form of a node used in failure messages.
 func (n Node) describe() string {
 	if n.h == nil || n.ref.IsZero() {
@@ -635,7 +765,7 @@ func (n Node) describe() string {
 	if !n.h.app.NodeValid(n.ref) {
 		return "<stale node>"
 	}
-	b := n.h.app.NodeBounds(n.ref)
+	b := n.h.app.NodeDeviceBounds(n.ref)
 	s := gift.TypeName(n.h.app.NodeType(n.ref))
 	if k := n.h.app.NodeKey(n.ref); k != "" {
 		s += " key=" + quote(k)
@@ -648,4 +778,40 @@ func (n Node) describe() string {
 
 func rectString(r geom.Rect) string {
 	return fmt.Sprintf("(%g,%g)-(%g,%g)", r.Min.X, r.Min.Y, r.Max.X, r.Max.Y)
+}
+
+// Fling is a touch drag along d that takes over milliseconds of the injected
+// clock, so that gift can measure a release velocity and start a kinetic
+// scroll.
+//
+// [Node.Swipe] deliberately does not move the clock: every one of its moves
+// carries the same timestamp, the measured velocity is therefore zero, and a
+// swipe ends in a stop. That is the right default for a gesture test whose
+// subject is the drag. A test whose subject is the kinetic part needs time to
+// pass between the samples, and this is the action that makes it pass —
+// deterministically, in the injected clock, without a single sleep.
+//
+// The fling is not settled afterwards: the release starts an animation that
+// runs for as long as the friction says. Drive it with [Harness.Advance] and
+// assert on the offset in between, which is the whole point of an injectable
+// clock.
+func (n Node) Fling(d geom.Point, over time.Duration) Node {
+	n.h.t.Helper()
+	t := n.target("Fling")
+	from := t.aim("Fling")
+	to := from.Add(d)
+	step := over / dragSteps
+	n.h.beginInput()
+	n.h.app.PointerDown(touchID, gift.PointerTouch, from)
+	n.h.Settle()
+	for i := 1; i <= dragSteps; i++ {
+		n.h.now += step
+		n.h.beginInput()
+		n.h.app.PointerMove(touchID, gift.PointerTouch, lerp(from, to, float32(i)/dragSteps))
+		n.h.Settle()
+	}
+	n.h.beginInput()
+	n.h.app.PointerUp(touchID, gift.PointerTouch, to)
+	n.h.Settle()
+	return n
 }

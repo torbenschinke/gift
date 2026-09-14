@@ -44,6 +44,16 @@ type nodeData struct {
 	// is the identity and a nil check is cheaper than comparing six floats.
 	xform *geom.Affine2D
 
+	// scroll is the retained presentation state of a scroll container, nil
+	// for every other node. Like [Interaction] it lives here and not in the
+	// view, because the project plan, section 5, requires the scroll offset
+	// to survive a rebuild and, much more importantly, not to cause one.
+	//
+	// It translates the *children* of this node rather than the node itself,
+	// which is what lets one node be both the clipping viewport and the
+	// source of the content transform; see [App.beginSubtree].
+	scroll *scrollState
+
 	// ia is the interaction state gift owns for this node. It lives here and
 	// not in the view because that is what makes hover and press survive a
 	// rebuild and, more importantly, what makes them not cause one; see
@@ -118,6 +128,7 @@ func (nd *nodeData) release() {
 	nd.disabled = false
 	nd.clip = false
 	nd.xform = nil
+	nd.scroll = nil
 	nd.ia = Interaction{}
 	nd.flex = 0
 	nd.childViews = nil

@@ -353,3 +353,82 @@ func formatOps(ops []render.Op) string {
 	}
 	return b.String()
 }
+
+// --- scroll and visibility assertions ---------------------------------------
+
+// AssertVisible fails when the node is entirely clipped away by an ancestor,
+// naming the clip that removed it.
+//
+// It is the counterpart of the aim check: the aim check says "something is on
+// top of this", and this says "this is not on screen at all". A test that
+// expects a node below the fold to be reachable asserts it *after*
+// [Node.ScrollIntoView]; a test that expects it to be hidden asserts
+// [Node.AssertNotVisible] before.
+func (n Node) AssertVisible() Node {
+	n.h.t.Helper()
+	n.check("AssertVisible")
+	if n.IsVisible() {
+		return n
+	}
+	n.h.t.Errorf("gifttest: %s\n  is entirely clipped away; its device bounds are %s and nothing of it survives "+
+		"the clips of its ancestors.\n"+
+		"  If it is inside a scroll container, scroll it into view first — the pointer actions do that "+
+		"themselves, an assertion does not.\n%s",
+		n.describe(), rectString(n.Bounds()), n.h.Dump())
+	return n
+}
+
+// AssertNotVisible fails when any part of the node survives the clips above
+// it. It is how a test states that something really is below the fold.
+func (n Node) AssertNotVisible() Node {
+	n.h.t.Helper()
+	n.check("AssertNotVisible")
+	vis, ok := n.VisibleBounds()
+	if !ok {
+		return n
+	}
+	n.h.t.Errorf("gifttest: %s\n  is visible at %s, want it clipped away entirely",
+		n.describe(), rectString(vis))
+	return n
+}
+
+// AssertScrollOffset fails unless the nearest scroll container at or above the
+// node sits at the document offset want, within [boundsTolerance].
+//
+// The tolerance is there because a fling and a scroll into view both land on a
+// computed number rather than a round one. A test that wants the exact value —
+// the precision of very large document coordinates, for instance — reads
+// [Node.ScrollInfo] and compares itself.
+func (n Node) AssertScrollOffset(want float64) Node {
+	n.h.t.Helper()
+	s := n.Scroller()
+	info, ok := n.h.app.ScrollInfo(s.ref)
+	if !ok {
+		return n
+	}
+	if d := info.Offset - want; d <= boundsTolerance && d >= -boundsTolerance {
+		return n
+	}
+	n.h.t.Errorf("gifttest: %s\n  scroll offset = %g\n  want            %g\n"+
+		"  (content %g, viewport %g, max offset %g, axis %s)",
+		s.describe(), info.Offset, want,
+		info.ContentExtent, info.ViewportExtent, info.MaxOffset, info.Axis)
+	return n
+}
+
+// AssertAtScrollStart fails unless the container is at offset zero.
+func (n Node) AssertAtScrollStart() Node {
+	n.h.t.Helper()
+	return n.AssertScrollOffset(0)
+}
+
+// AssertAtScrollEnd fails unless the container is at its maximum offset.
+func (n Node) AssertAtScrollEnd() Node {
+	n.h.t.Helper()
+	s := n.Scroller()
+	info, ok := n.h.app.ScrollInfo(s.ref)
+	if !ok {
+		return n
+	}
+	return n.AssertScrollOffset(info.MaxOffset)
+}

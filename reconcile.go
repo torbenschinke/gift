@@ -152,6 +152,7 @@ func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *
 	nd.disabled = desc.elem.Disabled
 	nd.clip = desc.elem.Clip
 	nd.xform = desc.elem.Transform
+	a.applyScroll(nd, desc.elem.Scroll)
 	nd.ia.Disabled = desc.elem.Disabled
 	if nd.disabled || nd.interactor == nil {
 		nd.ia.Hover, nd.ia.Pressed = false, false

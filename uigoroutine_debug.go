@@ -5,6 +5,7 @@ package gift
 import (
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 )
 
@@ -35,8 +36,10 @@ func (g *uiGuard) capture() {
 // Known limits, stated honestly:
 //
 //   - The id is read with runtime.Stack, which is the only portable way to
-//     obtain it. That costs roughly a microsecond and therefore happens
-//     exactly once per App plus once per access that is about to be rejected.
+//     obtain it. That costs roughly a microsecond, and it happens on *every*
+//     access — accepted or not — because there is nothing to compare against
+//     otherwise. The comment here used to claim the opposite, and the code
+//     never did what it said.
 //   - Goroutine ids are reused by the runtime, so a new goroutine can in
 //     principle inherit the id of the UI executor after it has exited. That
 //     is a theoretical false negative, never a false positive.
@@ -58,14 +61,29 @@ func (a *App) assertUIGoroutine(what string) {
 
 var goroutinePrefix = []byte("goroutine ")
 
+// goidBufs holds the scratch buffers of [goid].
+//
+// runtime.Stack takes a []byte and the compiler cannot prove it does not keep
+// it, so a local array escapes and every call allocates 48 bytes. That went
+// unnoticed for as long as nothing in the frame path called the guard: the
+// state accessors are the only other caller and the allocation benchmarks that
+// cover them skip the giftdebug build for this very reason. The input entry
+// points call it too, and WU-L put a wheel event and a fling tick in the frame
+// path, so the allocation became a contract violation — "the allocation
+// contract must hold in every tag combination".
+//
+// A pool rather than a per App buffer because the whole purpose of the check
+// is to catch a *foreign* goroutine, so the buffer cannot belong to the App.
+// A pooled Get and Put allocate nothing after the first use per processor.
+var goidBufs = sync.Pool{New: func() any { return new([64]byte) }}
+
 // goid returns the id of the calling goroutine.
 //
-// There is no supported API for this. Parsing the stack header is the
-// portable way and costs roughly a microsecond, which is why it is called
-// once when the UI executor is captured and once per rejected state access,
-// never on an accepted one.
+// There is no supported API for this. Parsing the stack header is the portable
+// way and costs roughly a microsecond per call.
 func goid() uint64 {
-	var buf [48]byte
+	buf := goidBufs.Get().(*[64]byte)
+	defer goidBufs.Put(buf)
 	n := runtime.Stack(buf[:], false)
 	b := buf[:n]
 	if len(b) < len(goroutinePrefix) {

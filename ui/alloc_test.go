@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/torbenschinke/gift"
 	"github.com/torbenschinke/gift/geom"
@@ -249,4 +250,154 @@ func BenchmarkUITreeBuild(b *testing.B) {
 		a.Invalidate()
 		_ = a.Update(geom.Sz(800, 600))
 	}
+}
+
+// scrollTree is a scroller of two hundred rows over a 600 pixel viewport, so
+// that a scroll frame paints a realistic number of nodes and the clipped ones
+// still travel through the display list.
+func scrollTree(*gift.Context) gift.View {
+	rows := make([]gift.View, 0, 200)
+	for i := range 200 {
+		rows = append(rows, ui.HStack(
+			ui.Box().Frame(60, 20).Background(ui.RGB(uint8(i), 40, 60)).Key("a"),
+			ui.Box().Frame(60, 20).Background(ui.RGB(40, uint8(i), 60)).Key("b"),
+		).Gap(4).Key(strconv.Itoa(i)))
+	}
+	return ui.VStack(
+		ui.VScroll(rows...).Gap(4).Frame(400, 600).Key("scroller"),
+	)
+}
+
+// findScrollNode returns the reference of the one scroll container in the
+// tree.
+func findScrollNode(t *testing.T, a *gift.App) gift.NodeRef {
+	t.Helper()
+	var out gift.NodeRef
+	var walk func(gift.NodeRef)
+	walk = func(r gift.NodeRef) {
+		if a.IsScrollable(r) && out.IsZero() {
+			out = r
+		}
+		for _, c := range a.NodeChildren(r, nil) {
+			walk(c)
+		}
+	}
+	walk(a.Root())
+	if out.IsZero() {
+		t.Fatal("the tree has no scroll container")
+	}
+	return out
+}
+
+// TestScrollFramePathIsAllocationFree is the allocation contract of the
+// project plan, section 11, for the one path it names explicitly: "reine
+// Scroll-/Transform-Updates".
+//
+// Two variants, because they are different code. A wheel or a programmatic
+// scroll is input plus a transform patch plus a paint. A kinetic frame is the
+// same plus one exp and one clamp per tick, driven from the injected clock,
+// and it is the one that runs sixty times a second while the user does
+// nothing — so it is the one that would show up as a garbage collection in the
+// middle of a fling.
+func TestScrollFramePathIsAllocationFree(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector rewrites every access and defeats the pooling the giftdebug " +
+			"goroutine check relies on; allocation counts in a race build measure the instrumentation")
+	}
+	t.Run("pure scroll", func(t *testing.T) {
+		a := gift.New(gift.Options{Root: scrollTree})
+		if err := a.Update(geom.Sz(800, 600)); err != nil {
+			t.Fatal(err)
+		}
+		sc := findScrollNode(t, a)
+
+		now := time.Duration(0)
+		down := true
+		step := func() {
+			now += 16 * time.Millisecond
+			a.BeginInput(now)
+			// A wheel notch through the real dispatch path, not ScrollBy:
+			// hit testing and event bubbling are inside the contract too.
+			d := float32(-1)
+			if !down {
+				d = 1
+			}
+			a.PointerWheel(geom.Pt(200, 300), geom.Pt(0, d))
+			if err := a.Update(geom.Sz(800, 600)); err != nil {
+				t.Fatal(err)
+			}
+			a.Paint()
+		}
+		for range 32 {
+			step()
+			down = !down
+		}
+
+		before := a.Diagnostics()
+		step()
+		after := a.Diagnostics()
+		if after.Scrolls == before.Scrolls {
+			t.Fatal("the scroll did not move; the measurement would be meaningless")
+		}
+		if after.Builds != before.Builds || after.Layouts != before.Layouts {
+			t.Fatalf("a scroll frame rebuilt %d scope(s) and ran %d layouter(s), want none",
+				after.Builds-before.Builds, after.Layouts-before.Layouts)
+		}
+
+		if got := testing.AllocsPerRun(200, func() {
+			step()
+			down = !down
+		}); got != 0 {
+			t.Fatalf("a pure scroll frame allocated %v times per run, want 0", got)
+		}
+		_ = sc
+	})
+
+	t.Run("kinetic", func(t *testing.T) {
+		a := gift.New(gift.Options{Root: scrollTree})
+		if err := a.Update(geom.Sz(800, 600)); err != nil {
+			t.Fatal(err)
+		}
+		sc := findScrollNode(t, a)
+
+		now := time.Duration(0)
+		// A finger drag fast enough to fling, replayed whenever the previous
+		// fling has run out, so that every measured frame is a kinetic tick.
+		fling := func() {
+			a.BeginInput(now)
+			a.ScrollTo(sc, 4000)
+			p := geom.Pt(200, 500)
+			a.PointerDown(1, gift.PointerTouch, p)
+			for i := 1; i <= 8; i++ {
+				now += 8 * time.Millisecond
+				a.BeginInput(now)
+				a.PointerMove(1, gift.PointerTouch, geom.Pt(200, 500-float32(i)*20))
+			}
+			now += 8 * time.Millisecond
+			a.BeginInput(now)
+			a.PointerUp(1, gift.PointerTouch, geom.Pt(200, 340))
+		}
+		fling()
+		if info, _ := a.ScrollInfo(sc); !info.Flinging {
+			t.Fatalf("the drag did not start a fling: %+v", info)
+		}
+
+		step := func() {
+			if info, _ := a.ScrollInfo(sc); !info.Flinging {
+				fling()
+			}
+			now += 16 * time.Millisecond
+			a.BeginInput(now)
+			if err := a.Update(geom.Sz(800, 600)); err != nil {
+				t.Fatal(err)
+			}
+			a.Paint()
+		}
+		for range 32 {
+			step()
+		}
+		if got := testing.AllocsPerRun(200, step); got != 0 {
+			t.Fatalf("a kinetic scroll frame allocated %v times per run, want 0", got)
+		}
+	})
 }

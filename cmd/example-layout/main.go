@@ -45,6 +45,25 @@ var (
 	off  = ui.ButtonStyle{Background: ui.RGBA(255, 255, 255, 14), CornerRadius: 10}
 )
 
+// rows is the content of the scroller: forty lines, far more than its ninety
+// six pixel viewport, so there is always something to scroll.
+//
+// It is rebuilt whenever the count changes, which is the point: scrolling it
+// afterwards rebuilds nothing at all, because the offset lives in the retained
+// node. See ui.ScrollView.
+func rows(n int) []gift.View {
+	out := make([]gift.View, 0, 40)
+	for i := range 40 {
+		mark := "   "
+		if i == n {
+			mark = "-> "
+		}
+		out = append(out, ui.Text(mark+"row "+strconv.Itoa(i)).
+			FontSize(13).Foreground(muted).Key(strconv.Itoa(i)))
+	}
+	return out
+}
+
 // counter is the view function from the project plan, section 4. The state
 // write in a button's closure invalidates this scope and nothing else; a hover
 // or a press invalidates no scope at all, because interaction state lives in
@@ -75,7 +94,15 @@ func counter(ctx *gift.Context) gift.View {
 				PaddingInsets(geom.Insets{Top: 10, Right: 16, Bottom: 10, Left: 16}).
 				Disabled(n == 0),
 		).Gap(8),
-		ui.Text("Click, or tab to a button and press space or enter.").
+		// A scroll container, so that the wheel, the drag and the kinetic
+		// fling are exercised by a real window and not only by tests. It is
+		// given a Frame because a stack measures an inflexible child with an
+		// unbounded main axis, and a scroller with an unbounded axis has a
+		// viewport as large as its content and nothing to scroll.
+		ui.VScroll(rows(n)...).Gap(4).Padding(8).
+			Frame(260, 96).
+			Background(ui.RGBA(0, 0, 0, 40)).CornerRadius(10).Border(hair),
+		ui.Text("Click, or tab to a button and press space or enter. The list scrolls.").
 			FontSize(12).Foreground(muted),
 	).Gap(16).Padding(24).Align(geom.Alignment{X: 0.5}).
 		Background(panel).CornerRadius(16).Border(hair),

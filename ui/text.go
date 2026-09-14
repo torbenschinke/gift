@@ -203,7 +203,12 @@ func (n *textNode) Paint(ctx *gift.PaintContext) {
 	b := ctx.Bounds()
 	paintBackground(ctx, n.st, b)
 	if n.st.clip {
-		ctx.PushClip(b)
+		// Device space, which is what the clip stack is in. It used to be b,
+		// the local rectangle, and the two were the same number for as long
+		// as no transform existed. Inside a scroll container they are not:
+		// the glyphs would have been clipped against the place the label sat
+		// before the container scrolled.
+		ctx.PushClip(ctx.DeviceBounds())
 	}
 	n.paintGlyphs(ctx, b)
 	if n.st.clip {

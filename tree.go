@@ -1,5 +1,10 @@
 package gift
 
+import (
+	"github.com/torbenschinke/gift/geom"
+	"github.com/torbenschinke/gift/internal/scene"
+)
+
 // This file is the read only window onto the retained tree.
 //
 // # Why it exists and why it is this small
@@ -109,3 +114,62 @@ func (a *App) NodeFocusable(r NodeRef) bool {
 // stale when its node is unmounted, and the slot may then be reused by an
 // unrelated node — the generation in the handle is what keeps the two apart.
 func (a *App) NodeValid(r NodeRef) bool { return a.store.Valid(r.h) }
+
+// NodeDeviceBounds returns the rectangle of the node in device space: its
+// layout bounds mapped through the transforms of its ancestors, which today
+// means through the scroll offsets above it.
+//
+// [App.NodeBounds] is the layout answer and this is the on screen answer.
+// They differ exactly when something above the node is scrolled or
+// transformed, and the difference is what makes a test that aims at a node
+// inside a scroll container hit the node rather than the place it used to be.
+func (a *App) NodeDeviceBounds(r NodeRef) geom.Rect {
+	if !a.store.Valid(r.h) {
+		return geom.Rect{}
+	}
+	_, m, ok := a.deviceSpace(r.h)
+	if !ok {
+		return geom.Rect{}
+	}
+	return m.TransformRect(a.store.Get(r.h).Bounds)
+}
+
+// NodeVisibleBounds returns the part of the node that survives the clips of
+// its ancestors, and whether any of it does.
+//
+// It is [App.NodeDeviceBounds] intersected with the inherited clip. A node
+// scrolled out of its viewport returns false, which is the question "is this
+// on screen at all" answered without a GPU. It is not an occlusion test: a
+// node covered by an opaque sibling is still visible by this definition, and
+// [App.HitTest] is the verb for that question.
+func (a *App) NodeVisibleBounds(r NodeRef) (geom.Rect, bool) {
+	if !a.store.Valid(r.h) {
+		return geom.Rect{}, false
+	}
+	clip, m, ok := a.deviceSpace(r.h)
+	if !ok {
+		return geom.Rect{}, false
+	}
+	vis := m.TransformRect(a.store.Get(r.h).Bounds).Intersect(clip)
+	if vis.IsEmpty() {
+		return geom.Rect{}, false
+	}
+	return vis, true
+}
+
+// NodeScroller returns the nearest scroll container at or above r, and whether
+// there is one. It is how a caller that holds a node asks "what would scroll
+// if I scrolled here".
+func (a *App) NodeScroller(r NodeRef) (NodeRef, bool) {
+	h := r.h
+	for depth := 0; !h.IsZero() && a.store.Valid(h); depth++ {
+		if depth > scene.MaxDepth {
+			break
+		}
+		if a.data(h).scroll != nil {
+			return NodeRef{h}, true
+		}
+		h = a.store.Get(h).Parent
+	}
+	return NodeRef{}, false
+}

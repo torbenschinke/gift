@@ -163,9 +163,16 @@ type Event struct {
 	Pos geom.Point
 
 	// Delta is the movement since the previous event for a move, and the
-	// scroll amount for [EventWheel]. Positive Y scrolls the content up,
-	// which is the direction every platform reports for "wheel away from the
-	// user".
+	// scroll amount for [EventWheel].
+	//
+	// For a wheel, positive Y is the wheel pushed *away* from the user, which
+	// is what GLFW and therefore Ebitengine report, and it moves towards the
+	// beginning of the document — so a scroll container subtracts it from its
+	// offset. The previous wording, "positive Y scrolls the content up", said
+	// nothing a reader could act on: content moving up on screen and the view
+	// moving up the document are opposite directions and it did not say
+	// which. The sign is fixed here because [scrollHandler] is now the first
+	// consumer and something had to be true.
 	Delta geom.Point
 
 	// Inside reports whether Pos lies inside the receiving node, taking the
@@ -306,6 +313,60 @@ func (c *EventContext) RequestFocus() { c.app.setFocus(c.cur) }
 // ClearFocus removes the keyboard focus from whatever holds it.
 func (c *EventContext) ClearFocus() { c.app.setFocus(scene.Handle{}) }
 
+// StealPointer moves the capture of the pointer whose event is being
+// dispatched to the receiving node, and reports whether the node holds it
+// afterwards.
+//
+// # What it is for
+//
+// The classic mobile interaction: a finger comes down on a button inside a
+// scrolling list, travels further than [DragSlop] and turns into a scroll. The
+// button took the press, so every move is delivered to it and bubbles up to
+// the scroller; the scroller recognises the drag and calls this. The button is
+// then told [EventPointerCancel] — its gesture really is over — loses its
+// pressed look and never sees the release, so it cannot activate. Without it
+// the release would arrive at the button with [Event.Dragged] set, which a
+// well written control declines, but a control that merely checks
+// [Event.Inside] would fire, and the pressed highlight would follow the finger
+// down the whole list.
+//
+// # What it is not
+//
+// It is not a gesture arena. There is no negotiation, no deferred resolution
+// and no way to hand the pointer back: whoever calls it last wins, and the
+// previous holder is told the gesture ended. That is enough for the one
+// conflict gift has — a scroll against everything else — and a real arena is
+// the kind of thing to build when there is a second conflict to arbitrate.
+//
+// The cancel is delivered synchronously, which means the previous holder's
+// HandleEvent may still be on the stack above this call: it is the frame that
+// bubbled the event here in the first place. A handler therefore has to
+// tolerate receiving a cancel from inside its own dispatch, which is why
+// cancel handling is required to be a state reset and not a state machine
+// transition.
+//
+// It does nothing when no pointer is down, so calling it from a key handler is
+// harmless rather than a way to corrupt the capture.
+func (c *EventContext) StealPointer() bool { return c.app.stealPointer(c.cur) }
+
+func (a *App) stealPointer(h scene.Handle) bool {
+	p := a.in.cur
+	if p == nil || !p.down || !a.store.Valid(h) {
+		return false
+	}
+	if p.capture == h {
+		return true
+	}
+	prev := p.capture
+	p.capture = h
+	p.insideCap = a.hits(h, p.pos)
+	if a.store.Valid(prev) {
+		a.setPressed(prev, false)
+		a.deliver(prev, a.pointerEvent(EventPointerCancel, p), true)
+	}
+	return true
+}
+
 // Repaint marks the receiving node as needing to be drawn again, without
 // rebuilding or re measuring anything.
 //
@@ -358,6 +419,17 @@ type inputState struct {
 	focus scene.Handle
 	ectx  EventContext
 
+	// cur is the pointer whose event is currently being dispatched, nil
+	// outside a pointer dispatch. It exists so that
+	// [EventContext.StealPointer] knows which capture to move without every
+	// event having to carry a pointer back reference.
+	cur *pointer
+
+	// flings is the set of scroll containers with a running kinetic
+	// animation. It is a reused slice compacted in place, so a fling costs
+	// no allocation per frame; see [App.tickScrolls].
+	flings []scene.Handle
+
 	// focusScan is the reusable stack of the focus traversal; see
 	// [App.focusNeighbour].
 	focusScan []scene.Handle
@@ -371,11 +443,17 @@ type inputState struct {
 // rests on the screen and a gesture that needed an event to notice the
 // passage of time would never fire at all.
 //
+// It is also where kinetic scrolling is advanced, for exactly the same
+// reason: a fling has to keep moving while the user does nothing at all. The
+// clock is the parameter and never the wall clock, so gifttest.Advance can
+// step a fling deterministically; the project plan, section 13, requires that.
+//
 // now is a monotonic timestamp; differences are meaningful, the absolute
 // value is not. A backend normally passes time.Since of a start instant.
 func (a *App) BeginInput(now time.Duration) {
 	a.assertInputPhase("BeginInput")
 	a.in.now = now
+	a.tickScrolls(now)
 	for i := range a.in.pointers {
 		p := &a.in.pointers[i]
 		if !p.active || !p.down || p.longFired || p.dragged {
@@ -413,6 +491,8 @@ func (a *App) PointerMove(id PointerID, kind PointerKind, pos geom.Point) {
 	if p == nil {
 		return
 	}
+	a.in.cur = p
+	defer func() { a.in.cur = nil }()
 	delta := geom.Pt(pos.X-p.pos.X, pos.Y-p.pos.Y)
 	p.pos = pos
 	if p.down && !p.dragged && dist2(pos, p.downPos) > DragSlop*DragSlop {
@@ -467,6 +547,8 @@ func (a *App) PointerDown(id PointerID, kind PointerKind, pos geom.Point) {
 		a.diag.DiscardedTouches++
 		return
 	}
+	a.in.cur = p
+	defer func() { a.in.cur = nil }()
 	p.pos = pos
 	p.down = true
 	p.downPos = pos
@@ -504,6 +586,8 @@ func (a *App) PointerUp(id PointerID, kind PointerKind, pos geom.Point) {
 	if p == nil || !p.down {
 		return
 	}
+	a.in.cur = p
+	defer func() { a.in.cur = nil }()
 	p.pos = pos
 	p.down = false
 	cap := p.capture
@@ -534,6 +618,8 @@ func (a *App) PointerCancel(id PointerID) {
 	if p == nil {
 		return
 	}
+	a.in.cur = p
+	defer func() { a.in.cur = nil }()
 	cap := p.capture
 	p.capture = scene.Handle{}
 	p.down = false
@@ -554,9 +640,10 @@ func (a *App) PointerCancel(id PointerID) {
 // interactor handles it, because the node that scrolls is an ancestor of the
 // leaf the cursor happens to be over.
 //
-// Nothing in gift consumes it yet: there is no scrollable view until step 3 of
-// the project plan, section 12. The event exists so that the scroll container
-// plugs into a delivery path that is already tested, rather than inventing one.
+// A scroll container consumes it when it can still move in the requested
+// direction and lets it bubble when it cannot; see the overscroll chaining
+// rule on gift's scroll handler. An event that reaches the root unconsumed is
+// simply dropped.
 func (a *App) PointerWheel(pos geom.Point, delta geom.Point) {
 	a.assertInputPhase("PointerWheel")
 	// Through pointerFor like every other mouse entry point, and not by
@@ -570,6 +657,8 @@ func (a *App) PointerWheel(pos geom.Point, delta geom.Point) {
 	if p == nil {
 		return
 	}
+	a.in.cur = p
+	defer func() { a.in.cur = nil }()
 	// The hover follows the position, for the same reason PointerMove
 	// maintains it: writing p.pos without it left p.over pointing at whatever
 	// node the mouse was last over, so the next real move computed its delta
@@ -798,6 +887,15 @@ func (a *App) markNeedsPaint(h scene.Handle) {
 func (a *App) forgetNode(h scene.Handle) {
 	if a.in.focus == h {
 		a.in.focus = scene.Handle{}
+	}
+	// A fling on an unmounted container has nothing left to move. The tick
+	// loop already skips invalid handles, so this only keeps the slice from
+	// growing across a long sequence of mounts and unmounts.
+	for i, f := range a.in.flings {
+		if f == h {
+			a.in.flings = append(a.in.flings[:i], a.in.flings[i+1:]...)
+			break
+		}
 	}
 	for i := range a.in.pointers {
 		p := &a.in.pointers[i]

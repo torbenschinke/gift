@@ -145,15 +145,38 @@ type Element struct {
 	// Transform maps this node and its subtree into the space of its parent.
 	// A nil Transform, the default, is the identity.
 	//
-	// It is the one channel through which scrolling will move a subtree
-	// without re measuring it, and it is shared: [App.paintNode] pushes it
-	// into the display list and the hit test composes the same matrix, so
+	// It is shared between the two halves of a frame: [App.paintNode] pushes
+	// it into the display list and [App.hitNode] composes the same matrix, so
 	// input and output cannot disagree about where a node is. The project
 	// plan, section 7, requires exactly that.
 	//
 	// The pointer is retained for as long as the node lives and must not be
 	// modified afterwards; build a new one instead.
+	//
+	// It is a *build time* declaration, which is why scrolling does not use
+	// it: a scroll offset changes without a rebuild, and gift would then have
+	// to mutate a value the view owns. See [Element.Scroll].
 	Transform *geom.Affine2D
+
+	// Scroll declares this node to be a scroll viewport along one axis.
+	//
+	// A viewport clips its subtree to its own bounds and translates its
+	// children by the scroll offset, which gift keeps in the retained node as
+	// presentation state. Both halves are read exactly once, on the way into
+	// the subtree, by [App.beginSubtree] for paint and by [App.hitNode] for
+	// input — the same single reader rule [Element.Clip] follows, and for the
+	// same reason.
+	//
+	// The translation deliberately applies to the children and not to the
+	// node itself: the viewport has to stay where the layout put it, because
+	// that is the rectangle it clips against. A node that also carries a
+	// Transform composes normally, with its own transform applied first.
+	//
+	// gift installs its own [Interactor] on a scroll node that declares none,
+	// which is what makes wheel, drag and kinetic scrolling work without a
+	// view writing any gesture code. A nil Scroll, the default, is an
+	// ordinary node.
+	Scroll *ScrollSpec
 }
 
 // BuildContext is passed to [View.Build].

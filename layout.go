@@ -163,6 +163,16 @@ func (a *App) layoutNode(h scene.Handle, c geom.Constraints) geom.Size {
 	nd.lastC = c
 	nd.haveLastC = true
 	n.Size = size
+	// A scroll container's viewport is whatever size it ended up with along
+	// its own axis, so gift takes it from here rather than making every
+	// scrolling layouter report it. Re-clamping the offset is part of the
+	// same step: a viewport that grew may have made the current offset
+	// illegal, and the next paint would otherwise translate the content past
+	// its end.
+	if s := nd.scroll; s != nil {
+		s.viewport = s.axis.ofSize(size)
+		s.off = s.clamp(s.off)
+	}
 	n.Flags &^= scene.FlagNeedsLayout
 	n.Flags |= scene.FlagNeedsPaint
 	return size

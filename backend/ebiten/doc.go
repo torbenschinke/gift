@@ -91,11 +91,12 @@
 // emitted, which is exact for rectangles and costs no state changes. An
 // operation whose clip is empty produces no geometry at all.
 //
-// Transforms are resolved through [render.List.Xform]. gift does not push a
-// transform yet, so index zero, the identity, is the only one that occurs in
-// practice: the general path is covered by unit tests but has never been
-// exercised end to end against a GPU. It is implemented anyway, because
-// scrolling will need it.
+// Transforms are resolved through [render.List.Xform]. Since WU-L a scroll
+// container pushes one: a pure translation, which takes the axis aligned fast
+// path in [Renderer.appendAxisAligned] and in [Renderer.appendGlyphQuad] and
+// is exercised end to end against a GPU by gifttest's scroll pixel test. The
+// general polygon path still has no producer in gift and is covered by unit
+// tests only.
 //
 // One consequence is worth stating rather than implying. Shapes are shaded
 // from a distance field that this package rescales into device pixels, so a
@@ -103,7 +104,7 @@
 // bitmap rasterised at the glyph's nominal size, and a scale would stretch it
 // under a nearest filter, giving text the wrong weight. The mapping from atlas
 // pixel to screen pixel is one to one only because every transform gift emits
-// is the identity — it is not one to one by construction. Making it so under a
+// is a translation — it is not one to one by construction. Making it so under a
 // scale means putting the effective size in the atlas key and asking
 // internal/text to rasterise at that size; see [Renderer.appendGlyphQuad],
 // where the note sits next to the code that would have to change.

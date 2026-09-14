@@ -13,6 +13,7 @@ const (
 	kindStack nodeKind = iota
 	kindOverlay
 	kindBox
+	kindScroll
 )
 
 // node is the retained half of every container view: it is both the
@@ -76,6 +77,8 @@ func (n *node) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 			n.items[i].Flex = ctx.ChildFlex(i)
 		}
 		res = layout.Stack(n.spec, cc, k, n, n.items, n.origins)
+	case kindScroll:
+		res = n.layoutScroll(ctx, cc, k)
 	case kindBox:
 		// A Box has no content, so it is greedy: it takes the whole extent
 		// on every axis that is bounded, and collapses to its padding on an
@@ -144,6 +147,68 @@ func (n *node) ensure(k int) {
 	}
 	n.items = n.items[:k]
 	n.origins = n.origins[:k]
+}
+
+// layoutScroll is the stack algorithm with the scroll axis unbounded.
+//
+// # Why the axis is measured unbounded
+//
+// A scroll container exists precisely so that its content may be larger than
+// it is. Measuring the content against the viewport extent would make a tall
+// column report the viewport height and there would be nothing to scroll; so
+// the scroll axis is [geom.Unbounded] and the cross axis keeps the viewport's
+// bound. That is also rule 1 of the overflow model of the project plan,
+// section 7, applied to the one container where it is not merely a safety
+// property but the whole point.
+//
+// # Why this is not an overflow
+//
+// Content taller than the viewport is the normal, intended state here, and
+// [gift.Diagnostics.OverflowNodes] must stay zero for it — otherwise the one
+// number that says "some container in this scene is lying about its size"
+// would be noisy in exactly the scenes it is needed for, and
+// [gifttest.Harness.AssertNoOverflow] would be useless in a gallery.
+//
+// The distinction is not "how much bigger" but *whether the content is
+// reachable*. Rule 3 of the overflow model is about content that keeps honest
+// positions nobody can ever see; here the content keeps honest positions and
+// the user reaches all of them by scrolling. Mechanically it falls out of the
+// measurement: the scroll axis is unbounded, and an unbounded axis cannot
+// overflow because nothing was exceeded. The excess is reported through
+// [gift.LayoutContext.ReportScrollContent] instead, where it is a content
+// extent rather than a complaint.
+//
+// The *cross* axis is a different matter and is reported as an ordinary
+// overflow. A child wider than a vertical scroller really is cut off and
+// really is unreachable, because there is no horizontal offset to move it
+// into view. That is the honest line between the two.
+func (n *node) layoutScroll(ctx *gift.LayoutContext, cc geom.Constraints, k int) layout.Result {
+	for i := range k {
+		n.items[i].Flex = ctx.ChildFlex(i)
+	}
+	free := cc
+	if n.spec.Axis == layout.Horizontal {
+		free.Min.W, free.Max.W = 0, geom.Unbounded()
+	} else {
+		free.Min.H, free.Max.H = 0, geom.Unbounded()
+	}
+	res := layout.Stack(n.spec, free, k, n, n.items, n.origins)
+
+	// The content extent is what the children came to; the viewport is what
+	// the incoming constraints allow. gift derives the viewport from the size
+	// returned below, so only the content has to be reported.
+	content := res.Size
+	ctx.ReportScrollContent(float64(mainExtent(n.spec.Axis, content)), 0)
+	res.Size = cc.Constrain(content)
+	return res
+}
+
+// mainExtent returns the component of s along ax.
+func mainExtent(ax layout.Axis, s geom.Size) float32 {
+	if ax == layout.Horizontal {
+		return s.W
+	}
+	return s.H
 }
 
 // element builds the gift.Element of a container view.

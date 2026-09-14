@@ -80,16 +80,31 @@
 // forever is therefore caught by the harness with a diagnosis instead of
 // hanging the test binary; see [Harness.Settle].
 //
+// # Scrolling
+//
+// A node inside a ui.ScrollView may be anywhere, including entirely outside its
+// viewport. Selectors run over the retained tree and find it regardless; the
+// *actions* then bring it into view themselves before working out where to
+// click, because a point a clip removes is a point an event never reaches.
+// [Node.Center] is correspondingly the centre of the *visible* part of a node
+// and not of its full bounds, and [Node.Bounds] is the device rectangle rather
+// than the layout one — [Node.LayoutBounds] is still there for a test whose
+// subject really is the layout.
+//
+// The scroll happens before the aim check rather than instead of it. The two
+// answer different questions: the scroll decides where the node is, and the hit
+// test decides whether something else is on top of it there. A genuinely
+// covered node still fails, after the scroll, naming both nodes.
+//
+// [Node.ScrollIntoView], [Node.ScrollTo], [Node.ScrollBy],
+// [Node.AssertScrollOffset], [Node.AssertVisible] and [Node.Fling] are the
+// explicit verbs for a test whose subject is the scrolling itself.
+//
 // # What it cannot do yet
 //
 //   - Type text. There is no text input view and no character event in gift;
 //     [Harness.TypeText] says so at the call site, with what it would take,
 //     rather than faking an event the runtime never delivers.
-//   - Scroll to a node that is off screen. gift has no scrollable view before
-//     step 3 of the project plan, so every node a test can find is laid out
-//     and hit testable. When scrolling arrives, the actions will need to bring
-//     a node into view first, and [Node.Center] will have to be the centre of
-//     the *visible* part of a node rather than of its bounds.
 //   - Assert on anything the backend does with the display list, short of a
 //     golden image: batching, atlas pressure and draw call counts live in
 //     backend/ebiten's own stats.

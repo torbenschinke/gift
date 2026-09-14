@@ -491,10 +491,10 @@ func (r *Renderer) appendGlyphs(l *render.List, op render.Op) {
 // means folding the device scale into the atlas key — a change to
 // [glyphKey] and to what internal/text is asked for, not to this function.
 //
-// Nothing in gift produces such a transform today. Every transform is the
-// identity; see the package documentation, "Clipping and transforms". This is
-// recorded here so that the first thing to push a scale finds the note rather
-// than the artefact.
+// Nothing in gift produces such a transform today. A scroll container pushes a
+// pure translation, which leaves the mapping one to one; see the package
+// documentation, "Clipping and transforms". This is recorded here so that the
+// first thing to push a scale finds the note rather than the artefact.
 func (r *Renderer) appendGlyphQuad(dst, src, clip geom.Rect, xf geom.Affine2D, col render.Color) bool {
 	dev := geom.Rc(
 		xf.A*dst.Min.X+xf.TX, xf.D*dst.Min.Y+xf.TY,
@@ -523,8 +523,10 @@ func (r *Renderer) appendGlyphQuad(dst, src, clip geom.Rect, xf geom.Affine2D, c
 // appendGlyphQuadTransformed is the general path: the quad is mapped into
 // device space and clipped as a convex polygon, with the texture coordinates
 // interpolated along with the corners. gift produces no transform that needs
-// it yet; it exists so that a rotated or mirrored scroll container later is a
-// display list change and not a backend rewrite.
+// it — a scroll container pushes a translation, which takes the fast path
+// above — so this is exercised by tests only. It exists so that a rotated or
+// mirrored container later is a display list change and not a backend
+// rewrite.
 func (r *Renderer) appendGlyphQuadTransformed(dst, src, clip geom.Rect, xf geom.Affine2D, col render.Color) bool {
 	poly := &r.poly[0]
 	other := &r.poly[1]

@@ -51,6 +51,8 @@ var views = []struct {
 	{name: "ui.Box", set: setStyled, v: ui.Box()},
 	{name: "ui.Text", set: setStyled, v: ui.Text("x")},
 	{name: "ui.Button", set: setStyled, v: ui.Button(ui.Box(), nil)},
+	{name: "ui.VScroll", set: setStyled, v: ui.VScroll()},
+	{name: "ui.HScroll", set: setStyled, v: ui.HScroll()},
 	{
 		name: "ui.Spacer", set: setMinimal, v: ui.Spacer(),
 		why: "a Spacer draws nothing and has no bounds of its own; a Background it then " +

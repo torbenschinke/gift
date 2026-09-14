@@ -81,8 +81,9 @@ func (a *App) NodeInteraction(r NodeRef) Interaction {
 // painter composes the same two things from the same two fields; see
 // [App.paintNode].
 //
-// Today every transform is the identity, because nothing pushes one yet. The
-// composition is here rather than added later because the alternative is a
+// Since WU-L there is a real producer: a scroll container translates its
+// children, and this walk composes exactly what [App.beginSubtree] pushes into
+// the display list. The composition was written here rather than added later because the alternative is a
 // second traversal that drifts from the first one, which is the failure the
 // plan names.
 //
@@ -135,7 +136,7 @@ func (a *App) hitNode(h scene.Handle, p geom.Point, clip geom.Rect, m geom.Affin
 	}
 
 	for i := len(nd.children) - 1; i >= 0; i-- {
-		if hit := a.hitNode(nd.children[i], p, clip, m, depth+1); !hit.IsZero() {
+		if hit := a.hitNode(nd.children[i], p, clip, a.childXform(nd, m), depth+1); !hit.IsZero() {
 			return hit
 		}
 	}
@@ -149,6 +150,20 @@ func (a *App) hitNode(h scene.Handle, p geom.Point, clip geom.Rect, m geom.Affin
 		return h
 	}
 	return scene.Handle{}
+}
+
+// childXform returns the local to device transform the children of nd see.
+//
+// It is m plus the translation of a scroll offset, and it is the input half of
+// [App.beginSubtree]. The two functions must agree; they are two lines each
+// and they sit in two files because one walks the tree for paint and the other
+// for input, which is the one duplication the project plan, section 7,
+// accepts — provided both read the same declaration, which they do.
+func (a *App) childXform(nd *nodeData, m geom.Affine2D) geom.Affine2D {
+	if s := nd.scroll; s != nil {
+		return s.xform().Mul(m)
+	}
+	return m
 }
 
 // hits reports whether the device space point p lands on the node h, taking
@@ -196,6 +211,11 @@ func (a *App) deviceSpaceAt(h scene.Handle, depth int) (geom.Rect, geom.Affine2D
 		if !ok {
 			return clip, m, false
 		}
+		// The parent's scroll offset applies to its children, which is what
+		// this node is. Leaving it out was the same omission as the raw clip
+		// rectangle in the painter: correct for as long as no transform
+		// existed, silently wrong the moment one did.
+		m = a.childXform(a.data(n.Parent), m)
 	}
 	nd := &n.Payload
 	if nd.xform != nil {

@@ -53,6 +53,11 @@ type Diagnostics struct {
 	// InputEvents counts the calls into an [Interactor], including the ones
 	// that happened while an event bubbled towards the root.
 	InputEvents uint64
+	// Scrolls counts the times a scroll container's offset actually
+	// changed: a wheel notch, a drag step, a fling tick or a programmatic
+	// jump. It moves while Builds and Layouts do not, which is the whole
+	// claim of the scroll fast path stated as two numbers.
+	Scrolls uint64
 	// DiscardedTouches counts the additional fingers that were recognised
 	// and dropped. The project plan, section 7, limits multitouch to exactly
 	// that, and a counter is how "it was dropped on purpose" is told apart
