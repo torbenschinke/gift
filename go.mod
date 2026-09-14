@@ -2,7 +2,11 @@ module github.com/torbenschinke/gift
 
 go 1.27
 
-require github.com/hajimehoshi/ebiten/v2 v2.10.1
+require (
+	github.com/go-text/typesetting v0.3.5
+	github.com/hajimehoshi/ebiten/v2 v2.10.1
+	golang.org/x/image v0.45.0
+)
 
 require (
 	github.com/ebitengine/gomobile v0.0.0-20260820040257-d11f821a26a6 // indirect

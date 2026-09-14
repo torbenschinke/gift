@@ -613,6 +613,19 @@ sondern getrennt gemessen:
   invalidierungsgesteuert, nicht allokationsfrei.
 - Neu sichtbare Tiles, Bild-Decoding, Thumbnail-Erzeugung.
 - Backend-interne Allokationen von Ebitengine.
+- **Shaping-Cache-Misses.** Praezisierung aus WU-F. Textmessung findet im
+  Layout statt, und Layout ist Teil des Vertrags. Der Vertrag gilt aber nur
+  fuer bereits geshapten Text: ein Cache-Hit ist mit 0 B/op gemessen, ein Miss
+  alloziert rund 5 KB in harfbuzz und laesst sich ohne eigenen Shaper nicht
+  vermeiden. Der Vertrag lautet also genau: **Layout ist allokationsfrei fuer
+  Text, den es schon gesehen hat.**
+
+  Das ist kein Wortspiel, sondern eine Abnahmebedingung. Ein Label, das sich
+  aendert, ist ein Build und damit ohnehin ausgenommen. Eine Beschriftung, die
+  sich ohne Rebuild aendert, oder eine Galerie, die staendig neue Bildtitel in
+  den Viewport scrollt, verfehlt den Vertrag dagegen in jedem Frame. Schritt 3
+  bekommt dafuer ein eigenes Messszenario; das darf keine Entdeckung waehrend
+  der Galeriearbeit werden.
 
 Kein globales GC-Abschalten, keine unsafe-Arena als Ausgangspunkt.
 
