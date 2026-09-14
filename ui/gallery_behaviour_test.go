@@ -75,6 +75,7 @@ func TestGalleryLiveNodesAreBoundedByTheViewport(t *testing.T) {
 func TestGalleryScrollPathCost(t *testing.T) {
 	type cost struct{ builds, layouts, frames uint64 }
 	got := map[int]cost{}
+	pools := map[int]int{}
 	for _, n := range []int{100, 100000} {
 		g := ui.NewGallery(asset.NewCollection(synth(n)))
 		h := gifttest.New(t, gifttest.Options{
@@ -96,12 +97,25 @@ func TestGalleryScrollPathCost(t *testing.T) {
 			layouts: after.Layouts - before.Layouts,
 			frames:  after.Frames - before.Frames,
 		}
+		pools[n] = g.SlotCount()
 		t.Logf("n=%d: one viewport scroll cost %d builds, %d layouts over %d frames (pool %d, visible %d)",
 			n, got[n].builds, got[n].layouts, got[n].frames, g.SlotCount(), g.VisibleCount())
 	}
 	for n, c := range got {
 		if c.builds != 0 {
 			t.Errorf("n=%d: scrolling one viewport rebuilt %d scopes; the scroll path must not build", n, c.builds)
+		}
+		// An absolute bound, not only an N-independent one. A gallery running
+		// ten thousand layouters per scroll would satisfy "the same number at
+		// both sizes" and would still be unusable, and this test asserted
+		// exactly that and no more until WU-O. The bound is the one
+		// [gift.ScrollSpec.Virtual] documents: one layouter per tile in the
+		// pool, plus the container, plus the depth of the marked path. Eight
+		// is generous headroom over the two-deep tree here.
+		limit := uint64(pools[n] + 8)
+		if c.layouts > limit {
+			t.Errorf("n=%d: scrolling one viewport ran %d layouters for a pool of %d; the bound "+
+				"is one per tile plus the marked path, that is %d", n, c.layouts, pools[n], limit)
 		}
 	}
 	if got[100].layouts != got[100000].layouts {
@@ -211,8 +225,28 @@ func TestGalleryTileKeepsItsItemWhenNothingMoved(t *testing.T) {
 			t.Errorf("tile %d moved from slot %d/%q to slot %d/%q",
 				i, before[i].Slot, before[i].ID, after[i].Slot, after[i].ID)
 		}
-		if before[i].DocY == after[i].DocY && after[i].DocY == 0 {
-			t.Errorf("tile %d has a zero document position", i)
+		// The actual claim, which the clause this replaces never made. It
+		// read `before[i].DocY == after[i].DocY && after[i].DocY == 0`, which
+		// is dead: the test scrolls to 4000 first, so no tile is at document
+		// y zero and the second conjunct is never true. Nothing asserted that
+		// the document position was unchanged — and "nothing moved" is
+		// exactly what the test is named after. A one pixel scroll moves the
+		// viewport, not the document, so every tile must report the same
+		// document rectangle it did before.
+		if before[i].DocY != after[i].DocY || before[i].DocX != after[i].DocX ||
+			before[i].DocW != after[i].DocW || before[i].DocH != after[i].DocH {
+			t.Errorf("tile %d of %q moved in the document from (%.3f,%.3f %.3fx%.3f) to "+
+				"(%.3f,%.3f %.3fx%.3f) across a one pixel scroll; the viewport moved, not the content",
+				i, before[i].ID,
+				before[i].DocX, before[i].DocY, before[i].DocW, before[i].DocH,
+				after[i].DocX, after[i].DocY, after[i].DocW, after[i].DocH)
+		}
+		if before[i].DocH <= 0 {
+			t.Errorf("tile %d of %q has an empty document rectangle", i, before[i].ID)
+		}
+		if before[i].Generation != after[i].Generation {
+			t.Errorf("tile %d of %q moved from generation %d to %d without changing item",
+				i, before[i].ID, before[i].Generation, after[i].Generation)
 		}
 	}
 }
@@ -591,17 +625,63 @@ func scrollAndAnchor(t *testing.T, h *gifttest.Harness, g *ui.Gallery, off float
 	return id
 }
 
-// assertAnchored fails unless the entry the viewport was pinned to still has a
-// tile.
+// assertAnchored fails unless the entry the viewport was pinned to is back
+// under the top edge of the viewport.
+//
+// # Why this asserts a position and not merely a tile
+//
+// Because "it still has a tile" is barely stronger than "it is somewhere on
+// screen": with an [ui.GalleryView.Overscan] of zero a tile exists exactly for
+// the items intersecting the viewport, so the old form of this helper passed
+// for an anchored entry that had slid most of a viewport away. Measured on the
+// masonry to justified switch, which is the reflow that moves the most: the
+// anchored item ended up 175 pixels from where it had been, on a 600 pixel
+// viewport, and the test was green.
+//
+// # The tolerance, and where it comes from
+//
+// It is not a number chosen to make the test pass. [ui.Gallery.takeAnchor]
+// clamps the local offset into the anchored item — "this many pixels into that
+// item" rather than "this many pixels into the document from its top" — and
+// the restore clamps it again against the item's new height. The documented
+// consequence is therefore exact: the top edge of the viewport lands somewhere
+// inside the anchored item. So that is what is asserted, with the two
+// legitimate exceptions where the document clamp overrides the anchor — the
+// very top and the very end of the document, which cannot be scrolled past.
 func assertAnchored(t *testing.T, h *gifttest.Harness, g *ui.Gallery, id asset.ID, what string) {
 	t.Helper()
 	h.Settle()
+	node := h.Find(gifttest.ByKey("gallery"))
+	off := node.ScrollOffset()
+	i, found := g.Collection().Find(id)
+	if !found {
+		t.Fatalf("after %s the anchored ID %q is no longer in the catalogue", what, id)
+	}
+	_, y, _, hh, ok := g.ItemRect(i)
+	if !ok {
+		t.Fatalf("after %s the anchored entry %q has no rectangle: %v", what, id, g)
+	}
 	if _, ok := g.BindingOf(id); !ok {
-		off := h.Find(gifttest.ByKey("gallery")).ScrollOffset()
-		i, _ := g.Collection().Find(id)
-		_, y, _, hh, _ := g.ItemRect(i)
 		t.Errorf("after %s the anchored entry %q (item %d, y=%.1f..%.1f) is no longer on screen; "+
 			"the viewport is at %.1f\n%v", what, id, i, y, y+hh, off, g)
+		return
+	}
+	// The clamp of takeAnchor: the viewport top is inside the anchored item.
+	lo, hi := y, y+max(hh-1, 0)
+	info := node.ScrollInfo()
+	const eps = 0.5
+	atTop := off <= eps
+	atEnd := off >= info.MaxOffset-eps
+	if off < lo-eps || off > hi+eps {
+		if atTop || atEnd {
+			// The document clamp wins over the anchor at both ends, and has
+			// to: there is nothing above zero and nothing below MaxOffset.
+			return
+		}
+		t.Errorf("after %s the viewport is at %.1f but the anchored entry %q (item %d) covers "+
+			"%.1f..%.1f; the anchor is supposed to leave the top edge inside that item, and it "+
+			"drifted %.1f pixels out of it on a %.0f pixel viewport\n%v",
+			what, off, id, i, lo, hi, max(lo-off, off-hi), float64(info.ViewportExtent), g)
 	}
 }
 

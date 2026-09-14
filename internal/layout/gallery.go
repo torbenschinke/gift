@@ -338,6 +338,22 @@ func (ix *Index) SetItems(n int, dims Dimensions) {
 // are still the provisional ones until a rebuild has been started and
 // committed; that is deliberate, because the moment to move the content is a
 // decision about the scroll anchor, and that decision belongs to the caller.
+//
+// # It cancels a rebuild in flight
+//
+// For the same reason [Index.SetItems] does, and it is not a nicety. The
+// placement phases read an aspect ratio lazily as they walk the items, so
+// writing one while a build is halfway through would give the items already
+// placed the old ratio and the items still to come the new one — and that torn
+// layout would then be *committed*, permanently, with a document extent that
+// matches neither input. A cancelled build is a build the caller starts again
+// with [Index.BeginRebuild]; a torn one is a wrong answer nobody can detect
+// afterwards.
+//
+// The cancellation happens only when something actually changed, so a batch of
+// no-ops does not disturb a reflow in progress. A caller that changed
+// something must therefore treat a non zero return as "my reflow is gone,
+// start a new one".
 func (ix *Index) ApplyCorrections(cs []Correction) int {
 	changed := 0
 	for _, c := range cs {
@@ -350,6 +366,9 @@ func (ix *Index) ApplyCorrections(cs []Correction) int {
 		}
 		ix.aspect[c.Item] = a
 		changed++
+	}
+	if changed > 0 {
+		ix.cancel()
 	}
 	return changed
 }
@@ -683,10 +702,28 @@ func (ix *Index) RowOf(i int) (start, end int, ok bool) {
 // Compact releases the recycled backing arrays of the index, trading the cost
 // of the next rebuild for about half the resident bytes. It is for a gallery
 // that has gone off screen, not for the scroll path.
+//
+// It is safe at any point of the lifecycle, including in the middle of a
+// chunked rebuild, and that is the whole of what the guard below is for. The
+// masonry builder keeps its running column bottoms, per column counts and
+// grouping cursors in [Index.b]; they are sized once in [Index.BeginRebuild]
+// and indexed unguarded by every later [Index.Step], so releasing them under a
+// live build turns the next Step into a slice bounds panic in the middle of a
+// frame. A gallery that goes off screen while a reflow is in flight — a resize
+// followed by a tab switch — is exactly the sequence that does it, and
+// justified mode never touches those slices, which is why the shape of the bug
+// depends on the layout mode.
+//
+// Under a live build the scratch is therefore kept and only the spare state is
+// released. The build finishes, and the next Compact after it releases the
+// rest.
 func (ix *Index) Compact() {
 	ix.spare = nil
+	if ix.b.active {
+		return
+	}
 	ix.b.bottom, ix.b.count, ix.b.cursor = nil, nil, nil
-	if ix.cur != nil && !ix.b.active {
+	if ix.cur != nil {
 		ix.cur.col = nil
 	}
 }

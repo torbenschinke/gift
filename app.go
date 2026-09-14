@@ -63,6 +63,8 @@ type App struct {
 	needsPaint  bool
 	layoutDepth int
 	paintDepth  int
+	// layoutPass is the ordinal of the layout pass; see [LayoutContext.Pass].
+	layoutPass uint64
 
 	updating bool
 	painting bool
@@ -158,6 +160,7 @@ func (a *App) Update(viewport geom.Size) error {
 	a.runBuilds()
 
 	if a.needsLayout {
+		a.layoutPass++
 		a.layoutDepth = 0
 		a.layoutNode(a.root.node, geom.Loose(a.viewport))
 		a.assignBounds(a.root.node, geom.Point{}, 0)

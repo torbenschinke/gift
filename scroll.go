@@ -169,9 +169,27 @@ type ScrollSpec struct {
 	// So: with Virtual set, [App.setScroll] marks the node for layout rather
 	// than only for paint. Nothing is rebuilt either way — no view function
 	// runs, [Diagnostics.Builds] does not move — and the layout that follows
-	// descends along the marked path only, so it costs the depth of the tree
-	// plus this one layouter. That is the honest price of virtualisation and
-	// it is measured in TestGalleryScrollPathCost.
+	// descends along the marked path only, so no sibling subtree is touched.
+	//
+	// # The honest price
+	//
+	// It is *not* the depth of the tree plus this one layouter, which is what
+	// this paragraph claimed until WU-O. The container's own layouter runs,
+	// and so does the layouter of every child whose constraints changed,
+	// because [App.layoutNode] only answers from its cache when the incoming
+	// constraints are identical to the last ones. A virtualising container
+	// measures its children with tight constraints derived from the content,
+	// so any child that changed size runs — and for the masonry gallery of
+	// the project plan, section 10, a scroll changes the height of most tiles
+	// in the band, because the tile at a given slot now stands for a
+	// different picture.
+	//
+	// The bound is therefore: the depth of the marked path, plus one, plus
+	// one per child of the container. All three terms are bounded by the
+	// viewport and none of them by the item count, which is the property that
+	// matters and the one TestGalleryScrollPathCost asserts. Measured there
+	// at 800x600: twelve layouters for a pool of fourteen, identically at a
+	// hundred and at a hundred thousand entries.
 	//
 	// # Why it is opt in
 	//
@@ -439,6 +457,20 @@ func (scrollHandler) HandleEvent(ctx *EventContext, e Event) bool {
 		return true
 
 	case EventPointerCancel:
+		// Declined unless this container was the one dragging, exactly as
+		// [EventPointerUp] above.
+		//
+		// Returning true means "handled, stop here", and a container that had
+		// no part in the gesture has not handled anything. The reader of that
+		// answer is not the dispatcher — [App.PointerCancel] delivers a cancel
+		// directly to the node holding the press and ignores the result — but
+		// a container that brings its own Interactor and delegates to
+		// [ScrollInteractor], which is the documented shape and the one
+		// ui.Gallery uses. It takes this answer as its own and is entitled to
+		// a true one. See TestScrollerDeclinesACancelItHadNoPartIn.
+		if !s.dragging {
+			return false
+		}
 		s.dragging = false
 		s.resetTrack()
 		return true
@@ -810,30 +842,50 @@ func (l *LayoutContext) ScrollOffset() float64 {
 	return s.off
 }
 
-// SetScrollOffset moves this scroll container to off, clamped to the content
-// reported so far, and reports whether the offset changed.
+// AnchorScroll pins this scroll container's viewport to the document
+// coordinate off, clamped to the content reported so far, and reports whether
+// the offset changed.
 //
-// It is the counterpart of [LayoutContext.ScrollOffset] and exists for exactly
-// one caller: the scroll anchor of the project plan, section 10. A reflow —
-// a resize, a layout switch, a batch of corrections — moves every item in the
-// document, and keeping the viewport on the same picture means computing a new
-// offset from the new position of that picture. That computation needs the new
+// It is the write half of [LayoutContext.ScrollOffset] and it exists for one
+// job: the scroll anchor of the project plan, section 10. A reflow — a resize,
+// a layout switch, a batch of corrections — moves every item in the document,
+// and keeping the viewport on the same picture means computing a new offset
+// from the new position of that picture. That computation needs the new
 // layout, so it happens inside the layouter, and its result has to go
 // somewhere.
 //
-// It writes the offset and nothing else. In particular it does not invalidate
-// layout, because it is called *from* a layout pass and the caller is about to
-// use the new offset in the same pass. Call
-// [LayoutContext.ReportScrollContent] first, or the clamp has nothing to clamp
-// against.
+// # It is restricted to the top of the pass, and that is enforced
+//
+// It may only be called before this layouter has measured its first child, and
+// calling it afterwards panics. That restriction is the answer to the obvious
+// objection, which is that this writes state during layout and invalidates
+// nothing. Nothing needs to be invalidated, because nothing downstream has
+// read the offset yet: the children of this node have not been measured or
+// placed in this pass, the transform gift pushes and the hit test walk both
+// read the offset after the pass has finished, and the caller is required to
+// consume the new value itself — that is what makes it a parameter of the
+// placement rather than a side effect on the frame after next.
+//
+// Before WU-O this was a general purpose SetScrollOffset whose own
+// documentation said it "exists for exactly one caller" and whose correctness
+// rested on that caller's discipline. The name now says what it is for and the
+// panic makes the discipline the framework's rather than the caller's.
+//
+// Call [LayoutContext.ReportScrollContent] first, or the clamp has nothing to
+// clamp against.
 //
 // Any running fling is cancelled, for the same reason [App.ScrollTo] cancels
 // one: a reflow that moves the content and a fling that also moves it would
 // fight over the same number.
-func (l *LayoutContext) SetScrollOffset(off float64) bool {
+func (l *LayoutContext) AnchorScroll(off float64) bool {
 	s := l.nd.scroll
 	if s == nil {
-		panic("gift: LayoutContext.SetScrollOffset on a node whose Element did not declare a ScrollSpec")
+		panic("gift: LayoutContext.AnchorScroll on a node whose Element did not declare a ScrollSpec")
+	}
+	if l.measured {
+		panic("gift: LayoutContext.AnchorScroll after a child was measured; the anchor decides " +
+			"where the content sits and therefore which children exist, so it has to be taken " +
+			"before the first Measure of the pass and not after it")
 	}
 	off = s.clamp(off)
 	if off == s.off {

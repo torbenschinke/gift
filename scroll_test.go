@@ -327,3 +327,116 @@ func scrollTranslation(l *render.List) (float32, bool) {
 	}
 	return 0, false
 }
+
+// --- WU-O: a cancel a scroller had no part in --------------------------------
+
+var delegatingScrollerType = gift.RegisterType("test.DelegatingScroller")
+
+// delegatingScroller is the shape [gift.ScrollInteractor] exists for and the
+// one ui.Gallery uses: a container that brings its own Interactor — because it
+// also wants the keyboard — and hands the gesture back to gift's handler,
+// taking the answer as its own.
+//
+//	return gift.ScrollInteractor().HandleEvent(ctx, e)
+//
+// That answer is the observable this test is about.
+type delegatingScroller struct {
+	h    float32
+	said *map[gift.EventKind]bool
+}
+
+func (delegatingScroller) ViewType() gift.TypeID { return delegatingScrollerType }
+
+func (v delegatingScroller) Build(*gift.BuildContext) gift.Element {
+	n := &delegatingScrollNode{h: v.h, said: v.said}
+	return gift.Element{
+		Layouter:   n,
+		Interactor: n,
+		Children:   []gift.View{box{w: 200, h: v.h}},
+		Clip:       true,
+		Scroll:     &gift.ScrollSpec{Axis: gift.ScrollVertical},
+	}
+}
+
+type delegatingScrollNode struct {
+	h    float32
+	said *map[gift.EventKind]bool
+}
+
+func (n *delegatingScrollNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
+	ctx.Measure(0, geom.Tight(geom.Sz(200, n.h)))
+	ctx.Place(0, geom.Pt(0, -float32(ctx.ScrollOffset())))
+	ctx.ReportScrollContent(float64(n.h), 0)
+	return c.Constrain(geom.Sz(200, 200))
+}
+
+func (n *delegatingScrollNode) HandleEvent(ctx *gift.EventContext, e gift.Event) bool {
+	got := gift.ScrollInteractor().HandleEvent(ctx, e)
+	(*n.said)[e.Kind] = got
+	return got
+}
+
+// TestScrollerDeclinesACancelItHadNoPartIn matches [gift.EventPointerCancel] to
+// [gift.EventPointerUp], which declines when this container was not the one
+// dragging.
+//
+// # What is actually wrong with consuming it
+//
+// Returning true from an [gift.Interactor] means "handled, stop here". A
+// scroll container that returned it for every cancel said that about a gesture
+// it had never taken part in. The consumer of that answer is not gift's
+// dispatcher — [App.PointerCancel] delivers a cancel *directly* to the node
+// that holds the press and ignores the result, so nothing bubbles and nothing
+// is swallowed, and the WU-O review's description of the symptom does not hold
+// for this dispatcher. The consumer is the delegating container below: it
+// takes gift's answer as its own, and it is entitled to a true one so that it
+// can decide what to do with an event nobody handled.
+//
+// [gift.EventPointerUp] already answered honestly. This is the same answer for
+// the event that is its twin.
+func TestScrollerDeclinesACancelItHadNoPartIn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		drag bool
+		want bool
+	}{
+		{"idle", false, false},
+		{"dragging", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			said := map[gift.EventKind]bool{}
+			a := gift.New(gift.Options{Root: func(*gift.Context) gift.View {
+				return delegatingScroller{h: 2000, said: &said}
+			}})
+			mustUpdate(t, a)
+			a.Paint()
+
+			at := geom.Pt(100, 100)
+			a.PointerMove(gift.MousePointer, gift.PointerMouse, at)
+			a.PointerDown(gift.MousePointer, gift.PointerMouse, at)
+			if tc.drag {
+				// Past gift.DragSlop, so the container takes the gesture.
+				a.PointerMove(gift.MousePointer, gift.PointerMouse, geom.Pt(100, 20))
+				sc, ok := findScroller(a, a.Root())
+				if !ok {
+					t.Fatal("no scroll container")
+				}
+				if info, _ := a.ScrollInfo(sc); !info.Dragging {
+					t.Fatalf("the container is not dragging after an 80 pixel move: %+v", info)
+				}
+			}
+			delete(said, gift.EventPointerCancel)
+			a.PointerCancel(gift.MousePointer)
+
+			got, saw := said[gift.EventPointerCancel]
+			if !saw {
+				t.Fatalf("the container never saw the cancel (saw %v)", said)
+			}
+			if got != tc.want {
+				t.Errorf("gift.ScrollInteractor answered %v for a cancel while dragging=%v, want %v; "+
+					"a container that delegates takes this answer as its own",
+					got, tc.drag, tc.want)
+			}
+		})
+	}
+}

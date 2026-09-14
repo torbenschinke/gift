@@ -935,3 +935,158 @@ func TestRowOf(t *testing.T) {
 type dimsFunc func(i int) (uint32, uint32)
 
 func (f dimsFunc) DimensionsAt(i int) (uint32, uint32) { return f(i) }
+
+// --- WU-O: mid rebuild mutation ---------------------------------------------
+
+// TestIndexCompactAtEveryRebuildPhase is the regression test for the defect
+// WU-O found first: [layout.Index.Compact] released the masonry builder's
+// scratch — the running column bottoms, the per column counts and the grouping
+// cursors — regardless of whether a rebuild was in flight, and the next
+// [layout.Index.Step] then indexed a nil slice and panicked in the middle of a
+// frame.
+//
+// It was reachable through a supported sequence: resize a large gallery, which
+// starts a reflow that takes several passes, then hide it and call Compact,
+// which is the one thing that method's own documentation recommends for "a
+// gallery that has gone off screen". Justified mode never touches those
+// slices, which is why no existing test caught it and why this one runs both
+// modes.
+//
+// Compact is called at *every* phase boundary rather than at one chosen point,
+// because the phases are where the scratch is allocated and consumed and a
+// guard that covers one of them is not a guard.
+func TestIndexCompactAtEveryRebuildPhase(t *testing.T) {
+	const n = 400
+	d := randomDims(n, 9, 7)
+	for _, tc := range []struct {
+		name string
+		mode layout.GalleryMode
+	}{
+		{"masonry", layout.Masonry},
+		{"justified", layout.Justified},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := layout.GalleryParams{Mode: tc.mode, Width: 900, Gap: 8,
+				MinColumnWidth: 200, TargetRowHeight: 180}
+
+			// The reference answer, built without any interference.
+			want := layout.NewIndex()
+			want.SetItems(n, d)
+			want.Rebuild(p)
+
+			// A build is at most 2n steps of one item, so stopping at every
+			// k covers every phase boundary of both modes.
+			for at := 0; at <= 2*n+2; at++ {
+				ix := layout.NewIndex()
+				ix.SetItems(n, d)
+				ix.BeginRebuild(p)
+				for step := 0; ; step++ {
+					if step == at {
+						ix.Compact()
+					}
+					if ix.Step(1) {
+						break
+					}
+				}
+				if !ix.Ready() {
+					t.Fatalf("Compact after %d steps left the index without a layout", at)
+				}
+				if got, w := ix.ContentExtent(), want.ContentExtent(); got != w {
+					t.Fatalf("Compact after %d steps produced extent %.3f, want %.3f", at, got, w)
+				}
+				for i := range n {
+					g, _ := ix.ItemRect(i)
+					e, _ := want.ItemRect(i)
+					if g != e {
+						t.Fatalf("Compact after %d steps: item %d is %+v, want %+v", at, i, g, e)
+					}
+				}
+				// And Compact once more, now that nothing is in flight, which
+				// is the case it was always safe in.
+				ix.Compact()
+			}
+		})
+	}
+}
+
+// TestIndexApplyCorrectionsDuringARebuildDoesNotTear is the regression test
+// for the second half of the same family.
+//
+// [layout.Index.ApplyCorrections] writes the aspect ratios, and
+// placeMasonry/placeJustified read them lazily as they walk. Writing one under
+// a live build gave the items already placed the old ratio and the items still
+// to come the new one, and that torn layout was then committed permanently:
+// measured, an item corrected to 100x1000 kept its pre-correction height of
+// 128.7 instead of 1306.7, the document extent was 391 pixels short, and
+// [layout.Index.Provisional] reported false for an item that had in fact been
+// laid out provisionally.
+//
+// [layout.Index.SetItems] always got this right by cancelling the build.
+// ApplyCorrections now does the same, and the assertion is that a correction
+// applied at any point of a build yields exactly the layout a build from
+// scratch with the corrected dimensions yields.
+func TestIndexApplyCorrectionsDuringARebuildDoesNotTear(t *testing.T) {
+	const n = 300
+	for _, tc := range []struct {
+		name string
+		mode layout.GalleryMode
+	}{
+		{"masonry", layout.Masonry},
+		{"justified", layout.Justified},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := layout.GalleryParams{Mode: tc.mode, Width: 800, Gap: 8,
+				MinColumnWidth: 240, TargetRowHeight: 200}
+			corr := []layout.Correction{{Item: 0, W: 100, H: 1000}, {Item: n / 2, W: 3000, H: 200}}
+
+			base := uniform(n, 400, 300)
+			// The reference: the same dimensions, applied before any build.
+			want := layout.NewIndex()
+			want.SetItems(n, base)
+			want.ApplyCorrections(corr)
+			want.Rebuild(p)
+
+			for at := 0; at <= 2*n+2; at++ {
+				ix := layout.NewIndex()
+				ix.SetItems(n, base)
+				ix.Rebuild(p) // something committed to answer from
+				ix.BeginRebuild(p)
+				applied := false
+				apply := func() {
+					applied = true
+					if ix.ApplyCorrections(corr) > 0 && !ix.Rebuilding() {
+						// Documented: a correction that changed something
+						// cancels the build, and the caller starts a new one.
+						// This is the caller doing that.
+						ix.BeginRebuild(p)
+					}
+				}
+				for step := 0; ; step++ {
+					if step == at {
+						apply()
+					}
+					if ix.Step(1) {
+						break
+					}
+				}
+				if !applied {
+					// The build was shorter than at: this is the "after the
+					// build finished" case, which must land in the same place.
+					apply()
+					for !ix.Step(1) {
+					}
+				}
+				if got, w := ix.ContentExtent(), want.ContentExtent(); got != w {
+					t.Fatalf("correction at step %d produced extent %.3f, want %.3f", at, got, w)
+				}
+				for i := range n {
+					g, _ := ix.ItemRect(i)
+					e, _ := want.ItemRect(i)
+					if g != e {
+						t.Fatalf("correction at step %d: item %d is %+v, want %+v", at, i, g, e)
+					}
+				}
+			}
+		})
+	}
+}

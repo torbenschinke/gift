@@ -35,7 +35,8 @@ func NewSelection() *Selection {
 // Version increases whenever the selection or the cursor changed.
 //
 // A view compares it to decide whether it has to redraw; it is the same
-// mechanism as [Collection.Version] and exists for the same reason, which is
+// mechanism as [Collection.StructureVersion] and exists for the same reason,
+// which is
 // that polling a map for changes every frame is not a comparison.
 func (s *Selection) Version() uint64 { return s.version }
 

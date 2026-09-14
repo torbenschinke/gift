@@ -192,3 +192,54 @@ func BenchmarkGalleryScroll(b *testing.B) {
 		}
 	}
 }
+
+// TestGalleryCorrectionFrameIsAllocationFree keeps the allocation contract on
+// the path WU-O rewrote.
+//
+// A frame that folds a batch of probed dimensions into the catalogue, reflows
+// a chunk and rebinds nothing is still a frame of the project plan,
+// section 11: input, index work, transform, display list, no build. The
+// translation of the batch from stable IDs to item positions is the one new
+// piece of work on it, and it reuses its buffer, so the steady state is zero.
+//
+// The batch is applied every frame on purpose. Step 4's dimension probing
+// delivers results continuously, so "every frame" is the operating condition
+// and not a stress case.
+func TestGalleryCorrectionFrameIsAllocationFree(t *testing.T) {
+	a, g := galleryApp(t, 100000, ui.Masonry().MinColumnWidth(240).Gap(8))
+	batch := make([]asset.Correction, 8)
+	// The IDs are built once, outside the measured step: "img-" +
+	// strconv.Itoa is two allocations per entry and they belong to the test,
+	// not to the gallery. Entries far from the viewport, so this measures the
+	// correction path and not the recycling path.
+	for i := range batch {
+		batch[i].ID = asset.ID("img-" + strconv.Itoa(50000+i))
+		batch[i].Height = 300
+	}
+	round := 0
+	step := func() {
+		round++
+		for i := range batch {
+			batch[i].Width = uint32(400 + i + round%97)
+		}
+		g.ApplyCorrections(batch)
+		if err := a.Update(geom.Sz(800, 600)); err != nil {
+			t.Fatal(err)
+		}
+		a.Paint()
+	}
+	for range 32 {
+		step()
+	}
+	gen := g.Generation()
+	for range 8 {
+		step()
+	}
+	if g.Generation() != gen {
+		t.Fatalf("a correction batch over entries nowhere near the viewport rebound %d tiles",
+			g.Generation()-gen)
+	}
+	if got := testing.AllocsPerRun(200, step); got != 0 {
+		t.Errorf("a correction frame allocated %v times per run, want 0", got)
+	}
+}

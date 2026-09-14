@@ -202,17 +202,32 @@ type Gallery struct {
 	sel  *asset.Selection
 
 	ix *layout.Index
-	// indexed is the collection the spatial index was filled from and
-	// collVersion its [asset.Collection.Version] at that moment.
+	// indexed is the collection the spatial index was filled from, and the
+	// two versions are its [asset.Collection.StructureVersion] and
+	// [asset.Collection.MetadataVersion] at that moment.
 	//
-	// Both, not just the version. Two different collections start at version
-	// one, so a [Gallery.SetCollection] to a fresh catalogue of the same age
-	// is invisible to a version comparison — and the failure is not "nothing
+	// The collection pointer as well as the versions, not just the versions.
+	// Two different collections start at version one, so a
+	// [Gallery.SetCollection] to a fresh catalogue of the same age is
+	// invisible to a version comparison — and the failure is not "nothing
 	// happens": the index still describes the old catalogue while the new one
 	// answers the ID lookups, so a tile is bound to position 173 of a
 	// catalogue that has fewer entries than that.
-	indexed     *asset.Collection
-	collVersion uint64
+	//
+	// Two versions and not one, because the two changes need different
+	// reactions and conflating them made [TileBinding.Generation] untrue; see
+	// [asset.Collection.StructureVersion] and [Gallery.syncCollection].
+	indexed           *asset.Collection
+	collStructVersion uint64
+	collMetaVersion   uint64
+	// corrections is the batch [Gallery.ApplyCorrections] translated from
+	// stable IDs to item positions, waiting for the next layout pass to fold
+	// it into the index. corrAt is the [asset.Collection.MetadataVersion]
+	// this batch is complete for: a metadata version past it means something
+	// corrected the catalogue without going through the gallery, and the
+	// index then has to be refilled the expensive way.
+	corrections []layout.Correction
+	corrAt      uint64
 	// params are the parameters of the committed or in flight layout, and
 	// haveParams says whether they mean anything.
 	params     layout.GalleryParams
@@ -258,10 +273,18 @@ type Gallery struct {
 
 	// anchor is the split scroll anchor of the project plan, section 10: the
 	// stable ID lives here, in the collection's world, and the local offset
-	// lives in the layout index's world.
-	anchorID    asset.ID
-	anchorLocal float64
-	haveAnchor  bool
+	// lives in the layout index's world, as a [layout.Anchor] produced by
+	// [layout.Index.Anchor] and consumed by [layout.Index.Resolve]. The
+	// reassociation after a reorder is [layout.Anchor.Rebind].
+	//
+	// Using the index's own anchor type rather than a float of our own is the
+	// resolution of a real duplication: until WU-O the index exported a
+	// correct anchor API that only tests called, while the gallery
+	// reimplemented two thirds of it against [layout.Index.ItemRect]. Two
+	// implementations of one rule is how the next reader picks the wrong one.
+	anchorID   asset.ID
+	anchor     layout.Anchor
+	haveAnchor bool
 	// restoreAnchor asks the *next committed* layout to put the viewport back
 	// on the anchored item, and anchorAtVersion is the layout version at the
 	// time of the request.
@@ -288,6 +311,14 @@ type Gallery struct {
 	// rebuildBudget is the per pass chunk size; see
 	// [DefaultGalleryRebuildBudget].
 	rebuildBudget int
+
+	// owner and ownerPass are the double mount guard; see
+	// [galleryNode.Layout]. A Gallery is a shared mutable object and two
+	// views over one of them would interleave their writes into a single
+	// tile pool.
+	owner     gift.NodeRef
+	ownerPass uint64
+	haveOwner bool
 
 	// invalidate marks the gallery node for layout. It is handed over by the
 	// first layout pass — see [gift.LayoutContext.Invalidator] — and is what
@@ -371,13 +402,68 @@ func (g *Gallery) SetSelection(s *asset.Selection) {
 //
 // It returns the number of entries that actually changed. A batch that changed
 // nothing schedules nothing.
+// # What it costs, and what it does not cost
+//
+// It is O(len(cs)) here and O(len(cs)) again in the layout pass that consumes
+// it, and it costs no tile its identity. The batch is translated from stable
+// IDs to item positions once, cached, and folded into the spatial index with
+// [layout.Index.ApplyCorrections]; the tiles keep their bindings and their
+// request generations, because a correction moves no entry and a tile that
+// still stands for the same picture must not look to step 4's image pipeline
+// like a tile that was recycled. See [asset.Collection.StructureVersion] for
+// the full account of why that distinction is load bearing.
+//
+// Until WU-O this went the other way: a correction bumped the single
+// collection version, the gallery reacted by unbinding every slot and
+// refilling the index with an unchunked O(N) [layout.Index.SetItems] inside
+// the layouter, and the generation of every bound tile advanced on every
+// batch. Measured at 100 000 entries and nine bound tiles that was a
+// generation delta of nine per frame and 0.51 ms of frame time that grew with
+// the catalogue.
 func (g *Gallery) ApplyCorrections(cs []asset.Correction) int {
 	n := g.coll.ApplyCorrections(cs)
-	if n > 0 {
-		g.requestAnchorRestore()
-		g.Invalidate()
+	if n == 0 {
+		return 0
 	}
+	// Translated to positions now, while the caller's slice is still here,
+	// and accumulated: two batches before the next layout pass are one fold
+	// into the index. The buffer is reused, so a gallery that is corrected
+	// every frame settles at zero allocations for this.
+	for _, c := range cs {
+		i, ok := g.coll.Find(c.ID)
+		if !ok {
+			continue
+		}
+		w, h := g.coll.DimensionsAt(i)
+		g.corrections = append(g.corrections, layout.Correction{Item: i, W: w, H: h})
+	}
+	g.corrAt = g.coll.MetadataVersion()
+	g.requestAnchorRestore()
+	g.Invalidate()
 	return n
+}
+
+// Reorder applies a new catalogue order and schedules one reflow for it.
+//
+// It is [asset.Collection.Reorder] plus the two things a view has to do about
+// it: take a scroll anchor, so the viewport stays on the picture the user is
+// looking at, and mark the gallery for layout, so the reorder reaches the
+// frame loop at all. Reordering the collection directly does the first two
+// jobs and neither of the last two, and the symptom of that is a gallery that
+// shows the old order until something else happens to cause a layout.
+//
+// order must be a permutation of [0, Len); see [asset.Collection.Reorder] for
+// why anything else panics.
+//
+// Unlike a correction batch, this *does* move entries: every tile is unbound
+// and the anchor is re-resolved through [asset.Collection.Find], because the
+// stable ID is the only thing about the anchored entry that survived. That is
+// the case the project plan, section 10, singles out — "nur eine Umsortierung
+// braucht zusaetzlich die ID".
+func (g *Gallery) Reorder(order []int) {
+	g.coll.Reorder(order)
+	g.requestAnchorRestore()
+	g.Invalidate()
 }
 
 // requestAnchorRestore asks the next committed layout to keep the viewport on
@@ -449,11 +535,16 @@ func (g *Gallery) Generation() uint64 { return g.gen }
 // position map the collection already has, and the collection stores no
 // offsets. The pair is only ever assembled here.
 func (g *Gallery) Anchor() (id asset.ID, local float64, ok bool) {
-	return g.anchorID, g.anchorLocal, g.haveAnchor
+	return g.anchorID, g.anchor.Local, g.haveAnchor
 }
 
 // Compact releases the recycled scratch of the layout index. It is for a
 // gallery that has gone off screen, not for the scroll path.
+//
+// It is safe at any point, including in the middle of an incremental reflow —
+// which is precisely the state a gallery that has just been resized and then
+// hidden is in. See [layout.Index.Compact] for what that costs and what it
+// deliberately does not release.
 func (g *Gallery) Compact() { g.ix.Compact() }
 
 // TileBinding is what one tile currently stands for.
@@ -476,9 +567,25 @@ type TileBinding struct {
 	// see [asset.Metadata.Revision].
 	Revision string
 	// Generation is the request generation of this binding. It increases
-	// every time the slot is bound to a different item, and never otherwise,
-	// so a result labelled with an older generation belongs to a picture this
-	// tile no longer shows.
+	// every time the slot comes to stand for a different item, and never
+	// otherwise, so a result labelled with an older generation belongs to a
+	// picture this tile no longer shows.
+	//
+	// "And never otherwise" is the whole value of it and it is asserted, in
+	// TestGalleryCorrectionsKeepTheirBindings, because it was not true until
+	// WU-O: a batch of corrections bumped the single collection version, the
+	// gallery unbound the entire pool in reaction, and the next bind pass
+	// advanced this number for every tile although every tile kept its item.
+	// Step 4's dimension probing is the producer of those batches, so that
+	// would have been an image pipeline invalidating every decode it had in
+	// flight on every batch it emitted. See
+	// [asset.Collection.StructureVersion] for the split that fixed it.
+	//
+	// What does *not* move it: a scroll that leaves a tile on the same item,
+	// a correction to the item it is on, a repaint, a selection change, a
+	// resize that does not push the item out of the band. What does: a
+	// recycle, a structural change to the catalogue, and the first binding of
+	// a slot.
 	Generation uint64
 	// Provisional reports that the entry is laid out with a guessed aspect
 	// ratio because its real dimensions have not arrived.
@@ -564,8 +671,17 @@ func (s *tileSlot) binding(slot int) TileBinding {
 // container declares [gift.ScrollSpec.Virtual], so an offset change invalidates
 // the layout of this one node rather than only its paint: one binary search per
 // masonry column, a rebinding of the tiles that changed item, and one
-// [gift.LayoutContext.Measure] per tile, of which only the ones whose size
-// changed actually run a layouter. No view function runs and
+// [gift.LayoutContext.Measure] per tile.
+//
+// Most of those measurements really do run a layouter. gift answers a Measure
+// from its cache only when the constraints are identical to the last ones, and
+// the gallery measures every tile with constraints tight around its document
+// rectangle — so a masonry scroll, which changes the y of every tile and the
+// height of most of them, re-measures most of the band. The honest bound is
+// therefore about one layouter per tile in the pool, plus the depth of the
+// marked path. What it is *not* is a function of the catalogue: measured at
+// 800x600 it is twelve layouters for a pool of fourteen, the same number at a
+// hundred entries and at a hundred thousand. No view function runs and
 // [gift.Diagnostics.Builds] does not move. The numbers are in
 // TestGalleryScrollPathCost.
 type GalleryView struct {
@@ -911,6 +1027,7 @@ type galleryNode struct {
 //  8. Take the anchor for the next reflow.
 func (n *galleryNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 	g := n.g
+	g.checkSingleMount(ctx)
 	g.invalidate = ctx.Invalidator()
 	cc := n.fr.apply(c)
 
@@ -960,25 +1077,126 @@ func (n *galleryNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.S
 	return size
 }
 
-// syncCollection refills the spatial index when the catalogue changed.
+// checkSingleMount rejects a second [GalleryView] over the same [Gallery].
 //
-// Every tile is unbound, unconditionally. A cheaper reaction — keeping the
-// bindings whose ID still resolves to the same position — would be correct
-// most of the time and wrong exactly when an entry was inserted before them,
-// which is the case that produces a tile showing the neighbour of what it
-// should show. The pool is bounded by the viewport, so the unconditional
-// version costs a few dozen struct writes.
+// A Gallery is a shared mutable object: one tile pool, one set of bindings,
+// one spatial index, one anchor. Two views over it are two nodes with two sets
+// of children, and both would bind the same pool in the same pass — so each
+// would see the other's bindings as its own, each would unbind what the other
+// just bound, and the tiles of both would flicker between two viewports. It is
+// not a crash and it is not diagnosable from the symptom, which is the worst
+// combination.
+//
+// It is detected rather than supported, because supporting it means a pool per
+// mount and the Gallery stops being the thing the project plan, section 10,
+// made it: "das Galerieobjekt gehoert der Anwendung und ist langlebig". An
+// application that wants two views of one catalogue creates two galleries over
+// the same [asset.Collection] and, if it wants, shares one
+// [asset.Selection] between them with [Gallery.SetSelection] — which is
+// exactly what that method is for.
+//
+// Two different nodes laying out in the same pass is the precise signature.
+// The same node laying out again in a later pass is ordinary, and an unmount
+// followed by a remount produces a different node in a different pass, which
+// is also ordinary; both are why this compares the pass as well as the node.
+func (g *Gallery) checkSingleMount(ctx *gift.LayoutContext) {
+	node, pass := ctx.Node(), ctx.Pass()
+	if g.haveOwner && g.ownerPass == pass && g.owner != node {
+		panic("gift/ui: two ImageGallery views over one ui.Gallery; the Gallery owns a single " +
+			"tile pool and a single set of bindings, and two mounted views would bind it against " +
+			"two different viewports in the same frame. Create one ui.NewGallery per view and, if " +
+			"the selection should be shared, hand both the same asset.Selection with SetSelection.")
+	}
+	g.owner, g.ownerPass, g.haveOwner = node, pass, true
+}
+
+// syncCollection brings the spatial index and the tile bindings back in step
+// with the catalogue.
+//
+// There are two changes to react to and they are not the same change, which is
+// the whole point of [asset.Collection] carrying two versions.
+//
+// A *structural* change — a reset, a reorder, a different collection object —
+// makes every position mean a different entry. The index is refilled with
+// [layout.Index.SetItems], which is O(N) but happens only when the catalogue
+// really was replaced, and every tile is unbound unconditionally. A cheaper
+// reaction — keeping the bindings whose ID still resolves to the same position
+// — would be correct most of the time and wrong exactly when an entry was
+// inserted before them, which is the case that produces a tile showing the
+// neighbour of what it should show. The pool is bounded by the viewport, so
+// the unconditional version costs a few dozen struct writes.
+//
+// A *metadata* change — a batch of probed dimensions — moves nothing. The
+// entries are the same entries in the same order, so the correct reaction is
+// to fold the batch into the index with [layout.Index.ApplyCorrections],
+// reflow, and *keep every binding*: refresh the revision and the provisional
+// marker in place, without issuing a new request generation, because no tile
+// came to stand for a different picture. The bindings are still verified
+// against the catalogue by ID, so a binding that has somehow gone stale is
+// dropped rather than patched.
+//
+// The fallback exists because the catalogue is the application's and it may be
+// corrected without going through [Gallery.ApplyCorrections]. The gallery then
+// has no batch to apply and refills the index the expensive way — still
+// without unbinding, because the positions still did not move.
 func (g *Gallery) syncCollection() {
-	if g.indexed == g.coll && g.collVersion == g.coll.Version() {
+	if g.indexed != g.coll || g.collStructVersion != g.coll.StructureVersion() {
+		g.indexed = g.coll
+		g.collStructVersion = g.coll.StructureVersion()
+		g.collMetaVersion = g.coll.MetadataVersion()
+		g.corrections = g.corrections[:0]
+		g.corrAt = g.collMetaVersion
+		g.ix.SetItems(g.coll.Len(), g.coll)
+		for i := range g.slots {
+			g.slots[i] = tileSlot{}
+		}
+		g.needReflow = true
+		g.requestAnchorRestore()
 		return
 	}
-	g.indexed, g.collVersion = g.coll, g.coll.Version()
-	g.ix.SetItems(g.coll.Len(), g.coll)
-	for i := range g.slots {
-		g.slots[i] = tileSlot{}
+	if g.collMetaVersion == g.coll.MetadataVersion() {
+		return
 	}
+	g.collMetaVersion = g.coll.MetadataVersion()
+	if g.corrAt == g.collMetaVersion && len(g.corrections) > 0 {
+		g.ix.ApplyCorrections(g.corrections)
+	} else {
+		g.ix.SetItems(g.coll.Len(), g.coll)
+	}
+	g.corrections = g.corrections[:0]
+	g.refreshBindings()
 	g.needReflow = true
 	g.requestAnchorRestore()
+}
+
+// refreshBindings updates what a bound tile says about its entry without
+// changing which entry it is bound to.
+//
+// The revision and the provisional marker are copies of catalogue facts taken
+// at bind time, and a correction changes both. Copying the new values in is
+// not a rebinding and must not look like one: [TileBinding.Generation] stays
+// where it is, which is exactly the promise that makes it usable to drop a
+// decode result that arrived after a recycle.
+//
+// The identity is re-checked rather than assumed. It cannot have changed on
+// this path — a metadata correction moves no entry — and checking it costs one
+// string comparison per bound tile, which is a few dozen. A slot that fails
+// the check is unbound, because a tile whose ID no longer matches its position
+// is the exact failure this whole file is written to make impossible.
+func (g *Gallery) refreshBindings() {
+	n := g.coll.Len()
+	for i := range g.slots {
+		s := &g.slots[i]
+		if !s.bound {
+			continue
+		}
+		if s.item < 0 || s.item >= n || g.coll.ID(s.item) != s.id {
+			g.unbind(i)
+			continue
+		}
+		s.revision = g.coll.Revision(s.item)
+		s.provisional = g.ix.Provisional(s.item)
+	}
 }
 
 // syncParams notices a resize or a layout switch.
@@ -1027,12 +1245,20 @@ func (g *Gallery) applyPendingOffset(ctx *gift.LayoutContext, pad geom.Insets) {
 	}
 	if g.restoreAnchor && g.ix.Version() != g.anchorAtVersion {
 		g.restoreAnchor = false
+		// Re-resolved through the collection, because a reorder moves the
+		// entry the stable ID names and the index carries no IDs. That is
+		// [layout.Anchor.Rebind]: same local offset, new item position. After
+		// a resize or a correction batch the position is unchanged and the
+		// rebind is the identity.
 		if i, ok := g.coll.Find(g.anchorID); ok {
+			a := g.anchor.Rebind(i)
 			if r, ok := g.ix.ItemRect(i); ok {
 				// Clamped again against the *new* height, so the anchored
 				// item intersects the viewport whatever the reflow did to it.
-				local := min(g.anchorLocal, max(r.H-1, 0))
-				ctx.SetScrollOffset(r.Y + local - float64(pad.Top))
+				a.Local = min(a.Local, max(r.H-1, 0))
+			}
+			if doc, ok := g.ix.Resolve(a); ok {
+				ctx.AnchorScroll(doc - float64(pad.Top))
 			}
 		}
 	}
@@ -1045,9 +1271,9 @@ func (g *Gallery) applyPendingOffset(ctx *gift.LayoutContext, pad geom.Insets) {
 			bottom := r.Y + r.H - g.viewport
 			switch {
 			case top < off:
-				ctx.SetScrollOffset(top)
+				ctx.AnchorScroll(top)
 			case bottom > off:
-				ctx.SetScrollOffset(bottom)
+				ctx.AnchorScroll(bottom)
 			}
 		}
 	}
@@ -1063,18 +1289,21 @@ func (g *Gallery) applyPendingOffset(ctx *gift.LayoutContext, pad geom.Insets) {
 // choice: the topmost one changes column when the width changes.
 func (g *Gallery) takeAnchor(off float64, pad geom.Insets) {
 	top := off - float64(pad.Top)
-	best, bestY, bestH := -1, 0.0, 0.0
+	best, bestH := -1, 0.0
 	for i := range g.want {
 		v := g.want[i]
 		if best >= 0 && v.Item >= best {
 			continue
 		}
-		best, bestY, bestH = v.Item, v.Rect.Y, v.Rect.H
+		best, bestH = v.Item, v.Rect.H
 	}
 	if best < 0 || best >= g.coll.Len() {
 		return
 	}
-	g.anchorID = g.coll.ID(best)
+	a, ok := g.ix.Anchor(best, top)
+	if !ok {
+		return
+	}
 	// Clamped into the item. An unclamped offset is faithful and useless: the
 	// anchored tile usually starts above the viewport, and after a reflow that
 	// made it shorter — a narrower masonry column, a switch to justified — the
@@ -1083,7 +1312,14 @@ func (g *Gallery) takeAnchor(off float64, pad geom.Insets) {
 	// document from the top of that item" into "this many pixels into that
 	// item", which is the same number whenever the item did not change size
 	// and is still inside it when it did.
-	g.anchorLocal = min(max(top-bestY, 0), max(bestH-1, 0))
+	//
+	// The clamp is also the tolerance the anchor is *tested* against: after a
+	// reflow the anchored entry must still cover the top of the viewport to
+	// within one item height, which is what TestGalleryAnchorSurvivesReflow
+	// asserts.
+	a.Local = min(max(a.Local, 0), max(bestH-1, 0))
+	g.anchorID = g.coll.ID(best)
+	g.anchor = a
 	g.haveAnchor = true
 }
 
@@ -1125,13 +1361,12 @@ func (g *Gallery) bindAndPlace(ctx *gift.LayoutContext, pad geom.Insets, off flo
 	if target != g.desiredSlots {
 		g.desiredSlots = target
 		// Only a build can change the number of children. This frame is laid
-		// out with the pool it has, which for a growing viewport means a
-		// briefly under filled band — the placeholder behaviour of the
-		// project plan, section 10, and not a wrong picture.
+		// out with the pool it has, so for a growing viewport it is one frame
+		// of a *thinned* band — see keepStride — and not a wrong picture.
 		ctx.RequestBuild()
 	}
 	if need > k {
-		g.want = g.want[:k]
+		g.want = keepStride(g.want, k)
 	}
 
 	g.assign = grow32i(g.assign, len(g.want))
@@ -1163,9 +1398,18 @@ func (g *Gallery) bindAndPlace(ctx *gift.LayoutContext, pad geom.Insets, off flo
 		if free >= len(g.slots) {
 			break
 		}
-		g.slots[free].claimed = true
+		if !g.bind(free, g.want[i]) {
+			// The slot is left unclaimed and unassigned, so it is offered to
+			// the next item and this item gets no tile. Claiming it and then
+			// abandoning it would leave an assignment pointing at an unbound
+			// slot, and the loops below would measure that slot twice —
+			// once at the item's rectangle and once at zero — which breaks
+			// the "measure and place every child exactly once" contract of
+			// [gift.Layouter] and pays for a layout nobody reads.
+			g.assign[i] = -1
+			continue
+		}
 		g.assign[i] = int32(free)
-		g.bind(free, g.want[i])
 	}
 
 	// Place. A tile keeps its identity and only moves; a slot nobody claimed
@@ -1208,13 +1452,16 @@ func (g *Gallery) bindAndPlace(ctx *gift.LayoutContext, pad geom.Insets, off flo
 // section 9, keeps it apart from the content revision — which is copied
 // alongside it and describes the bytes — and from the scene node generation,
 // which describes the storage and is gift's business.
-func (g *Gallery) bind(slot int, v layout.Visible) {
+// It reports whether the slot was bound. A false return leaves the slot
+// untouched — unclaimed, unbound and available — which is what keeps the
+// caller from measuring it twice.
+func (g *Gallery) bind(slot int, v layout.Visible) bool {
 	if v.Item < 0 || v.Item >= g.coll.Len() {
 		// Belt and braces. The index and the catalogue are kept in step by
 		// syncCollection, and a mismatch here would mean that failed; binding
 		// nothing is a blank tile, while indexing past the end is a panic in
 		// the middle of a frame.
-		return
+		return false
 	}
 	s := &g.slots[slot]
 	g.gen++
@@ -1228,12 +1475,52 @@ func (g *Gallery) bind(slot int, v layout.Visible) {
 		gen:         g.gen,
 		rect:        v.Rect,
 	}
+	return true
 }
 
 // unbind clears a slot completely. Assigning the zero value rather than
 // clearing a flag is the point: there is then nothing left of the previous
 // item for the next binding to inherit.
 func (g *Gallery) unbind(slot int) { g.slots[slot] = tileSlot{} }
+
+// keepStride thins want down to k entries, evenly spaced across it.
+//
+// # Why not the first k
+//
+// Because [layout.Index.Visible] does not return items in screen order and is
+// documented not to. Masonry comes out grouped by column — column 0 top to
+// bottom, then column 1 — so a prefix keeps whole leading columns and drops
+// whole trailing ones, and the frame reads as the gallery collapsing to the
+// left edge of the window. Measured on a 400 to 2400 pixel enlargement of a
+// 100 000 entry masonry gallery: the frame in which the pool was still the old
+// size bound six of thirty nine items and every one of them sat in the leftmost
+// 430 pixels of a 2400 pixel viewport. Justified comes out in item order, so
+// the same prefix there keeps the top rows and drops the bottom ones, which is
+// the same defect turned ninety degrees.
+//
+// A stride keeps the band covering the whole viewport, in both modes, for the
+// price of a gap between the kept tiles. That is the "Platzhalter statt
+// Warten" behaviour of the project plan, section 10 — an under filled band —
+// rather than a viewport that looks broken.
+//
+// It is O(k), in place and allocation free. It is also *stable*: the same
+// visible set thinned to the same k yields the same tiles, so a pool that
+// stays undersized for several frames does not churn its bindings. Because
+// j*n/k >= j for n >= k, the read index never trails the write index and the
+// compaction needs no scratch.
+func keepStride(want []layout.Visible, k int) []layout.Visible {
+	if k <= 0 {
+		return want[:0]
+	}
+	n := len(want)
+	if n <= k {
+		return want
+	}
+	for j := range k {
+		want[j] = want[j*n/k]
+	}
+	return want[:k]
+}
 
 func grow32i(s []int32, n int) []int32 {
 	if cap(s) >= n {

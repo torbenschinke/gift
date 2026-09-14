@@ -42,7 +42,7 @@ func TestCollectionBasics(t *testing.T) {
 	if w, h := c.DimensionsAt(999); w != 0 || h != 0 {
 		t.Errorf("DimensionsAt(999) = %d, %d, want zeroes", w, h)
 	}
-	if c.Version() == 0 {
+	if c.StructureVersion() == 0 || c.MetadataVersion() == 0 {
 		t.Error("a fresh collection has version 0; 0 must mean something else")
 	}
 }
@@ -75,16 +75,17 @@ func TestCollectionCorrectionsAreVersionedAndAddressedByID(t *testing.T) {
 		{ID: "a", Revision: "r0"},
 		{ID: "b", Revision: "r0", Width: 10, Height: 10},
 	})
-	v0 := c.Version()
+	v0, m0 := c.StructureVersion(), c.MetadataVersion()
 
-	if n := c.ApplyCorrections(nil); n != 0 || c.Version() != v0 {
-		t.Errorf("an empty batch changed %d entries and moved the version to %d", n, c.Version())
+	if n := c.ApplyCorrections(nil); n != 0 || c.MetadataVersion() != m0 {
+		t.Errorf("an empty batch changed %d entries and moved the metadata version to %d",
+			n, c.MetadataVersion())
 	}
 	if n := c.ApplyCorrections([]asset.Correction{{ID: "gone", Width: 1, Height: 1}}); n != 0 {
 		t.Errorf("a correction for an unknown ID changed %d entries", n)
 	}
-	if c.Version() != v0 {
-		t.Error("a batch that changed nothing moved the version")
+	if c.MetadataVersion() != m0 {
+		t.Error("a batch that changed nothing moved the metadata version")
 	}
 
 	n := c.ApplyCorrections([]asset.Correction{
@@ -94,8 +95,18 @@ func TestCollectionCorrectionsAreVersionedAndAddressedByID(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("%d of 2 corrections applied", n)
 	}
-	if c.Version() == v0 {
-		t.Error("a real correction did not move the version")
+	if c.MetadataVersion() == m0 {
+		t.Error("a real correction did not move the metadata version")
+	}
+	// And it did not move the *structure* version, which is the whole of the
+	// WU-O split: a correction inserts, removes and moves nothing, so
+	// everything keyed by position — a layout index, a tile binding — is
+	// still valid and must not be thrown away. See
+	// [asset.Collection.StructureVersion].
+	if c.StructureVersion() != v0 {
+		t.Errorf("a correction moved the structure version from %d to %d; a consumer that "+
+			"keys by position would unbind everything for a change that moved nothing",
+			v0, c.StructureVersion())
 	}
 	if m := c.At(0); m.Width != 400 || m.Height != 300 || m.Revision != "r1" {
 		t.Errorf("entry a is %+v", m)
@@ -104,12 +115,38 @@ func TestCollectionCorrectionsAreVersionedAndAddressedByID(t *testing.T) {
 		t.Errorf("a revision only correction erased the dimensions of b: %+v", m)
 	}
 	// Applying the same batch again is a no-op.
-	v1 := c.Version()
+	v1 := c.MetadataVersion()
 	if n := c.ApplyCorrections([]asset.Correction{{ID: "a", Width: 400, Height: 300, Revision: "r1"}}); n != 0 {
 		t.Errorf("re-applying a correction changed %d entries", n)
 	}
-	if c.Version() != v1 {
-		t.Error("re-applying a correction moved the version")
+	if c.MetadataVersion() != v1 {
+		t.Error("re-applying a correction moved the metadata version")
+	}
+}
+
+// TestCollectionStructuralChangesMoveBothVersions is the other side of
+// TestCollectionCorrectionsAreVersionedAndAddressedByID: a reset and a reorder
+// move entries, so they invalidate everything keyed by position *and*
+// everything keyed by content, and both numbers have to say so.
+func TestCollectionStructuralChangesMoveBothVersions(t *testing.T) {
+	c := asset.NewCollection([]asset.Metadata{{ID: "a"}, {ID: "b"}, {ID: "c"}})
+	for _, tc := range []struct {
+		name string
+		do   func()
+	}{
+		{"reorder", func() { c.Reorder([]int{2, 0, 1}) }},
+		{"reset", func() { c.Reset([]asset.Metadata{{ID: "x"}}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sv, mv := c.StructureVersion(), c.MetadataVersion()
+			tc.do()
+			if c.StructureVersion() == sv {
+				t.Errorf("a %s did not move the structure version", tc.name)
+			}
+			if c.MetadataVersion() == mv {
+				t.Errorf("a %s did not move the metadata version", tc.name)
+			}
+		})
 	}
 }
 

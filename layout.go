@@ -41,7 +41,37 @@ type LayoutContext struct {
 	app  *App
 	node scene.Handle
 	nd   *nodeData
+
+	// measured records that at least one child has been measured in the
+	// call this context is serving. It is the guard of
+	// [LayoutContext.AnchorScroll], which may only run before the children
+	// of the pass exist.
+	measured bool
 }
+
+// Node returns a reference to the node being laid out.
+//
+// It exists for a layouter that keeps retained state *outside* gift — the
+// gallery of the project plan, section 10 keeps a spatial index and a tile
+// pool in an application owned object — and therefore has to be able to tell
+// which node it is currently running for. Such an object is shared by
+// construction, and two mounted views over one of them would silently
+// interleave their writes into the same pool. Comparing this reference across
+// a pass is how that is turned into a diagnosis instead of a symptom.
+//
+// The reference is stable for as long as the node is mounted and becomes
+// stale when it is unmounted; it is comparable with ==.
+func (l *LayoutContext) Node() NodeRef { return NodeRef{l.node} }
+
+// Pass returns the ordinal of the layout pass this call belongs to.
+//
+// It increases once per [App.Update] that lays anything out, and it is
+// constant for every layouter that runs inside that pass. Together with
+// [LayoutContext.Node] it is what lets a layouter with external retained state
+// distinguish "I am being laid out again, next frame" from "a second node is
+// laying me out in the same frame". It is not a frame counter and not a time
+// source, and it is deliberately not exposed as either.
+func (l *LayoutContext) Pass() uint64 { return l.app.layoutPass }
 
 // ChildCount returns the number of children of the node being laid out.
 func (l *LayoutContext) ChildCount() int { return len(l.nd.children) }
@@ -54,6 +84,7 @@ func (l *LayoutContext) ChildCount() int { return len(l.nd.children) }
 // not change costs one comparison.
 func (l *LayoutContext) Measure(child int, c geom.Constraints) geom.Size {
 	l.check(child)
+	l.measured = true
 	sz := l.app.layoutNode(l.nd.children[child], c)
 	l.nd.sizes[child] = sz
 	return sz
@@ -212,9 +243,16 @@ func (l *LayoutContext) Invalidator() func() {
 // The rebuild happens in the next [App.Update], never inside this one: build
 // during layout would mean a view function running while the tree it produces
 // is being measured. The frame this is called in is therefore laid out with
-// the old child count, which for a tile pool means a briefly under filled
-// viewport — the placeholder behaviour of the project plan, section 10, and
-// not a wrong picture.
+// the old child count, which for a tile pool means one frame with fewer
+// children than there is content to show.
+//
+// What that frame looks like is the caller's problem and a real one. The
+// obvious implementation — take the first n of the content — is wrong whenever
+// the content is not produced in screen order, and a virtualised gallery's is
+// not: WU-O measured a masonry gallery whose entire visible band collapsed
+// into the leftmost 430 pixels of a 2400 pixel viewport for exactly this one
+// frame, because the first n of a column grouped list is the first few
+// columns. Thin the content across the pool instead; see ui's keepStride.
 //
 // A layouter that calls this on every pass is an infinite rebuild loop and is
 // caught by [gifttest.Harness.Settle]. Guard it with a comparison.
@@ -295,6 +333,7 @@ func (a *App) runLayouter(h scene.Handle, nd *nodeData, c geom.Constraints) geom
 	defer a.releaseLayout()
 	lc.node = h
 	lc.nd = nd
+	lc.measured = false
 	return nd.layouter.Layout(lc, c)
 }
 

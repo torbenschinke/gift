@@ -26,9 +26,19 @@
 //   - [Metadata.Revision] is the *content* version of one entry. It changes
 //     when the bytes behind the entry change, and it is what a cache key and a
 //     reload decision are made of.
-//   - [Collection.Version] is the *structure* version of the catalogue. It
-//     changes when entries are added, removed, reordered or corrected, and it
-//     is what makes a consumer throw away anything derived from positions.
+//   - [Collection.StructureVersion] is the *structure* version of the
+//     catalogue. It changes when entries are added, removed or reordered, and
+//     it is what makes a consumer throw away anything derived from positions.
+//   - [Collection.MetadataVersion] is the version of the entries' contents.
+//     It changes for the above and for a batch of corrections, which moves no
+//     entry, and it is what tells a consumer to reflow *without* throwing
+//     anything away.
+//
+// The last two were one counter until WU-O, and that is how the confusion this
+// section guards against got in anyway: with one number a gallery could not
+// tell a reorder from a probed dimension, took the safe reaction to both —
+// unbind every tile — and its tile generation stopped meaning "this slot
+// stands for a different picture". See [Collection.StructureVersion].
 //
 // The other two live where they belong: the request generation with whoever
 // issues requests, and the tile generation with the view that recycles tiles.

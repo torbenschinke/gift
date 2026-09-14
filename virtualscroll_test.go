@@ -1,6 +1,7 @@
 package gift_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/torbenschinke/gift"
@@ -32,15 +33,19 @@ type vscrollNode struct {
 
 	// buildAt asks for a rebuild on pass number buildAt.
 	buildAt int
+
+	// lateSet moves the AnchorScroll call after the children, which is what
+	// TestAnchorScrollRefusesToRunAfterTheChildren checks is refused.
+	lateSet bool
 }
 
 func (n *vscrollNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 	n.layouts++
 	size := c.Constrain(geom.Sz(200, 100))
 	ctx.ReportScrollContent(n.extent, 0)
-	if n.hasSetOff {
+	if n.hasSetOff && !n.lateSet {
 		n.hasSetOff = false
-		ctx.SetScrollOffset(n.setOff)
+		ctx.AnchorScroll(n.setOff)
 	}
 	n.lastOff = ctx.ScrollOffset()
 	if n.steps > 0 {
@@ -53,6 +58,10 @@ func (n *vscrollNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.S
 	for i := range ctx.ChildCount() {
 		ctx.Measure(i, geom.Tight(geom.Sz(50, 50)))
 		ctx.Place(i, geom.Pt(0, float32(-n.lastOff)))
+	}
+	if n.hasSetOff && n.lateSet {
+		n.hasSetOff = false
+		ctx.AnchorScroll(n.setOff)
 	}
 	return size
 }
@@ -217,10 +226,10 @@ func TestRequestBuildRebuildsTheOwningScope(t *testing.T) {
 	}
 }
 
-// TestSetScrollOffsetFromLayout is the anchor primitive: a layouter may move
-// the viewport it is laying out, and the value it then reads back is the one
-// it wrote, clamped against the content it just reported.
-func TestSetScrollOffsetFromLayout(t *testing.T) {
+// TestAnchorScrollFromLayout is the anchor primitive: a layouter may move the
+// viewport it is laying out, and the value it then reads back is the one it
+// wrote, clamped against the content it just reported.
+func TestAnchorScrollFromLayout(t *testing.T) {
 	n := &vscrollNode{virtual: true, extent: 1000}
 	a, ref := mountVScroll(t, n, 1, nil)
 
@@ -320,4 +329,30 @@ func TestScrollInteractorIsSharedAndStateless(t *testing.T) {
 	if got := testing.AllocsPerRun(100, func() { _ = gift.ScrollInteractor() }); got != 0 {
 		t.Errorf("ScrollInteractor allocated %v times per call, want 0", got)
 	}
+}
+
+// TestAnchorScrollRefusesToRunAfterTheChildren is the narrowing WU-O put on
+// this primitive.
+//
+// Writing the scroll offset during layout invalidates nothing, and that is
+// only sound while nothing downstream has read it yet. Once a child has been
+// measured — and for a virtualising container the children *are* a function of
+// the offset — the write is a half applied one, and the frame would be laid
+// out partly at the old offset and partly at the new. So it is refused, rather
+// than left to the single caller's discipline as it was before.
+func TestAnchorScrollRefusesToRunAfterTheChildren(t *testing.T) {
+	n := &vscrollNode{virtual: true, extent: 1000, lateSet: true}
+	a, _ := mountVScroll(t, n, 1, nil)
+	n.setOff, n.hasSetOff = 400, true
+	a.Invalidate()
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("AnchorScroll after a Measure was accepted")
+		}
+		if msg, _ := r.(string); !strings.Contains(msg, "AnchorScroll after a child was measured") {
+			t.Errorf("panicked with %v", r)
+		}
+	}()
+	_ = a.Update(geom.Sz(200, 100))
 }

@@ -613,11 +613,25 @@ zeichnet. Deshalb ist das Verhalten per `ScrollSpec.Virtual` opt-in und faellt
 `ui.ScrollView` nicht zur Last.
 
 **Der Runtime-Vertrag wurde dafuer erweitert.** Virtualisierung war mit der
-bestehenden `gift`-API nicht ausdrueckbar. Neu: `ScrollSpec.Virtual`,
-`LayoutContext.RequestLayout`, `RequestBuild`, `SetScrollOffset`,
-`Invalidator` und `gift.ScrollInteractor`. Das ist die Naht, die jeder
-virtualisierende Container braucht, und keine Galerie-Spezialitaet - aber es
-ist eine echte Verbreiterung des Vertrags und gehoert deshalb hier vermerkt.
+bestehenden `gift`-API nicht ausdrueckbar. Neu, Stand nach WU-O:
+`ScrollSpec.Virtual`, `LayoutContext.RequestLayout`, `RequestBuild`,
+`AnchorScroll`, `Invalidator`, `Node`, `Pass` und `gift.ScrollInteractor`.
+Das ist die Naht, die jeder virtualisierende Container braucht, und keine
+Galerie-Spezialitaet - aber es ist eine echte Verbreiterung des Vertrags und
+gehoert deshalb hier vermerkt.
+
+Zwei Einschraenkungen dazu, aus Review-Gate 4 und bewusst offengelassen:
+
+- `AnchorScroll` (frueher `SetScrollOffset`) schreibt waehrend des Layouts ohne
+  Invalidierung. Das ist nur solange gefahrlos, wie nichts stromabwaerts den
+  Offset bereits gelesen hat. Statt sich auf Disziplin zu verlassen, panickt
+  die Methode jetzt, sobald der Layouter schon ein Kind gemessen hat - die
+  Bedingung ist damit erzwungen und nicht bloss dokumentiert.
+- `ScrollSpec.Virtual` ist als Eigenschaft des Scrollens benannt, ist aber
+  eine Eigenschaft des *Layouters*: es bedeutet nur "markiere Layout statt
+  Paint". Es gibt genau einen Konsumenten und keinen zweiten plausiblen, der
+  nicht ebenfalls eine virtualisierte Sammlung waere. Es bleibt vorerst, gilt
+  aber nicht als abgeschlossener Teil der oeffentlichen Flaeche.
 
 ImageGallery besitzt seinen Scrollbereich und verwendet denselben Bildservice
 wie `ui.Image(source)`. Sie ist eine Komposition ueber einem internen lazy

@@ -127,16 +127,54 @@ func TestGalleryJustifiedFillsRows(t *testing.T) {
 	}
 }
 
-func TestGalleryDiagnosticsAreQuietWhenIdle(t *testing.T) {
-	h, _ := galleryFixture(t, 10000, ui.Masonry())
+// TestGalleryIsQuietWhenIdleAndNotWhenScrolled asserts both halves of what
+// makes the gallery's frame behaviour correct, because either one alone is
+// satisfied by a broken gallery.
+//
+// Idle must be free: no build, no layouter. That is the invalidation model of
+// the project plan, section 6.
+//
+// A scroll must *not* be free, and that is the half this test did not have
+// until WU-O. It ran one idle frame after settling and asserted that nothing
+// happened, which a gallery with [gift.ScrollSpec.Virtual] removed would also
+// pass — and would then be a gallery whose tiles keep standing for the items
+// they stood for at the offset the last layout saw, which is a viewport full
+// of the wrong pictures. Asserting that scrolling costs layouters, and that it
+// costs no builds, is what pins the mechanism rather than its absence.
+func TestGalleryIsQuietWhenIdleAndNotWhenScrolled(t *testing.T) {
+	h, g := galleryFixture(t, 10000, ui.Masonry())
+	node := h.Find(gifttest.ByKey("gallery"))
+
+	// Three idle frames, not one: a gallery that asked for one more layout
+	// pass per pass would be caught by Settle, but one that alternates would
+	// not be caught by a single frame.
 	before := h.Diagnostics()
-	h.Frame()
+	for range 3 {
+		h.Frame()
+	}
 	after := h.Diagnostics()
 	if after.Builds != before.Builds {
-		t.Errorf("an idle frame rebuilt %d scopes", after.Builds-before.Builds)
+		t.Errorf("three idle frames rebuilt %d scopes", after.Builds-before.Builds)
 	}
 	if after.Layouts != before.Layouts {
-		t.Errorf("an idle frame ran %d layouters", after.Layouts-before.Layouts)
+		t.Errorf("three idle frames ran %d layouters", after.Layouts-before.Layouts)
+	}
+
+	// And now the half that shows Virtual is doing its job.
+	first := firstItem(g)
+	before = h.Diagnostics()
+	node.ScrollBy(2000)
+	after = h.Diagnostics()
+	if after.Layouts == before.Layouts {
+		t.Error("scrolling ran no layouter at all; a virtualising container produces its " +
+			"content from the offset and cannot answer a new offset from a cached layout")
+	}
+	if after.Builds != before.Builds {
+		t.Errorf("scrolling rebuilt %d scopes; the scroll path must not build",
+			after.Builds-before.Builds)
+	}
+	if got := firstItem(g); got == first {
+		t.Errorf("after scrolling 2000 pixels the first visible item is still %d", first)
 	}
 }
 

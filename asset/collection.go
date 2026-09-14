@@ -96,7 +96,8 @@ type Collection struct {
 	// that is only ever scrolled never pays for the map.
 	byID map[ID]int
 
-	version uint64
+	version     uint64
+	metaVersion uint64
 }
 
 // NewCollection returns a collection over items.
@@ -112,7 +113,7 @@ type Collection struct {
 // wrong place, a correction applied to the wrong entry. Validation is O(n) and
 // happens once, outside the frame path.
 func NewCollection(items []Metadata) *Collection {
-	c := &Collection{items: items, version: 1}
+	c := &Collection{items: items, version: 1, metaVersion: 1}
 	c.validate()
 	return c
 }
@@ -203,27 +204,57 @@ func (c *Collection) Find(id ID) (int, bool) {
 	return i, ok
 }
 
-// Version is the structure version of the catalogue.
+// StructureVersion is the version of the *shape* of the catalogue: which
+// entries exist and in which order.
 //
-// It starts at one and increases whenever the entries change in any way that
-// invalidates something derived from them: a reset, a reorder or a batch of
-// corrections. A consumer that caches anything per position — a layout index,
-// a tile binding — compares this number and throws its cache away when it
-// moved. The project plan, section 10, calls this "Strukturupdates werden
-// versioniert publiziert".
+// It starts at one and increases on a reset and on a reorder — the two
+// mutations that make a position mean a different entry — and on nothing else.
+// A consumer that caches anything keyed by *position* compares this number and
+// throws that cache away when it moved. The project plan, section 10, calls
+// this "Strukturupdates werden versioniert publiziert".
 //
-// It is one counter and not two. A correction that only changes a dimension
-// does not move any entry, but it does change the layout of every entry after
-// it, so the consumer has to react either way; a second, finer counter would
-// have exactly one reader and it would have to react to both.
-func (c *Collection) Version() uint64 { return c.version }
+// # Why this is two counters and not one
+//
+// Until WU-O it was one, defended on the grounds that a correction "changes
+// the layout of every entry after it, so the consumer has to react either
+// way". The consumer has to *reflow* either way. It does not have to
+// *unbind*, and those are not the same reaction: a tile binding is keyed by
+// position, a correction moves no position, and the generation counter on
+// [ui.TileBinding] promises to move only when a slot comes to stand for a
+// different picture. With one counter the gallery could not tell the two
+// apart, so it took the safe reaction — unbind everything — and the promise
+// became false: a correction batch advanced the generation of every bound
+// tile, every frame, while every tile kept its item. In step 4 that is a
+// pipeline invalidating every decode it has in flight on every batch it
+// emits, which is a loop that throws away the cache it just filled.
+//
+// So there are two numbers. A consumer that keys by position watches this
+// one; a consumer that also mirrors dimensions or revisions watches
+// [Collection.MetadataVersion] as well and reacts to it more cheaply.
+func (c *Collection) StructureVersion() uint64 { return c.version }
 
-// Reset replaces the whole catalogue and bumps the version. Ownership of items
-// passes to the collection; see [NewCollection].
+// MetadataVersion is the version of the *contents* of the entries: their
+// dimensions and their revisions.
+//
+// It starts at one and increases whenever any field of any entry changed,
+// which includes a reset and a reorder — those replace the metadata too — and
+// a batch of corrections that actually corrected something. A batch of no-ops
+// does not move it, so it costs nothing downstream.
+//
+// The pair to watch is therefore both numbers, and the distinction they draw
+// is: [Collection.StructureVersion] moved means "positions are suspect",
+// this one alone moved means "the same entries are still in the same places
+// and some of them got bigger". See [Collection.StructureVersion] for why the
+// distinction is load bearing.
+func (c *Collection) MetadataVersion() uint64 { return c.metaVersion }
+
+// Reset replaces the whole catalogue and bumps both versions. Ownership of
+// items passes to the collection; see [NewCollection].
 func (c *Collection) Reset(items []Metadata) {
 	c.items = items
 	c.validate()
 	c.version++
+	c.metaVersion++
 }
 
 // ApplyCorrections folds a batch of late arriving facts into the catalogue and
@@ -235,6 +266,12 @@ func (c *Collection) Reset(items []Metadata) {
 // deliver results about entries that no longer exist, and that is normal
 // operation and not an error. See the project plan, section 9, "Abgebrochene
 // Arbeit darf die aktuelle Ansicht nicht ueberschreiben".
+//
+// It moves [Collection.MetadataVersion] and deliberately *not*
+// [Collection.StructureVersion]: nothing was inserted, removed or moved, so
+// every position still means the entry it meant before, and a consumer that
+// binds by position may keep its bindings. See [Collection.StructureVersion]
+// for what went wrong while these were one number.
 //
 // Applying corrections does not move any layout by itself. When the content
 // catches up is a decision about the scroll anchor and belongs to the view;
@@ -260,7 +297,7 @@ func (c *Collection) ApplyCorrections(cs []Correction) int {
 		}
 	}
 	if changed > 0 {
-		c.version++
+		c.metaVersion++
 	}
 	return changed
 }
@@ -291,6 +328,7 @@ func (c *Collection) Reorder(order []int) {
 	c.items = out
 	c.byID = nil
 	c.version++
+	c.metaVersion++
 }
 
 func (c *Collection) check(i int) {
