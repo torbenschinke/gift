@@ -31,6 +31,29 @@
 // draw calls — a label sorted into a late text pass would slide in front of
 // panels declared after it. See [Renderer.material] and [RendererStats.DrawCalls].
 //
+// An image operation is a textured quad too, sampling one texture of the
+// [TextureCache], and it is therefore a third material with the same rule: a
+// batch ends where the texture changes, so a gallery of sixty visible
+// thumbnails issues sixty draw calls from this package. That number is
+// reported rather than engineered away, because engineering it away would mean
+// an atlas of our own and the project plan, section 11, forbids building one
+// ahead of a measurement — and because Ebitengine already merges consecutive
+// draw commands whose backend source images coincide, which for thumbnails on
+// its automatic atlas they usually do. See [TextureCache] for the evidence and
+// [RendererStats.ImageBatches] for the number.
+//
+// Uploads are admitted per *drawn* frame and not per update, which is the
+// distinction the project plan, section 11, draws and the reason the budget is
+// reset in [Renderer.BeginFrame]: several Ebitengine updates may precede one
+// frame. It matters because the OpenGL driver path calls glFinish before
+// writing pixels when a draw has already been issued — WritePixels in
+// internal/graphicsdriver/opengl/image.go of the pinned module does so
+// explicitly, "wait for completion of the pending draw commands" — so an
+// unbudgeted frame stalls on the GPU however much decoding happened in the
+// background. gift additionally does every upload of a frame *before* every
+// draw of it, because painters run inside App.Paint and draw calls are issued
+// afterwards in Submit, so a frame costs at most one such wait.
+//
 // A shadow is a shape operation too, and that is a deliberate departure from
 // the project plan, section 8, which proposes "wiederverwendbare, gecachte
 // Formmaske; Blur nur bei Form-/Parameterwechsel" for it. gift evaluates the
@@ -93,7 +116,7 @@
 //
 // Transforms are resolved through [render.List.Xform]. Since WU-L a scroll
 // container pushes one: a pure translation, which takes the axis aligned fast
-// path in [Renderer.appendAxisAligned] and in [Renderer.appendGlyphQuad] and
+// path in [Renderer.appendAxisAligned] and in [Renderer.appendTexturedQuad] and
 // is exercised end to end against a GPU by gifttest's scroll pixel test. The
 // general polygon path still has no producer in gift and is covered by unit
 // tests only.
@@ -106,7 +129,7 @@
 // pixel to screen pixel is one to one only because every transform gift emits
 // is a translation — it is not one to one by construction. Making it so under a
 // scale means putting the effective size in the atlas key and asking
-// internal/text to rasterise at that size; see [Renderer.appendGlyphQuad],
+// internal/text to rasterise at that size; see [Renderer.appendTexturedQuad],
 // where the note sits next to the code that would have to change.
 //
 // # Measurement

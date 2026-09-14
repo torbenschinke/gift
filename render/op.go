@@ -41,6 +41,32 @@ const (
 	// shadow with a spread and an offset but no blur is. StrokeWidth is
 	// ignored: a shadow is never stroked.
 	OpShadow
+	// OpImage draws the whole of the image resource named by Image into
+	// Bounds, modulated by Color.
+	//
+	// The mapping is the obvious affine one: the full texture is stretched
+	// onto Bounds. There is deliberately no source rectangle in an operation,
+	// and that is a decision with a reason rather than an omission. Four more
+	// float32 would have grown every operation of every list by sixteen
+	// bytes, and the two things a source rectangle is wanted for are both
+	// already expressible:
+	//
+	//   - Letterboxing is a *smaller Bounds*. The producer knows the aspect
+	//     ratio of the picture it asked for, so it computes the fitted
+	//     rectangle and emits that.
+	//   - Cropping to fill is a *clip*. The producer pushes the tile
+	//     rectangle, emits an oversized Bounds and pops. The backend already
+	//     clips exactly, at vertex level, interpolating the texture
+	//     coordinates along with the corners — which is the same machinery a
+	//     source rectangle would have needed anyway, minus the sixteen bytes.
+	//
+	// Color is a *tint*, premultiplied like every other colour here. Opaque
+	// white leaves the picture alone; a lower alpha fades it over whatever is
+	// behind it, which is how a cross fade or a disabled state is drawn
+	// without a second material. A fully transparent colour skips the
+	// operation. CornerRadius, StrokeWidth and Blur are ignored: rounding an
+	// image means clipping it, and that is the caller's clip.
+	OpImage
 )
 
 // Op is a single drawing operation.
@@ -59,7 +85,8 @@ const (
 // is not bounded and a variable length payload cannot live in a fixed size
 // struct.
 //
-// Size: 52 bytes before [OpGlyphs] existed, 60 after, 64 since [OpShadow].
+// Size: 52 bytes before [OpGlyphs] existed, 60 after, 64 since [OpShadow],
+// 68 since [OpImage].
 // The eight bytes of OpGlyphs are the index and the count and buy every
 // operation kind the same flat layout; the alternative, reusing CornerRadius
 // and StrokeWidth as an untyped union, would have cost nothing and been a
@@ -70,8 +97,20 @@ const (
 // defensible — unlike the glyph index it is a length in the same units — but
 // the two fields would then have had to be documented as "stroke width, except
 // when it is a blur", and a shadow with a stroke is the sort of thing a later
-// work unit asks for. Sixty four is also the point at which an Op is exactly
-// one cache line on every platform gift targets.
+// work unit asks for.
+//
+// The four bytes of [OpImage] are Image, and they cost the property that used
+// to be worth stating here: sixty four was exactly one cache line, sixty eight
+// is not, so an operation now straddles one every sixteenth element. The
+// alternative was to overload Glyphs — an unused uint32 in an image operation,
+// exactly as Blur is unused in a glyph operation — and it was rejected for the
+// reason above, twice over: an image id in a field called Glyphs is a union
+// with no tag but the kind, and the first reader to write l.Glyphs(op.Glyphs,
+// op.GlyphCount) on an image operation gets a plausible looking slice of
+// somebody else's text. The measured cost of the growth is in
+// BenchmarkFramePathWithImages: the list is a few per cent larger and the
+// frame path is still 0 B/op, because the slice is reused and never grows
+// again after the first frames.
 type Op struct {
 	// Kind selects how the remaining fields are interpreted.
 	Kind OpKind
@@ -103,6 +142,10 @@ type Op struct {
 	// GlyphCount is the number of glyphs of an [OpGlyphs] operation. Zero
 	// means the operation draws nothing.
 	GlyphCount uint32
+	// Image is the resource an [OpImage] draws; see [ImageID]. It is valid
+	// only for the frame it was obtained in, which is why a consumer keeps an
+	// [ImageHandle] and puts the resolved id here once per frame.
+	Image ImageID
 }
 
 // PaintBounds returns the rectangle this operation can touch.

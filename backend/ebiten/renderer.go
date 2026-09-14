@@ -50,6 +50,19 @@ type Renderer struct {
 	shader *eb.Shader
 	opts   eb.DrawTrianglesShaderOptions
 
+	// textures is the image resource cache: residency, the per drawn frame
+	// upload budget and eviction with an explicit Deallocate. It is the
+	// [render.Images] the application reaches through gift.App.SetImages.
+	textures *TextureCache
+	// imageOpts are the draw options of the image material. Premultiplied,
+	// like the glyph options, because [render.Color] is and because
+	// asset.Thumbnail produces premultiplied RGBA — so a tint multiplies
+	// correctly and nothing in the frame path converts a colour. The filter
+	// is linear and not nearest: a thumbnail is scaled to whatever the tile
+	// rectangle happens to be, and the ladder of asset.Config.Sizes only
+	// promises to be *near* it.
+	imageOpts eb.DrawTrianglesOptions
+
 	// atlas is the glyph atlas. It is created by NewRenderer and is the only
 	// thing in this package that knows what a glyph looks like.
 	atlas *GlyphAtlas
@@ -61,7 +74,7 @@ type Renderer struct {
 	// is not a quality compromise but the correct choice: glyph positions are
 	// whole pixels and the atlas rectangle maps one to one onto the
 	// destination, so any interpolation would only blur a mapping that is
-	// already exact. See [Renderer.appendGlyphQuad] for the assumption that
+	// already exact. See [Renderer.appendTexturedQuad] for the assumption that
 	// rests on it.
 	glyphOpts eb.DrawTrianglesOptions
 
@@ -111,11 +124,14 @@ type Renderer struct {
 	skipOutsideClip uint64
 	skipZeroStroke  uint64
 	skipEmptyText   uint64
+	skipNoImage     uint64
 	unknowns        uint64
 
 	shapeBatches uint64
 	glyphBatches uint64
+	imageBatches uint64
 	glyphQuads   uint64
+	imageOps     uint64
 
 	// shadowOps counts shadow operations that produced geometry and
 	// shadowSharpOps the subset of them with no blur at all. There is no
@@ -139,6 +155,10 @@ const (
 	// MaterialGlyph is a textured quad sampling one glyph atlas page. Two
 	// pages are two materials.
 	MaterialGlyph
+	// MaterialImage is a textured quad sampling one image texture. Two
+	// pictures are two materials, which is the honest cost of not packing
+	// thumbnails into an atlas of our own; see [TextureCache].
+	MaterialImage
 )
 
 // String makes a failing test readable.
@@ -148,6 +168,8 @@ func (m Material) String() string {
 		return "shape"
 	case MaterialGlyph:
 		return "glyph"
+	case MaterialImage:
+		return "image"
 	default:
 		return "none"
 	}
@@ -163,8 +185,14 @@ func NewRenderer() (*Renderer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gift/backend/ebiten: compiling the shape shader: %w", err)
 	}
-	r := &Renderer{shader: sh, atlas: NewGlyphAtlas(AtlasConfig{})}
+	r := &Renderer{
+		shader:   sh,
+		atlas:    NewGlyphAtlas(AtlasConfig{}),
+		textures: NewTextureCache(TextureConfig{}),
+	}
 	r.glyphOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
+	r.imageOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
+	r.imageOpts.Filter = eb.FilterLinear
 	// Set explicitly. It was already nearest, but only because
 	// eb.FilterNearest happens to be the zero value of eb.Filter, and a
 	// comment two fields up claimed the choice was deliberate. One of those
@@ -199,7 +227,30 @@ func (r *Renderer) BeginFrame(geom.Size) {
 	r.verts = r.verts[:0]
 	r.idx = r.idx[:0]
 	r.curMat, r.curPage = MaterialNone, nil
+	// The upload budget is per *drawn* frame, and this is the only callback
+	// that happens once per drawn frame. Resetting it in an update instead
+	// would hand the same budget out several times for one frame, because
+	// Ebitengine may update more often than it draws; see the project plan,
+	// sections 6 and 11.
+	if r.textures != nil {
+		r.textures.BeginFrame()
+	}
 }
+
+// Images returns the image resource service of this renderer.
+//
+// It is what an application installs with gift.App.SetImages, which is the
+// only route from a painter in ui to a texture in this package; see
+// [render.Images].
+func (r *Renderer) Images() render.Images { return r.textures }
+
+// Textures returns the texture cache, for [TextureStats] and for a test that
+// wants a small budget in order to observe admission and eviction.
+func (r *Renderer) Textures() *TextureCache { return r.textures }
+
+// SetTextures replaces the texture cache. It is for tests; the one installed
+// by [NewRenderer] is the one an application wants.
+func (r *Renderer) SetTextures(t *TextureCache) { r.textures = t }
 
 // Atlas returns the glyph atlas of this renderer, for [GlyphAtlas.Stats] and
 // for a test that wants to configure the budget.
@@ -246,6 +297,11 @@ func (r *Renderer) EndFrame() {
 	if r.atlas != nil {
 		r.atlas.Tick()
 	}
+	// After the last draw call has been issued, which is the point at which
+	// "referenced by the frame in progress" stops being true of any texture.
+	if r.textures != nil {
+		r.textures.Tick()
+	}
 }
 
 // appendOp translates one operation into vertices.
@@ -281,6 +337,9 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 		}
 	case render.OpGlyphs:
 		r.appendGlyphs(l, op)
+		return
+	case render.OpImage:
+		r.appendImage(l, op)
 		return
 	default:
 		// An unknown kind is skipped rather than fatal, as [render.OpKind]
@@ -387,6 +446,61 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 	r.appendTransformed(quad, clip, xf, shape)
 }
 
+// appendImage turns one [render.OpImage] into a textured quad.
+//
+// The whole texture is mapped onto the operation's bounds. There is no source
+// rectangle in the display list — see [render.OpImage] for why — so cropping
+// is a clip, and the clip is applied here exactly as it is for a glyph: the
+// visible rectangle is the intersection and the texture coordinates are
+// interpolated into it. A cropped tile therefore costs no fragments for the
+// part that is cut away, because the geometry is trimmed before it is emitted.
+func (r *Renderer) appendImage(l *render.List, op render.Op) {
+	if op.Color.IsTransparent() {
+		r.skipTransparent++
+		return
+	}
+	b := op.Bounds
+	if b.IsEmpty() {
+		r.skipEmptyBounds++
+		return
+	}
+	clip := l.Clip(op.Clip)
+	if clip.IsEmpty() {
+		r.skipEmptyClip++
+		return
+	}
+	if r.textures == nil {
+		r.skipNoImage++
+		return
+	}
+	img := r.textures.image(op.Image)
+	w, h, ok := r.textures.size(op.Image)
+	if !ok || img == nil || w <= 0 || h <= 0 {
+		// An operation whose resource is not resident. It is not fatal and it
+		// is not silent: a producer that resolved its handle this frame
+		// cannot get here, because a resolved texture cannot be evicted
+		// during the frame that resolved it.
+		r.skipNoImage++
+		return
+	}
+
+	src := geom.Rc(0, 0, float32(w), float32(h))
+	xf := l.Xform(op.Xform)
+	r.material(MaterialImage, img)
+	var wrote bool
+	if xf.B == 0 && xf.C == 0 && xf.A > 0 && xf.D > 0 {
+		wrote = r.appendTexturedQuad(b, src, clip, xf, op.Color)
+	} else {
+		wrote = r.appendTexturedQuadTransformed(b, src, clip, xf, op.Color)
+	}
+	if !wrote {
+		r.skipOutsideClip++
+		return
+	}
+	r.imageOps++
+	r.emitted++
+}
+
 // material starts a new batch when the material of the next primitive differs
 // from the one under construction.
 //
@@ -457,9 +571,9 @@ func (r *Renderer) appendGlyphs(l *render.List, op render.Op) {
 		src := geom.Rc(float32(e.x), float32(e.y), float32(e.x+e.w), float32(e.y+e.h))
 		var wrote bool
 		if fast {
-			wrote = r.appendGlyphQuad(dst, src, clip, xf, op.Color)
+			wrote = r.appendTexturedQuad(dst, src, clip, xf, op.Color)
 		} else {
-			wrote = r.appendGlyphQuadTransformed(dst, src, clip, xf, op.Color)
+			wrote = r.appendTexturedQuadTransformed(dst, src, clip, xf, op.Color)
 		}
 		if wrote {
 			r.glyphQuads++
@@ -476,12 +590,17 @@ func (r *Renderer) appendGlyphs(l *render.List, op render.Op) {
 	r.skipEmptyText++
 }
 
-// appendGlyphQuad is the fast path for a translation and a positive scale,
+// appendTexturedQuad is the fast path for a translation and a positive scale,
 // which is everything gift produces. The clip is a rectangle intersection in
 // device space and the texture coordinates follow from a linear interpolation
 // inside it.
 //
-// # The scale is assumed to be one
+// It serves both textured materials: a glyph quad and an image quad differ
+// only in which texture the batch samples, and the mapping from a destination
+// rectangle to a source rectangle through a clip is the same arithmetic. See
+// [Renderer.appendImage].
+//
+// # For glyphs, the scale is assumed to be one
 //
 // The destination rectangle is the atlas rectangle mapped through xf, so a
 // scale other than one stretches a bitmap that was rasterised at the glyph's
@@ -495,7 +614,13 @@ func (r *Renderer) appendGlyphs(l *render.List, op render.Op) {
 // pure translation, which leaves the mapping one to one; see the package
 // documentation, "Clipping and transforms". This is recorded here so that the
 // first thing to push a scale finds the note rather than the artefact.
-func (r *Renderer) appendGlyphQuad(dst, src, clip geom.Rect, xf geom.Affine2D, col render.Color) bool {
+//
+// None of that applies to an *image*, which is resampled on purpose: a
+// thumbnail comes off a ladder of a few sizes and is drawn at whatever the
+// tile rectangle happens to be, so the image material uses a linear filter
+// while the glyph material uses a nearest one. That is the only difference
+// between the two and it lives in the draw options, not here.
+func (r *Renderer) appendTexturedQuad(dst, src, clip geom.Rect, xf geom.Affine2D, col render.Color) bool {
 	dev := geom.Rc(
 		xf.A*dst.Min.X+xf.TX, xf.D*dst.Min.Y+xf.TY,
 		xf.A*dst.Max.X+xf.TX, xf.D*dst.Max.Y+xf.TY)
@@ -511,23 +636,23 @@ func (r *Renderer) appendGlyphQuad(dst, src, clip geom.Rect, xf geom.Affine2D, c
 
 	base := uint32(len(r.verts))
 	r.verts = append(r.verts,
-		glyphVertex(vis.Min.X, vis.Min.Y, u0, v0, col),
-		glyphVertex(vis.Max.X, vis.Min.Y, u1, v0, col),
-		glyphVertex(vis.Max.X, vis.Max.Y, u1, v1, col),
-		glyphVertex(vis.Min.X, vis.Max.Y, u0, v1, col),
+		texturedVertex(vis.Min.X, vis.Min.Y, u0, v0, col),
+		texturedVertex(vis.Max.X, vis.Min.Y, u1, v0, col),
+		texturedVertex(vis.Max.X, vis.Max.Y, u1, v1, col),
+		texturedVertex(vis.Min.X, vis.Max.Y, u0, v1, col),
 	)
 	r.idx = append(r.idx, base, base+1, base+2, base, base+2, base+3)
 	return true
 }
 
-// appendGlyphQuadTransformed is the general path: the quad is mapped into
+// appendTexturedQuadTransformed is the general path: the quad is mapped into
 // device space and clipped as a convex polygon, with the texture coordinates
 // interpolated along with the corners. gift produces no transform that needs
 // it — a scroll container pushes a translation, which takes the fast path
 // above — so this is exercised by tests only. It exists so that a rotated or
 // mirrored container later is a display list change and not a backend
 // rewrite.
-func (r *Renderer) appendGlyphQuadTransformed(dst, src, clip geom.Rect, xf geom.Affine2D, col render.Color) bool {
+func (r *Renderer) appendTexturedQuadTransformed(dst, src, clip geom.Rect, xf geom.Affine2D, col render.Color) bool {
 	poly := &r.poly[0]
 	other := &r.poly[1]
 	corners := [4]geom.Point{
@@ -563,7 +688,7 @@ func (r *Renderer) appendGlyphQuadTransformed(dst, src, clip geom.Rect, xf geom.
 	base := uint32(len(r.verts))
 	for i := 0; i < n; i++ {
 		v := poly[i]
-		r.verts = append(r.verts, glyphVertex(v.dx, v.dy, v.lx, v.ly, col))
+		r.verts = append(r.verts, texturedVertex(v.dx, v.dy, v.lx, v.ly, col))
 	}
 	for i := 1; i < n-1; i++ {
 		r.idx = append(r.idx, base, base+uint32(i), base+uint32(i)+1)
@@ -571,13 +696,13 @@ func (r *Renderer) appendGlyphQuadTransformed(dst, src, clip geom.Rect, xf geom.
 	return true
 }
 
-// glyphVertex builds one vertex of a glyph quad.
+// texturedVertex builds one vertex of a textured quad, glyph or image.
 //
 // The colour travels unconverted, exactly as for shapes: render.Color is
 // premultiplied, the glyph options say the vertex colour scale is
 // premultiplied, and the atlas holds premultiplied white coverage. Nothing in
 // the frame path converts a colour.
-func glyphVertex(dx, dy, u, v float32, c render.Color) eb.Vertex {
+func texturedVertex(dx, dy, u, v float32, c render.Color) eb.Vertex {
 	return eb.Vertex{
 		DstX: dx, DstY: dy,
 		SrcX: u, SrcY: v,
@@ -875,6 +1000,8 @@ func (r *Renderer) flush() {
 		// the counters usable from a headless test.
 	case r.curMat == MaterialGlyph:
 		r.dst.DrawTriangles32(r.verts, r.idx, r.curPage, &r.glyphOpts)
+	case r.curMat == MaterialImage:
+		r.dst.DrawTriangles32(r.verts, r.idx, r.curPage, &r.imageOpts)
 	default:
 		r.dst.DrawTrianglesShader32(r.verts, r.idx, r.shader, &r.opts)
 	}
@@ -882,6 +1009,8 @@ func (r *Renderer) flush() {
 	switch r.curMat {
 	case MaterialGlyph:
 		r.glyphBatches++
+	case MaterialImage:
+		r.imageBatches++
 	default:
 		r.shapeBatches++
 	}
@@ -922,6 +1051,22 @@ type RendererStats struct {
 	// order, and per atlas page switch inside such a run. See
 	// [Renderer.material] for why they are not sorted together.
 	ShapeBatches, GlyphBatches uint64
+	// ImageBatches is the number of draw calls issued for image material.
+	// One per run of consecutive operations sampling the same texture, so a
+	// gallery of sixty visible thumbnails issues sixty of them.
+	//
+	// That number looks alarming and mostly is not, which is why it is
+	// reported rather than hidden behind an atlas nobody measured.
+	// Ebitengine's graphicscommand merges two consecutive draw commands whose
+	// backend source images are the same object — see
+	// CanMergeWithDrawTrianglesCommand in the pinned module — and thumbnails
+	// that fit its automatic atlas share one. So this counts the calls this
+	// package makes, not the draws the GPU performs, and the two differ by
+	// however much of the working set happens to share a page. See
+	// [TextureCache] for why there is no atlas of our own.
+	ImageBatches uint64
+	// ImageOps is the number of image operations that produced geometry.
+	ImageOps uint64
 	// GlyphQuads is the number of glyph quads emitted. Together with Ops it
 	// says how much of a frame is text.
 	GlyphQuads uint64
@@ -971,6 +1116,12 @@ type RendererStats struct {
 	SkippedOutsideClip uint64
 	// SkippedZeroStroke counts strokes with a width of zero or less.
 	SkippedZeroStroke uint64
+	// SkippedNoImage counts image operations whose resource was not resident:
+	// an id of zero, or one whose texture was evicted between the resolution
+	// and the draw. A view that draws a placeholder when [render.Images]
+	// refuses it never produces one; a non zero value means somebody emitted
+	// an operation for a handle it had not resolved this frame.
+	SkippedNoImage uint64
 	// SkippedEmptyText counts glyph operations that produced no quad: an
 	// empty range, a run of nothing but spaces, a run entirely outside its
 	// clip, or — the one worth watching — a run whose glyphs the atlas
@@ -989,7 +1140,7 @@ type RendererStats struct {
 func (s RendererStats) Skipped() uint64 {
 	return s.SkippedNone + s.SkippedTransparent + s.SkippedEmptyBounds +
 		s.SkippedEmptyClip + s.SkippedOutsideClip + s.SkippedZeroStroke +
-		s.SkippedEmptyText
+		s.SkippedEmptyText + s.SkippedNoImage
 }
 
 // Accounted is Ops + Skipped + UnknownKinds. It must equal the total number of
@@ -1013,9 +1164,12 @@ func (r *Renderer) Stats() RendererStats {
 		SkippedOutsideClip: r.skipOutsideClip,
 		SkippedZeroStroke:  r.skipZeroStroke,
 		SkippedEmptyText:   r.skipEmptyText,
+		SkippedNoImage:     r.skipNoImage,
 		UnknownKinds:       r.unknowns,
 		ShapeBatches:       r.shapeBatches,
 		GlyphBatches:       r.glyphBatches,
+		ImageBatches:       r.imageBatches,
+		ImageOps:           r.imageOps,
 		GlyphQuads:         r.glyphQuads,
 		ShadowOps:          r.shadowOps,
 		ShadowSharpOps:     r.shadowSharpOps,

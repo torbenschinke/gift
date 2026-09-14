@@ -34,7 +34,18 @@
 //
 // Step 1 covers rectangles, rounded rectangles and strokes together with
 // clipping and transforms; step 2 adds text as [OpGlyphs] and the glyph side
-// table. Images and material regions are part of later steps. [Op] is a struct
-// with a discriminating [OpKind] precisely so that those can be added without
-// changing the shape of the list.
+// table; step 4 adds pictures as [OpImage] and the resource contract of
+// [Images]. Material regions are step 5. [Op] is a struct with a
+// discriminating [OpKind] precisely so that those can be added without
+// changing the shape of the list — which has now happened twice, at a cost of
+// four bytes each time, recorded on [Op].
+//
+// # Resources
+//
+// A display list carries no pixels and no pointers to any, so an image is a
+// number: [ImageID] inside the operation, [ImageHandle] in whatever keeps a
+// reference across frames, and [Images] as the service that turns the pixels
+// of a decoded picture into the first and the second. The renderer neutral
+// half of "get this picture on screen" is those three types and nothing
+// else.
 package render

@@ -1,27 +1,38 @@
 // Command example-gallery is the virtualised image gallery of the project
-// plan, section 10, with a hundred thousand synthetic entries and no image
-// pipeline yet.
+// plan, section 10, with the complete image pipeline of section 12, step 4:
+// real files, real HTTP, cold loading, errors and a thumbnail cache that
+// survives a restart.
 //
 //	go run ./cmd/example-gallery
-//	go run ./cmd/example-gallery -n 1000000
+//	go run ./cmd/example-gallery -dir ~/Pictures
 //	GIFT_METRICS=1 go run -tags giftmetrics ./cmd/example-gallery
 //
 // Scroll with the wheel or by dragging; a fling keeps going. Click a tile to
-// select it, shift-click or control-click to extend, and use the arrow keys,
-// page keys, home and end once the gallery has the focus. The two buttons
-// switch between masonry and justified at runtime.
+// select it, shift-click or control-click to extend, and use the arrow keys
+// once the gallery has the focus. The two buttons switch layout at runtime.
 //
-// Every tile is a placeholder, which is the point of this step: the colours
-// come from a hash of the stable asset ID, so a tile that is recycled changes
-// colour with the picture it now stands for and a tile that scrolls away and
-// comes back looks the same. Step 4 draws thumbnails in their place.
+// With no -dir the example writes a few dozen pictures into its own cache
+// directory on first run and shows those, half of them over a local HTTP
+// server so that both source kinds are exercised without a network. Two
+// entries are deliberately broken, so the error state is on screen rather than
+// hypothetical. The toolbar counts decodes against disk cache hits: run it
+// twice and the second run is almost all cache.
 package main
 
 import (
 	"flag"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
+	"log/slog"
+	"net"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/torbenschinke/gift"
 	"github.com/torbenschinke/gift/asset"
@@ -30,47 +41,184 @@ import (
 	"github.com/torbenschinke/gift/ui"
 )
 
-// count is the only flag. It earns its place: the entire claim of this example
-// is that the catalogue size does not reach the frame path, and a reader who
-// cannot change the number cannot check that claim.
-var count = flag.Int("n", 100000, "number of synthetic catalogue entries")
+var (
+	dir   = flag.String("dir", os.Getenv("GIFT_GALLERY_DIR"), "directory of JPEG/PNG pictures; empty generates samples")
+	cache = flag.String("cache", defaultCacheDir(), "persistent thumbnail cache directory; empty disables it")
+)
 
 func main() {
 	flag.Parse()
-	if err := loadFont(); err != nil {
-		fmt.Fprintln(os.Stderr, "example-gallery:", err)
-		os.Exit(1)
-	}
-	gallery := ui.NewGallery(asset.NewCollection(photos(*count)))
-	app := gift.New(gift.Options{Root: func(ctx *gift.Context) gift.View {
-		return browser(ctx, gallery)
-	}})
-	if err := backend.Run(app, backend.Config{
-		Title: "gift gallery", Width: 1280, Height: 800,
-	}); err != nil {
+	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "example-gallery:", err)
 		os.Exit(1)
 	}
 }
 
-// photos invents n catalogue entries. They are ordinary asset.Metadata: an ID,
-// a revision and the oriented pixel size, which is all a gallery needs.
-//
-// Every seventh entry has no dimensions. Those are laid out with the
-// provisional aspect ratio and drawn in the provisional colour, so the state a
-// cold catalogue is really in is visible instead of hypothetical.
-func photos(n int) []asset.Metadata {
-	out := make([]asset.Metadata, n)
-	for i := range n {
-		m := asset.Metadata{ID: asset.ID("photo-" + strconv.Itoa(i)), Revision: "v1"}
-		if i%7 != 0 {
-			m.Width = uint32(600 + (i*173)%1400)
-			m.Height = uint32(500 + (i*97)%900)
-			m.MIMEType = "image/jpeg"
-		}
-		out[i] = m
+func run() error {
+	if err := loadFont(); err != nil {
+		return err
 	}
-	return out
+	srcDir := *dir
+	if srcDir == "" {
+		var err error
+		if srcDir, err = generateSamples(); err != nil {
+			return err
+		}
+	}
+	sources, err := scan(srcDir)
+	if err != nil {
+		return err
+	}
+	if len(sources) == 0 {
+		return fmt.Errorf("no JPEG or PNG files in %s", srcDir)
+	}
+	// One failure on purpose, and in the generated case a second one: a file
+	// that is not there, and broken.png, which exists and is not a picture.
+	// The project plan, section 15, wants a failed source to become a visible
+	// tile state and never a broken frame.
+	sources = append(sources, asset.File(filepath.Join(srcDir, "missing.jpg")))
+
+	items := make([]asset.Metadata, len(sources))
+	byID := make(map[asset.ID]asset.Source, len(sources))
+	for i, s := range sources {
+		items[i] = s.Metadata()
+		byID[items[i].ID] = s
+	}
+
+	// The knot of this wiring, spelled out because it is the only awkward
+	// part: the pipeline needs app.Post for delivery, and the root needs the
+	// gallery. The closure below reads the variable rather than a copy, so
+	// the two are tied without a second construction.
+	var gallery *ui.Gallery
+	app := gift.New(gift.Options{Root: func(ctx *gift.Context) gift.View {
+		return browser(ctx, gallery)
+	}})
+	pipe := asset.NewPipeline(asset.Config{
+		Deliver: app.Post,
+		Disk:    asset.DiskCacheConfig{Dir: *cache},
+		Logger:  slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	})
+	defer pipe.Close()
+	ui.SetImagePipeline(pipe)
+
+	gallery = ui.NewGallery(asset.NewCollection(items))
+	gallery.SetSources(func(id asset.ID) asset.Source { return byID[id] })
+	stats = pipe.Stats
+
+	return backend.Run(app, backend.Config{
+		Title: "gift gallery", Width: 1280, Height: 800,
+		// One line, and the decode, disk cache and budget counters appear in
+		// the measurement report. The backend does not own the pipeline, so
+		// it cannot wire this itself.
+		AssetStats: ui.ImagePipelineStats,
+	})
+}
+
+// stats is how the toolbar reaches the pipeline counters without every view
+// function taking a pipeline argument.
+var stats = func() asset.Stats { return asset.Stats{} }
+
+// scan collects the pictures of a directory, serving every second one over a
+// local HTTP server so that both source kinds are exercised offline.
+func scan(dir string) ([]asset.Source, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	base, err := serve(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []asset.Source
+	for _, e := range entries {
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".jpg", ".jpeg", ".png":
+		default:
+			continue
+		}
+		if len(out)%2 == 0 {
+			out = append(out, asset.File(filepath.Join(dir, e.Name())))
+		} else {
+			out = append(out, asset.HTTP(base+e.Name()))
+		}
+	}
+	return out, nil
+}
+
+// serve starts a file server on the loopback interface and returns its base
+// URL. http.FileServer sends Last-Modified and answers conditional requests,
+// so this exercises the real HTTP revision path and not a stub.
+func serve(dir string) (string, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	go http.Serve(l, http.FileServer(http.Dir(dir)))
+	return "http://" + l.Addr().String() + "/", nil
+}
+
+// generateSamples writes a few dozen pictures next to the thumbnail cache, so
+// that the example works on a machine with no photographs on it and so that a
+// second run is a warm run.
+func generateSamples() (string, error) {
+	dir := filepath.Join(defaultCacheDir(), "samples")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.png"), []byte("not a picture"), 0o600); err != nil {
+		return "", err
+	}
+	for i := range 48 {
+		name := fmt.Sprintf("sample-%02d.%s", i, map[bool]string{true: "png", false: "jpg"}[i%2 == 0])
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			return "", err
+		}
+		img := sample(i)
+		if strings.HasSuffix(name, ".png") {
+			err = png.Encode(f, img)
+		} else {
+			err = jpeg.Encode(f, img, &jpeg.Options{Quality: 85})
+		}
+		f.Close()
+		if err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+// sample paints one picture: a diagonal two colour gradient at a size that
+// varies per index, so the masonry columns are not all the same shape.
+func sample(i int) image.Image {
+	w, h := 600+(i*173)%900, 500+(i*97)%700
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	a := color.RGBA{uint8(40 + i*37%200), uint8(60 + i*91%180), uint8(90 + i*53%160), 255}
+	b := color.RGBA{255 - a.R, 255 - a.G/2, 255 - a.B/3, 255}
+	for y := range h {
+		for x := range w {
+			t := float64(x+y) / float64(w+h)
+			img.SetRGBA(x, y, color.RGBA{
+				R: uint8(float64(a.R)*(1-t) + float64(b.R)*t),
+				G: uint8(float64(a.G)*(1-t) + float64(b.G)*t),
+				B: uint8(float64(a.B)*(1-t) + float64(b.B)*t),
+				A: 255,
+			})
+		}
+	}
+	return img
+}
+
+func defaultCacheDir() string {
+	d, err := os.UserCacheDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "gift-gallery")
+	}
+	return filepath.Join(d, "gift-gallery")
 }
 
 var (
@@ -86,26 +234,22 @@ var (
 
 	tiles = ui.TileStyle{
 		CornerRadius: 6,
-		Palette: []ui.Color{
-			ui.RGB(196, 84, 74), ui.RGB(74, 142, 196), ui.RGB(96, 176, 116),
-			ui.RGB(206, 166, 74), ui.RGB(150, 106, 190), ui.RGB(88, 172, 172),
-		},
-		Provisional: ui.RGBA(255, 255, 255, 22),
-		Selected:    ui.Border{Width: 3, Color: ui.RGB(255, 255, 255)},
-		Cursor:      ui.Border{Width: 2, Color: ui.RGBA(255, 255, 255, 140)},
+		Palette:      []ui.Color{ui.RGB(52, 58, 72), ui.RGB(46, 52, 64)},
+		Provisional:  ui.RGBA(255, 255, 255, 22),
+		Error:        ui.RGB(128, 44, 44),
+		Selected:     ui.Border{Width: 3, Color: ui.RGB(255, 255, 255)},
+		Cursor:       ui.Border{Width: 2, Color: ui.RGBA(255, 255, 255, 140)},
 	}
 )
 
 // browser is the whole application: a toolbar and the gallery.
 //
-// Note what is *not* here. There is no view per entry, no state per entry and
-// no list of tiles: the catalogue is a value and the gallery is one view over
-// it. Scrolling this function's output does not call this function.
+// Note what is not here. There is no view per entry, no state per entry and no
+// list of tiles; scrolling this function's output does not call this function.
+// The pictures reach the screen through ui.SetImagePipeline, which ui.Image
+// would use just as well.
 func browser(ctx *gift.Context, g *ui.Gallery) gift.View {
 	justified := ctx.State("justified", false)
-	// picked exists only so the toolbar can say something about the
-	// selection. The selection itself lives in the gallery's asset.Selection,
-	// which is where it survives recycling; see the project plan, section 5.
 	picked := ctx.State("picked", asset.ID(""))
 
 	arrangement := ui.Masonry().MinColumnWidth(220).Gap(10)
@@ -118,17 +262,23 @@ func browser(ctx *gift.Context, g *ui.Gallery) gift.View {
 		ui.ImageGallery(g).
 			Layout(arrangement).
 			Tile(tiles).
+			// One row's worth of band: the pictures about to appear are
+			// decoded as prefetch, which never delays a visible one.
+			Overscan(240).
 			Padding(10).
 			Background(ink).
 			OnSelect(func(id asset.ID) { picked.Set(id) }).
-			OnActivate(func(id asset.ID) { picked.Set("opening " + id) }).
 			Flex(1),
 	).Background(ink)
 }
 
 func toolbar(ctx *gift.Context, g *ui.Gallery, justified *gift.State[bool], picked asset.ID) gift.View {
 	on := ctx.Read(justified)
-	status := strconv.Itoa(g.Collection().Len()) + " photos"
+	s := stats()
+	// Cold versus warm, on screen: a first run decodes everything, a second
+	// run answers from the persistent thumbnail cache.
+	status := fmt.Sprintf("%d photos · %d decoded · %d from disk · %d failed",
+		g.Collection().Len(), s.Decodes, s.DiskHits, s.Failed)
 	if n := g.Selection().Len(); n > 0 {
 		status += " · " + strconv.Itoa(n) + " selected · " + string(picked)
 	}

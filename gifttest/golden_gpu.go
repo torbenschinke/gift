@@ -63,11 +63,8 @@ func (h *Harness) AssertGolden(name string) {
 // something else.
 func (h *Harness) Image() image.Image {
 	h.t.Helper()
-	list := h.List()
-
-	r, err := backend.NewRenderer()
-	if err != nil {
-		h.t.Fatalf("gifttest: creating the renderer: %v", err)
+	r := h.backendRenderer()
+	if r == nil {
 		return nil
 	}
 	w, hgt := int(h.size.W), int(h.size.H)
@@ -84,8 +81,15 @@ func (h *Harness) Image() image.Image {
 	dst.Fill(clearFor(h.bg))
 
 	r.SetTarget(dst)
+	// BeginFrame, then paint, then submit: exactly the order backend.Run
+	// uses, and the order matters. The upload budget of the project plan,
+	// section 11, is per *drawn* frame, it is reset by BeginFrame, and the
+	// painters that spend it run inside App.Paint. Submitting the list of the
+	// previous frame instead would never let a painter upload anything, and
+	// every golden of a picture would quietly be a golden of a placeholder.
 	r.BeginFrame(geom.Sz(float32(w), float32(hgt)))
-	r.Submit(list)
+	h.list = h.app.Paint()
+	r.Submit(h.list)
 	r.EndFrame()
 
 	px := make([]byte, 4*w*hgt)
@@ -93,6 +97,27 @@ func (h *Harness) Image() image.Image {
 	out := image.NewRGBA(image.Rect(0, 0, w, hgt))
 	copy(out.Pix, px)
 	return out
+}
+
+// backendRenderer returns the harness's renderer, creating it and wiring its
+// image service into the application on first use.
+//
+// The wiring is the point. Without it [gift.PaintContext.Images] is nil, every
+// picture falls back to its placeholder, and a golden of a gallery full of
+// photographs would be a golden of coloured rectangles that passes for ever.
+func (h *Harness) backendRenderer() *backend.Renderer {
+	h.t.Helper()
+	if r, ok := h.renderer.(*backend.Renderer); ok {
+		return r
+	}
+	r, err := backend.NewRenderer()
+	if err != nil {
+		h.t.Fatalf("gifttest: creating the renderer: %v", err)
+		return nil
+	}
+	h.renderer = r
+	h.app.SetImages(r.Images())
+	return r
 }
 
 // Main runs the test binary inside Ebitengine's loop, which is what makes

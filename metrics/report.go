@@ -192,6 +192,7 @@ type rendererCounters struct {
 	SkippedOutsideClip uint64 `json:"skipped_outside_clip"`
 	SkippedZeroStroke  uint64 `json:"skipped_zero_stroke"`
 	SkippedEmptyText   uint64 `json:"skipped_empty_text"`
+	SkippedNoImage     uint64 `json:"skipped_no_image"`
 	UnknownKinds       uint64 `json:"unknown_kinds"`
 	// Accounted is Ops + Skipped + UnknownKinds and must equal painted_ops.
 	Accounted uint64 `json:"accounted_ops"`
@@ -202,13 +203,36 @@ type rendererCounters struct {
 	// [RendererStats.DrawCalls].
 	ShapeDrawCalls uint64 `json:"shape_draw_calls"`
 	GlyphDrawCalls uint64 `json:"glyph_draw_calls"`
+	ImageDrawCalls uint64 `json:"image_draw_calls"`
 	GlyphQuads     uint64 `json:"glyph_quads"`
+	ImageOps       uint64 `json:"image_ops"`
 	// ShadowOps and ShadowSharpOps are the shadow counters. There is no
 	// shadow cache and therefore no hit ratio; see [RendererStats].
 	ShadowOps      uint64 `json:"shadow_ops"`
 	ShadowSharpOps uint64 `json:"shadow_sharp_ops"`
 
-	Atlas atlasCounters `json:"atlas"`
+	Atlas    atlasCounters   `json:"atlas"`
+	Textures textureCounters `json:"textures"`
+}
+
+// textureCounters are the GPU image residency numbers; see [TextureStats].
+type textureCounters struct {
+	Uploads       uint64 `json:"uploads"`
+	UploadedBytes uint64 `json:"uploaded_bytes"`
+	// Deferred is the budget doing its job, Rejected is the budget being too
+	// small. They are not the same number and are never added up.
+	Deferred         uint64 `json:"deferred"`
+	Rejected         uint64 `json:"rejected"`
+	Evictions        uint64 `json:"evictions"`
+	AgeEvictions     uint64 `json:"age_evictions"`
+	ExplicitReleases uint64 `json:"explicit_releases"`
+	Deallocations    uint64 `json:"deallocations"`
+	Stale            uint64 `json:"stale_handles"`
+	Textures         int    `json:"textures"`
+	// Bytes is logical pixel bytes and not device memory; see
+	// [TextureStats.Bytes].
+	Bytes     int64 `json:"logical_bytes"`
+	PeakBytes int64 `json:"peak_logical_bytes"`
 }
 
 // atlasCounters are the glyph atlas numbers; see [AtlasStats].
@@ -348,11 +372,14 @@ func (r *Recorder) emit(kind string) {
 			SkippedOutsideClip: rs.SkippedOutsideClip,
 			SkippedZeroStroke:  rs.SkippedZeroStroke,
 			SkippedEmptyText:   rs.SkippedEmptyText,
+			SkippedNoImage:     rs.SkippedNoImage,
 			UnknownKinds:       rs.UnknownKinds,
 			Accounted:          rs.Accounted(),
 			ShapeDrawCalls:     rs.ShapeDrawCalls,
 			GlyphDrawCalls:     rs.GlyphDrawCalls,
+			ImageDrawCalls:     rs.ImageDrawCalls,
 			GlyphQuads:         rs.GlyphQuads,
+			ImageOps:           rs.ImageOps,
 			ShadowOps:          rs.ShadowOps,
 			ShadowSharpOps:     rs.ShadowSharpOps,
 			Atlas: atlasCounters{
@@ -361,6 +388,16 @@ func (r *Recorder) emit(kind string) {
 				PageEvictions: rs.Atlas.PageEvictions, GlyphEvictions: rs.Atlas.GlyphEvictions,
 				Rejected: rs.Atlas.Rejected,
 				Pages:    rs.Atlas.Pages, Glyphs: rs.Atlas.Glyphs, Bytes: rs.Atlas.Bytes,
+			},
+			Textures: textureCounters{
+				Uploads: rs.Textures.Uploads, UploadedBytes: rs.Textures.UploadedBytes,
+				Deferred: rs.Textures.Deferred, Rejected: rs.Textures.Rejected,
+				Evictions: rs.Textures.Evictions, AgeEvictions: rs.Textures.AgeEvictions,
+				ExplicitReleases: rs.Textures.ExplicitReleases,
+				Deallocations:    rs.Textures.Deallocations,
+				Stale:            rs.Textures.Stale,
+				Textures:         rs.Textures.Textures,
+				Bytes:            rs.Textures.Bytes, PeakBytes: rs.Textures.PeakBytes,
 			},
 		}
 	}

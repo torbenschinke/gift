@@ -187,10 +187,14 @@ type RendererStats struct {
 	// is a textured quad and a shape is not, and the project plan, section
 	// 11, forbids reordering transparent content to merge them.
 	DrawCalls uint64
-	// ShapeDrawCalls and GlyphDrawCalls split DrawCalls by material.
-	ShapeDrawCalls, GlyphDrawCalls uint64
-	// GlyphQuads is the number of glyph quads emitted.
-	GlyphQuads uint64
+	// ShapeDrawCalls, GlyphDrawCalls and ImageDrawCalls split DrawCalls by
+	// material. An image is one call per run of operations sampling the same
+	// texture; the backend's documentation explains why that is not the same
+	// as the number of draws the GPU performs.
+	ShapeDrawCalls, GlyphDrawCalls, ImageDrawCalls uint64
+	// GlyphQuads is the number of glyph quads emitted and ImageOps the
+	// number of image operations that produced geometry.
+	GlyphQuads, ImageOps uint64
 	// ShadowOps is the number of shadow operations that produced geometry
 	// and ShadowSharpOps the subset of them with no blur.
 	//
@@ -212,10 +216,43 @@ type RendererStats struct {
 	SkippedOutsideClip uint64
 	SkippedZeroStroke  uint64
 	SkippedEmptyText   uint64
-	UnknownKinds       uint64
+	// SkippedNoImage counts image operations whose texture was not resident.
+	SkippedNoImage uint64
+	UnknownKinds   uint64
 
 	// Atlas are the glyph atlas counters.
 	Atlas AtlasStats
+	// Textures are the image texture cache counters.
+	Textures TextureStats
+}
+
+// TextureStats are the GPU image residency numbers of one report.
+//
+// It is a plain struct for the same reason [AtlasStats] is: this package must
+// not import a backend, so the backend converts.
+type TextureStats struct {
+	// Uploads and UploadedBytes are what reached the GPU.
+	Uploads, UploadedBytes uint64
+	// Deferred is the number of uploads postponed by the per *drawn* frame
+	// upload budget, and Rejected the number refused because no room could be
+	// made. The first is the budget doing its job; the second says the
+	// residency budget is too small for the scene.
+	Deferred, Rejected uint64
+	// Evictions, AgeEvictions and ExplicitReleases are why textures were
+	// released, and Deallocations the total number of explicit deallocations,
+	// which must equal their sum. The project plan, section 11, asks for the
+	// explicit release rather than a finaliser, and this is the number that
+	// says it happened.
+	Evictions, AgeEvictions, ExplicitReleases, Deallocations uint64
+	// Stale is the number of handles resolved after their texture was gone.
+	Stale uint64
+	// Textures and Bytes are the current residency and PeakBytes the high
+	// water mark. Bytes is *logical* pixel bytes: the project plan,
+	// section 11, is explicit that padding, fragmentation, atlas growth,
+	// intermediate targets and staging need more than this.
+	Textures  int
+	Bytes     int64
+	PeakBytes int64
 }
 
 // AtlasStats are the glyph atlas numbers of one report.
@@ -243,7 +280,7 @@ type AtlasStats struct {
 func (s RendererStats) Skipped() uint64 {
 	return s.SkippedNone + s.SkippedTransparent + s.SkippedEmptyBounds +
 		s.SkippedEmptyClip + s.SkippedOutsideClip + s.SkippedZeroStroke +
-		s.SkippedEmptyText
+		s.SkippedEmptyText + s.SkippedNoImage
 }
 
 // Accounted is Ops + Skipped + UnknownKinds and must equal the number of

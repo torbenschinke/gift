@@ -25,3 +25,28 @@ func LineCountForTest(f Font, s string, size, maxWidth float32) int {
 func LineHeightForTest(f Font, size float32) float32 {
 	return f.f.Metrics(size).LineHeight
 }
+
+// SetGalleryGenerationCheck turns the recycling guard of [Gallery] on and off
+// and returns the previous setting.
+//
+// It exists for one test and has no exported counterpart. The project plan,
+// section 13, requires that a recycled tile never shows the previous item's
+// picture, and the only way to show that the generation comparison is what
+// delivers that — rather than some accident of ordering — is to switch it off
+// and watch the wrong picture appear. A guard that cannot be made to fail is
+// indistinguishable from a comment.
+func SetGalleryGenerationCheck(on bool) bool {
+	prev := galleryCheckGeneration
+	galleryCheckGeneration = on
+	return prev
+}
+
+// ResetImageService detaches the pipeline and forgets every texture and
+// request, so that one test cannot see another's pictures. The service is
+// process wide, exactly like the default font; see [SetImagePipeline].
+func ResetImageService() { images.setPipeline(nil) }
+
+// ImageServiceUploads is the number of textures the shared service has
+// uploaded. It is the number the "ui.Image and the gallery share resources"
+// assertion is made on.
+func ImageServiceUploads() uint64 { return images.uploads }

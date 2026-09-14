@@ -248,6 +248,20 @@ func (p *PaintContext) GlyphsLen() uint32 { return p.list.GlyphsLen() }
 // shaping result to the frame that produced it; see [render.List.AppendGlyph].
 func (p *PaintContext) AppendGlyph(g render.Glyph) { p.list.AppendGlyph(g) }
 
+// Images returns the backend's image resource service, or nil when there is
+// none.
+//
+// It is the only way a painter reaches the GPU side of the image pipeline, and
+// it is deliberately available in Paint and nowhere else. Uploads are budgeted
+// per *drawn* frame — the project plan, section 11 — and painting is the one
+// thing that happens exactly once per drawn frame; a layouter that uploaded
+// would spend the budget several times over for one frame, because Ebitengine
+// may update more often than it draws.
+//
+// A nil return is normal and is what a headless test sees. A painter must draw
+// its placeholder for it rather than skipping the node.
+func (p *PaintContext) Images() render.Images { return p.app.images }
+
 // paintNode paints h and, through its painter, its subtree.
 //
 // A node without a painter paints its children and nothing else; see

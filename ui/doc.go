@@ -89,6 +89,29 @@
 // application creates once and holds; see the documentation of that type for
 // why it is not the view.
 //
+// # Pictures
+//
+// [Image] and [ImageGallery] draw through one application wide service, which
+// an application installs once with [SetImagePipeline]. That is the project
+// plan, section 10, taken literally — "ImageGallery ... verwendet denselben
+// Bildservice wie ui.Image(source)" — and it means one fetch, one decode, one
+// disk cache entry and one GPU texture for a picture that is on screen twice.
+//
+// The two halves of getting a picture on screen live in the two halves of a
+// frame, and deliberately so. A *request* is scheduled during layout, because
+// scheduling is CPU work and belongs to the update callback. The *upload* is
+// admitted during paint, because the project plan, section 11, budgets uploads
+// per drawn frame rather than per update and painting is the only thing that
+// happens exactly once per drawn frame. A picture that is decoded but has not
+// been admitted yet draws its placeholder, which is also what a fast jump
+// draws and what a headless test — one with no backend and therefore no
+// [github.com/torbenschinke/gift/render.Images] — draws for everything.
+//
+// Nothing in this package holds a pixel, a texture or a file handle. What a
+// view holds is a key; what the backend holds is the texture; and what
+// connects them is a handle with a generation, so that a texture the backend
+// evicted becomes a placeholder and never somebody else's picture.
+//
 // # Ownership of children
 //
 // ui.VStack(a, b, c) creates a fresh slice that gift keeps. ui.VStack(items...)

@@ -58,6 +58,10 @@ type App struct {
 	// build. Dependency registration attaches to it.
 	building *scope
 
+	// images is the backend's image resource service, or nil when no backend
+	// installed one. See [App.SetImages].
+	images render.Images
+
 	viewport    geom.Size
 	needsLayout bool
 	needsPaint  bool
@@ -130,6 +134,23 @@ func New(opts Options) *App {
 	a.publishDiagnostics()
 	return a
 }
+
+// SetImages installs the image resource service a painter reaches through
+// [PaintContext.Images].
+//
+// It is called once by the backend, before the first frame. gift itself never
+// uploads anything and never looks at the service; it only carries it from the
+// backend, which owns the textures, to the views, which own the keys — because
+// the project plan, section 3, has ui depending on neither backend/ebiten nor
+// a GPU object, and there is no other route between the two.
+//
+// A nil service is the headless case and is normal: every view that draws a
+// picture falls back to its placeholder, which is what a layout test and a
+// gifttest harness without a graphics context want.
+func (a *App) SetImages(im render.Images) { a.images = im }
+
+// Images returns the service installed by [App.SetImages], or nil.
+func (a *App) Images() render.Images { return a.images }
 
 // Update runs build, reconciliation and layout. The backend calls it once per
 // Ebitengine update.

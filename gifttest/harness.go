@@ -79,6 +79,16 @@ type Harness struct {
 	// that hands data out of it copies; see [Harness.Ops].
 	list *render.List
 
+	// renderer is the backend renderer of the golden path, created on first
+	// use and kept. It is typed as any because this file has no build tag and
+	// must not name a backend; only golden_gpu.go, which does, casts it.
+	//
+	// Kept and not created per call, because a renderer owns the GPU image
+	// residency: a test that renders two frames of a gallery would otherwise
+	// upload every thumbnail twice and would never see a texture survive a
+	// frame, which is half of what an image golden is checking.
+	renderer any
+
 	// mouse is where the harness last put the mouse pointer, so that
 	// Release can happen where Press left it without the test restating the
 	// coordinate.

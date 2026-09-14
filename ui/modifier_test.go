@@ -60,6 +60,7 @@ var views = []struct {
 	{name: "ui.Button", set: setStyled, v: ui.Button(ui.Box(), nil)},
 	{name: "ui.VScroll", set: setStyled, v: ui.VScroll()},
 	{name: "ui.HScroll", set: setStyled, v: ui.HScroll()},
+	{name: "ui.Image", set: setStyled, v: ui.Image(asset.File("x.jpg"))},
 	{name: "ui.ImageGallery", set: setStyled, v: ui.ImageGallery(ui.NewGallery(asset.NewCollection(nil)))},
 	{
 		name: "ui.GalleryTile", set: setInternal,

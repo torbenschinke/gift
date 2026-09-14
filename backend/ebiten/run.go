@@ -120,6 +120,22 @@ type Config struct {
 	// error stops the loop and is returned by [Run].
 	OnUpdate func() error
 
+	// AssetStats supplies the image pipeline counters for the measurement
+	// report. It may be nil.
+	//
+	// It is here rather than filled in automatically because the backend
+	// does not own the pipeline and must not import ui to find it: the
+	// project plan, section 3, keeps fachliche Controls out of the backend.
+	// The application owns the pipeline, so the application hands over the
+	// one line that reads it. Without this the decode, disk cache and budget
+	// counters are unreachable in a running program, which is exactly the
+	// cold versus warm evidence section 12 step 4 names as its deliverable.
+	//
+	//	cfg.AssetStats = func() metrics.AssetStats {
+	//	    return metrics.AssetStatsOf(ui.ImagePipeline().Stats())
+	//	}
+	AssetStats func() metrics.AssetStats
+
 	// NoInput disables the input bridge. It exists for a measurement run that
 	// must not be perturbed by a cursor that happens to rest over a button,
 	// and for a test harness that dispatches events into [gift.App] itself.
@@ -177,6 +193,9 @@ func Run(app *gift.App, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// The one route from a painter in ui to a texture in this package. gift
+	// carries the service and never uses it; see [gift.App.SetImages].
+	app.SetImages(r.Images())
 	if cfg.OnRenderer != nil {
 		cfg.OnRenderer(r)
 	}
@@ -198,13 +217,16 @@ func Run(app *gift.App, cfg Config) error {
 				Capacity:  metrics.DefaultFrameHistory,
 				Warmup:    cfg.WarmupFrames,
 			},
-			Core:     func() metrics.CoreStats { return coreMetrics(app) },
-			Renderer: func() metrics.RendererStats { return rendererMetrics(r.Stats(), r.Atlas().Stats()) },
+			Core: func() metrics.CoreStats { return coreMetrics(app) },
+			Renderer: func() metrics.RendererStats {
+				return rendererMetrics(r.Stats(), r.Atlas().Stats(), r.Textures().Stats())
+			},
 			// The shaper is the process wide one of internal/text, which is
 			// what ui.Text measures through. The backend may not import ui —
 			// the project plan, section 3 — so this is the only place both
 			// sides can meet.
 			Shaper: func() metrics.ShaperStats { return shaperMetrics(text.Default().Stats()) },
+			Asset:  cfg.AssetStats,
 		})
 		defer func() { _ = rec.Close() }()
 	}
@@ -390,7 +412,7 @@ func (g *game) Draw(screen *eb.Image) {
 //
 // The conversion sits here and not there on purpose: metrics must not import
 // a backend, or the backend could not call into it. See [metrics.RendererStats].
-func rendererMetrics(s RendererStats, a AtlasStats) metrics.RendererStats {
+func rendererMetrics(s RendererStats, a AtlasStats, t TextureStats) metrics.RendererStats {
 	return metrics.RendererStats{
 		Frames:             s.Frames,
 		DrawCalls:          s.Batches,
@@ -402,10 +424,13 @@ func rendererMetrics(s RendererStats, a AtlasStats) metrics.RendererStats {
 		SkippedOutsideClip: s.SkippedOutsideClip,
 		SkippedZeroStroke:  s.SkippedZeroStroke,
 		SkippedEmptyText:   s.SkippedEmptyText,
+		SkippedNoImage:     s.SkippedNoImage,
 		UnknownKinds:       s.UnknownKinds,
 		ShapeDrawCalls:     s.ShapeBatches,
 		GlyphDrawCalls:     s.GlyphBatches,
+		ImageDrawCalls:     s.ImageBatches,
 		GlyphQuads:         s.GlyphQuads,
+		ImageOps:           s.ImageOps,
 		ShadowOps:          s.ShadowOps,
 		ShadowSharpOps:     s.ShadowSharpOps,
 		Atlas: metrics.AtlasStats{
@@ -414,6 +439,14 @@ func rendererMetrics(s RendererStats, a AtlasStats) metrics.RendererStats {
 			PageEvictions: a.PageEvictions, GlyphEvictions: a.GlyphEvictions,
 			Rejected: a.Rejected,
 			Pages:    a.Pages, Glyphs: a.Glyphs, Bytes: a.Bytes,
+		},
+		Textures: metrics.TextureStats{
+			Uploads: t.Uploads, UploadedBytes: t.UploadedBytes,
+			Deferred: t.Deferred, Rejected: t.Rejected,
+			Evictions: t.Evictions, AgeEvictions: t.AgeEvictions,
+			ExplicitReleases: t.ExplicitReleases, Deallocations: t.Deallocations,
+			Stale:    t.Stale,
+			Textures: t.Textures, Bytes: t.Bytes, PeakBytes: t.PeakBytes,
 		},
 	}
 }

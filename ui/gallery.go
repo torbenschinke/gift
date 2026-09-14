@@ -112,12 +112,17 @@ func (l GalleryLayout) params(width float64) layout.GalleryParams {
 
 // TileStyle is the look of one gallery tile.
 //
-// Every tile is a placeholder in this step of the project plan: step 3 is the
-// gallery without I/O and there is no picture to draw yet. What the style
-// describes is therefore the *placeholder*, and step 4 will draw the decoded
-// thumbnail in its place and keep the rest — the selection border, the cursor
-// ring and the provisional marker are properties of the tile and not of the
-// picture.
+// A tile draws its thumbnail when one is resident and a placeholder until
+// then, so most of this style describes the *placeholder*: the palette, the
+// provisional wash and the error fill are what is on screen while the picture
+// is being fetched, decoded and uploaded, or instead of it when that failed.
+// The rest — the selection border and the cursor ring — are properties of the
+// tile and are drawn over the picture as well.
+//
+// Showing a placeholder rather than waiting is the behaviour the project plan,
+// section 10, requires: "Schnelle Spruenge zeigen Platzhalter, statt auf Laden
+// oder Decode zu warten." Nothing in the frame path blocks on a picture, and a
+// jump of ten thousand entries paints its first frame with placeholders.
 type TileStyle struct {
 	// CornerRadius rounds the placeholder and its borders.
 	CornerRadius float32
@@ -137,6 +142,12 @@ type TileStyle struct {
 	// visible rather than claimed. A transparent value uses the palette.
 	Provisional Color
 
+	// Error fills a tile whose picture could not be loaded. A transparent
+	// value falls back to the palette, which makes a failure invisible; the
+	// project plan, section 15, wants a failed source to produce "einen
+	// sichtbaren Fehlerzustand der betroffenen Kachel".
+	Error Color
+
 	// Selected is stroked inside a selected tile.
 	Selected Border
 
@@ -154,6 +165,7 @@ var defaultTileStyle = TileStyle{
 		RGB(140, 118, 96), RGB(140, 96, 104), RGB(104, 130, 140),
 	},
 	Provisional: RGBA(255, 255, 255, 26),
+	Error:       RGB(122, 48, 48),
 	Selected:    Border{Width: 3, Color: RGB(96, 160, 255)},
 	Cursor:      Border{Width: 2, Color: RGB(255, 255, 255)},
 }
@@ -238,6 +250,20 @@ type Gallery struct {
 	// firstLayout is true until one layout has been committed. It is what
 	// makes the initial build unchunked; see [DefaultGalleryRebuildBudget].
 	firstLayout bool
+
+	// sources resolves a catalogue entry to something the image pipeline can
+	// open; see [Gallery.SetSources]. A nil resolver means this gallery draws
+	// placeholders only, which is what step 3 did and what a layout test
+	// still wants.
+	sources func(asset.ID) asset.Source
+	// corrInbox accumulates the probed dimensions of arrived results. They
+	// are folded into the catalogue once per layout pass rather than one at a
+	// time, because the project plan, section 10, wants corrections batched
+	// and because every single one of them would otherwise be a metadata
+	// version bump and a reflow.
+	corrInbox []asset.Correction
+	// stats are the image side counters; see [GalleryStats].
+	stats GalleryStats
 
 	// spec, style, overscan, onSelect and onActivate are refreshed from the
 	// view on every build. They are the declaration half.
@@ -389,6 +415,211 @@ func (g *Gallery) SetSelection(s *asset.Selection) {
 	}
 	g.sel = s
 	g.Invalidate()
+}
+
+// SetSources installs the resolver that turns a catalogue entry into
+// something the image pipeline can open, and switches the gallery from
+// placeholders to real pictures.
+//
+// The catalogue is [asset.Metadata] and deliberately carries no [asset.Source]:
+// a hundred thousand entries would then hold a hundred thousand live objects,
+// and the project plan, section 10, wants the index to be "geordnete, stabile
+// IDs, Revisionen und Metadatenzugriff ohne I/O im Frame" and nothing more.
+// Where the bytes come from is the application's business, and a resolver is
+// how it says so. The usual body is one map lookup or one [asset.File] over a
+// directory and a name.
+//
+//	g.SetSources(func(id asset.ID) asset.Source { return sources[id] })
+//
+// The resolver is called during layout, once per newly bound tile, never per
+// frame and never for a tile that is merely scrolling. It must not block and
+// must not perform I/O; [asset.File] and [asset.HTTP] do neither.
+//
+// A nil resolver, or one that returns nil for an entry, leaves that tile on
+// its placeholder. That is a normal state and not an error: a catalogue may
+// legitimately contain an entry nobody can open yet.
+func (g *Gallery) SetSources(resolve func(asset.ID) asset.Source) {
+	g.sources = resolve
+	for i := range g.slots {
+		g.dropImage(i)
+	}
+	g.Invalidate()
+}
+
+// GalleryStats are the image side counters of one gallery. They are plain
+// numbers written in the frame path and read out of band, like every other
+// counter in gift; see the project plan, section 15.
+type GalleryStats struct {
+	// Requested is the number of thumbnail requests this gallery issued,
+	// split by the class the project plan, section 9, fixes: a picture in the
+	// viewport is [asset.Visible] and one that is only in the overscan band
+	// is [asset.Prefetch]. The split is the evidence that
+	// "sichtbare Bilder haben Vorrang vor richtungsabhaengigem Prefetch" is
+	// implemented rather than asserted.
+	Requested, RequestedVisible, RequestedPrefetch uint64
+	// Warm is the number of bindings that found their picture already decoded
+	// in the CPU cache and issued no request at all.
+	Warm uint64
+	// Stale is the number of results dropped because the tile they were meant
+	// for had been recycled in the meantime. This is the counter of the
+	// project plan, section 13 — "keine falschen Bilder nach Tile-/Slot-
+	// Recycling" — and a fast scroll makes it climb, which is the system
+	// working.
+	Stale uint64
+	// Failed is the number of tiles showing an error state, and Cancelled the
+	// number of in flight requests withdrawn because their tile was recycled.
+	Failed, Cancelled uint64
+	// Corrections is the number of probed dimensions folded back into the
+	// catalogue.
+	Corrections uint64
+}
+
+// Stats returns the image side counters of this gallery.
+func (g *Gallery) Stats() GalleryStats { return g.stats }
+
+// galleryCheckGeneration is the switch that makes the recycling guard of the
+// project plan, section 13, *demonstrable* rather than merely asserted.
+//
+// It is true in every build and there is no exported way to change it. A test
+// flips it off through ui_export_test.go, replays the same race — a decode
+// that lands after its tile was recycled — and requires the tile to show the
+// wrong picture. A guard that cannot be shown to be load bearing is a comment.
+var galleryCheckGeneration = true
+
+// onImage accepts one thumbnail result on the UI executor.
+//
+// # The whole point of TileBinding.Generation
+//
+// The result names a slot and the generation that slot had when the request
+// went out. If the slot has been rebound since — the user scrolled, the
+// catalogue changed, the pool was resized — the number differs and the answer
+// is dropped. Without this comparison the line below would write the *old*
+// picture's key into a slot that now stands for a different entry, and the
+// tile would draw the previous item's texture until something else corrected
+// it. That is exactly the failure the project plan, section 13, names, and it
+// is the reason WU-O went to the trouble of making the generation move on a
+// rebinding and on nothing else.
+func (g *Gallery) onImage(slot int, gen uint64, res asset.Result) {
+	if slot < 0 || slot >= len(g.slots) {
+		g.stats.Stale++
+		return
+	}
+	s := &g.slots[slot]
+	if !s.bound || (galleryCheckGeneration && s.gen != gen) {
+		g.stats.Stale++
+		return
+	}
+	s.requested = false
+	s.pending = asset.Ticket{}
+	if res.Err != nil {
+		s.failed = true
+		s.imgOK = false
+		g.stats.Failed++
+		g.Invalidate()
+		return
+	}
+	s.failed = false
+	s.img = imageKey{id: res.ID, rung: res.Size, rev: res.Metadata.Revision}
+	s.imgOK = true
+	if res.Metadata.Width > 0 && res.Metadata.Height > 0 {
+		// Batched, never applied one at a time: see [Gallery.corrInbox].
+		g.corrInbox = append(g.corrInbox, res.Correction())
+	}
+	g.Invalidate()
+}
+
+// flushCorrections folds the probed dimensions collected since the last layout
+// pass into the catalogue, in one batch.
+//
+// One batch and not one per result, because [Gallery.ApplyCorrections] takes a
+// scroll anchor and schedules a reflow, and doing that sixty times in a frame
+// where sixty tiles arrived would be sixty reflows for one visible change. The
+// project plan, section 10, asks for exactly this: "Korrekturen werden
+// gebuendelt".
+func (g *Gallery) flushCorrections() {
+	if len(g.corrInbox) == 0 {
+		return
+	}
+	n := g.ApplyCorrections(g.corrInbox)
+	g.stats.Corrections += uint64(n)
+	clear(g.corrInbox)
+	g.corrInbox = g.corrInbox[:0]
+}
+
+// requestImage schedules the thumbnail of one bound tile, or picks it straight
+// out of the CPU cache when it is already there.
+//
+// The priority is the two level class of the project plan, section 9: a tile
+// inside the viewport is [asset.Visible] and a tile that exists only because
+// of [GalleryView.Overscan] is [asset.Prefetch], which the pipeline never lets
+// delay visible work. That is the job the overscan band did not have until
+// now.
+func (g *Gallery) requestImage(slot int, prio asset.Priority) {
+	s := &g.slots[slot]
+	if !s.bound || s.imgOK || s.failed || s.requested || g.sources == nil {
+		return
+	}
+	pipe := images.pipe
+	if pipe == nil {
+		return
+	}
+	// The size the tile will be drawn at, which is what the ladder is chosen
+	// from. The document rectangle is in logical pixels and is the honest
+	// number; a tile in a 240 pixel masonry column asks for 240 and gets the
+	// 256 rung.
+	size := int(max(s.rect.W, s.rect.H))
+	if size <= 0 {
+		return
+	}
+	if t, ok := pipe.Lookup(s.id, size); ok {
+		// Already decoded. No request, no closure, no allocation: this is the
+		// warm scroll path and it is the common one.
+		s.img = imageKey{id: s.id, rung: t.LadderSize(), rev: s.revision}
+		s.imgOK = true
+		t.Release()
+		g.stats.Warm++
+		return
+	}
+	src := g.sources(s.id)
+	if src == nil {
+		return
+	}
+	gen := s.gen
+	s.requested = true
+	g.stats.Requested++
+	if prio == asset.Visible {
+		g.stats.RequestedVisible++
+	} else {
+		g.stats.RequestedPrefetch++
+	}
+	s.pending = pipe.Request(asset.Request{
+		Source:     src,
+		Size:       size,
+		Priority:   prio,
+		Generation: gen,
+		OnResult:   func(res asset.Result) { g.onImage(slot, gen, res) },
+	})
+}
+
+// dropImage forgets everything a slot knew about its picture and cancels a
+// request that is still in flight.
+//
+// Cancelling matters more than it looks: a fast scroll binds and unbinds the
+// same slot several times a second, and without this every one of those would
+// leave a decode running whose answer nobody wants. What it cannot do is stop
+// a decode that has already started — the project plan, section 9, says so —
+// but the answer is then suppressed, which is the property the view needs.
+func (g *Gallery) dropImage(slot int) {
+	s := &g.slots[slot]
+	if s.requested {
+		s.pending.Cancel()
+		g.stats.Cancelled++
+	}
+	s.pending = asset.Ticket{}
+	s.requested = false
+	s.imgOK = false
+	s.failed = false
+	s.img = imageKey{}
 }
 
 // ApplyCorrections folds a batch of late arriving dimensions into the
@@ -590,6 +821,19 @@ type TileBinding struct {
 	// Provisional reports that the entry is laid out with a guessed aspect
 	// ratio because its real dimensions have not arrived.
 	Provisional bool
+	// PictureID is the entry the picture currently drawn in this tile belongs
+	// to, and PictureRung the ladder rung it was produced at. PictureReady
+	// says there is a picture at all and PictureFailed that loading it
+	// failed.
+	//
+	// PictureID is normally equal to ID and is exported because the one case
+	// where it would not be is the failure the project plan, section 13,
+	// names: a decode that landed after its tile was recycled. Asserting on
+	// it needs no GPU and no window, which is what makes that test an
+	// ordinary one; see [Gallery.onImage].
+	PictureID                   asset.ID
+	PictureRung                 int
+	PictureReady, PictureFailed bool
 	// DocX, DocY, DocW and DocH are the document rectangle of the tile, in
 	// float64 logical pixels. They are not device coordinates and the
 	// conversion to float32 happens only after the viewport origin has been
@@ -640,12 +884,31 @@ type tileSlot struct {
 
 	// claimed is per pass scratch of the binding algorithm.
 	claimed bool
+
+	// img is the picture this tile draws, once one is known: the entry, the
+	// ladder rung the pipeline actually produced and the revision it produced
+	// it from. It is written at bind time from the CPU cache when the picture
+	// is already warm, and by the result callback otherwise — and *that* is
+	// what the generation check protects. A stale result that got past it
+	// would write the previous item's key here, and the tile would then look
+	// up and draw the previous item's texture. See [Gallery.onImage].
+	img   imageKey
+	imgOK bool
+	// failed marks a tile whose picture could not be loaded.
+	failed bool
+	// pending is the ticket of the request in flight for this binding, and
+	// requested says one was issued at all. Both are dropped on unbind, which
+	// is where the ticket is cancelled.
+	pending   asset.Ticket
+	requested bool
 }
 
 func (s *tileSlot) binding(slot int) TileBinding {
 	return TileBinding{
 		Slot: slot, Item: s.item, ID: s.id, Revision: s.revision,
 		Generation: s.gen, Provisional: s.provisional,
+		PictureID: s.img.id, PictureRung: s.img.rung,
+		PictureReady: s.imgOK, PictureFailed: s.failed,
 		DocX: s.rect.X, DocY: s.rect.Y, DocW: s.rect.W, DocH: s.rect.H,
 	}
 }
@@ -780,7 +1043,7 @@ func (g *Gallery) resizePool(n int) []gift.View {
 		// Unbind what is going away, so that a slot which comes back later
 		// cannot come back carrying an old identity.
 		for i := n; i < len(g.slots); i++ {
-			g.slots[i] = tileSlot{}
+			g.unbind(i)
 		}
 		g.slots = g.slots[:n]
 	}
@@ -810,14 +1073,27 @@ func (v GalleryView) Tile(s TileStyle) GalleryView { v.tile, v.hasTile = s, true
 // Overscan keeps tiles mounted for this many logical pixels above and below
 // the viewport.
 //
-// It is zero by default, and zero is the honest default here: there is no
-// image pipeline yet, so a tile costs a node and a rounded rectangle and there
-// is nothing for an overscan band to prefetch. Step 4 gives it a job —
-// decoding the row that is about to appear — and an application that scrolls
-// fast will want a band roughly the height of one row.
+// Since step 4 it has the job it was reserved for: a tile in the band is bound
+// and laid out like any other, but its thumbnail is requested with
+// [asset.Prefetch] instead of [asset.Visible], so the row that is about to
+// appear is decoded ahead of time and *never* delays a picture the user is
+// already looking at. That two level ordering is what the project plan,
+// section 9, fixes — "sichtbare Bilder haben Vorrang vor richtungsabhaengigem
+// Prefetch" — and [GalleryStats.RequestedVisible] against
+// [GalleryStats.RequestedPrefetch] is the evidence that it happens.
 //
-// It costs tiles, and therefore nodes: the pool grows to cover the viewport
-// plus the band.
+// It is still zero by default, and that is a decision rather than an
+// oversight. A band costs tiles and therefore nodes, it costs decodes for
+// pictures that may never be shown, and on the reference machine of the
+// project plan, section 1, both are scarce. An application that knows it
+// scrolls fast asks for a band roughly the height of one row; one that does
+// not is better off without it.
+//
+// The band is symmetric. A directional band — larger in the direction of
+// travel — is what section 9 calls "richtungsabhaengiger Prefetch" and is a
+// refinement of this, not a different mechanism: it needs a velocity estimate
+// from the scroll gesture, and it is deliberately not built ahead of a
+// measurement that asks for it.
 func (v GalleryView) Overscan(px float32) GalleryView { v.overscan = px; return v }
 
 // OnSelect is called with the stable ID of the entry the user selected, by
@@ -960,12 +1236,49 @@ func (t *tileNode) Paint(ctx *gift.PaintContext) {
 	}
 	st := t.g.style
 	b := ctx.Bounds()
+
+	// The picture, if there is one. The lookup is one map read plus two
+	// integer comparisons inside the backend for a resident texture, and it
+	// is the only thing on this path that can allocate — and it does not,
+	// once the table has grown. See [imageService.resolve].
+	if s.imgOK {
+		if id, iw, ih, ok := images.resolve(ctx, s.img); ok {
+			// Cover and not contain: a masonry rectangle is computed from the
+			// entry's own aspect ratio, so the two agree to within a pixel of
+			// rounding, and letterboxing that would put a hairline of
+			// background along one edge of every tile. A provisional
+			// rectangle does not agree at all, and cropping is the right
+			// answer there too — the tile is full of picture until the
+			// correction reflows it.
+			paintImage(ctx, b, id, iw, ih, FitCover, OpaqueWhite)
+			t.paintTileState(ctx, s, st, b)
+			return
+		}
+	}
+
 	fill := placeholderColor(s.id, st)
-	if s.provisional && !st.Provisional.IsTransparent() {
+	switch {
+	case s.failed && !st.Error.IsTransparent():
+		// A visible error state, which the project plan, section 15,
+		// requires of a failed source: "ein sichtbarer Fehlerzustand der
+		// betroffenen Kachel, nie zum Abbruch des Frames".
+		fill = st.Error
+	case s.provisional && !st.Provisional.IsTransparent():
 		fill = st.Provisional
 	}
 	paintBackground(ctx, styleSpec{background: fill, radius: st.CornerRadius}, b)
 
+	t.paintTileState(ctx, s, st, b)
+}
+
+// paintTileState strokes the selection and the keyboard cursor.
+//
+// Both are read from the live [asset.Selection] rather than from a flag copied
+// into the slot during layout, which is what makes "click to select" a repaint
+// and not a relayout. It is shared by the picture and the placeholder paths
+// because it is a property of the tile and not of the picture; see
+// [TileStyle].
+func (t *tileNode) paintTileState(ctx *gift.PaintContext, s *tileSlot, st TileStyle, b geom.Rect) {
 	sel := t.g.sel
 	if sel.Contains(s.id) && st.Selected.IsVisible() {
 		paintBorder(ctx, styleSpec{border: st.Selected, radius: st.CornerRadius}, b)
@@ -1046,6 +1359,9 @@ func (n *galleryNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.S
 	g.viewport = float64(size.H - n.pad.Vertical())
 
 	contentW := float64(size.W - n.pad.Horizontal())
+	// Probed dimensions first, as one batch, so that the reflow below is the
+	// reflow they caused rather than one more after it.
+	g.flushCorrections()
 	g.syncCollection()
 	g.syncParams(contentW)
 	g.stepReflow(ctx)
@@ -1148,7 +1464,7 @@ func (g *Gallery) syncCollection() {
 		g.corrAt = g.collMetaVersion
 		g.ix.SetItems(g.coll.Len(), g.coll)
 		for i := range g.slots {
-			g.slots[i] = tileSlot{}
+			g.unbind(i)
 		}
 		g.needReflow = true
 		g.requestAnchorRestore()
@@ -1194,7 +1510,17 @@ func (g *Gallery) refreshBindings() {
 			g.unbind(i)
 			continue
 		}
-		s.revision = g.coll.Revision(s.item)
+		if rev := g.coll.Revision(s.item); rev != s.revision {
+			s.revision = rev
+			// A new revision is new bytes, so the texture the tile is drawing
+			// is out of date. It keeps drawing it — it is still a picture of
+			// the same entry and is better than a placeholder, which is the
+			// same judgement asset's CPU cache makes in pixelCache.lookup —
+			// but the request state is cleared so that the next layout pass
+			// asks for the new one.
+			s.requested = false
+			s.failed = false
+		}
 		s.provisional = g.ix.Provisional(s.item)
 	}
 }
@@ -1341,10 +1667,14 @@ func (g *Gallery) takeAnchor(off float64, pad geom.Insets) {
 func (g *Gallery) bindAndPlace(ctx *gift.LayoutContext, pad geom.Insets, off float64) {
 	k := ctx.ChildCount()
 	g.want = g.want[:0]
+	// visTop and visBottom are the viewport proper. The band queried below is
+	// wider by the overscan, and the difference between the two intervals is
+	// exactly what separates a visible request from a prefetch; see
+	// [Gallery.requestImage].
+	visTop := off - float64(pad.Top)
+	visBottom := visTop + g.viewport
 	if g.ix.Ready() {
-		top := off - float64(pad.Top) - g.overscan
-		bottom := off - float64(pad.Top) + g.viewport + g.overscan
-		g.want = g.ix.Visible(top, bottom, g.want)
+		g.want = g.ix.Visible(visTop-g.overscan, visBottom+g.overscan, g.want)
 	}
 
 	// Size the pool for the next build. Growing has headroom so that a slow
@@ -1435,6 +1765,15 @@ func (g *Gallery) bindAndPlace(ctx *gift.LayoutContext, pad geom.Insets, off flo
 			float32(s.rect.X)+pad.Left,
 			float32(s.rect.Y-off)+pad.Top,
 		))
+		// The picture, after the rectangle is known, because the rectangle is
+		// what the ladder rung is chosen from. A tile that already has its
+		// picture costs one boolean test here and nothing else, which is what
+		// keeps a warm scroll allocation free.
+		prio := asset.Prefetch
+		if s.rect.Y < visBottom && s.rect.Y+s.rect.H > visTop {
+			prio = asset.Visible
+		}
+		g.requestImage(si, prio)
 	}
 	for si := range g.slots {
 		if g.slots[si].bound {
@@ -1463,6 +1802,7 @@ func (g *Gallery) bind(slot int, v layout.Visible) bool {
 		// the middle of a frame.
 		return false
 	}
+	g.dropImage(slot)
 	s := &g.slots[slot]
 	g.gen++
 	*s = tileSlot{
@@ -1481,7 +1821,15 @@ func (g *Gallery) bind(slot int, v layout.Visible) bool {
 // unbind clears a slot completely. Assigning the zero value rather than
 // clearing a flag is the point: there is then nothing left of the previous
 // item for the next binding to inherit.
-func (g *Gallery) unbind(slot int) { g.slots[slot] = tileSlot{} }
+//
+// The image state goes through [Gallery.dropImage] first, because a request in
+// flight has to be cancelled rather than merely forgotten; the zero value
+// would drop the ticket on the floor and leave a decode running for a tile
+// nobody is looking at.
+func (g *Gallery) unbind(slot int) {
+	g.dropImage(slot)
+	g.slots[slot] = tileSlot{}
+}
 
 // keepStride thins want down to k entries, evenly spaced across it.
 //
