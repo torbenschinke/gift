@@ -666,17 +666,38 @@ Wird eines verfehlt, wird der Plan revidiert statt fortgesetzt.
 
 ### Schritt 2: Text, Button und einfache Effekte
 
-**Vorgezogen und zuerst zu pruefen: `fwidth` auf dem Pi 4.** Der gemeinsame
-Shape-Shader aus Schritt 1 leitet die Kantenglaettung aus der Screen-Space-
-Ableitung des Distanzfeldes ab, braucht also `dfdx`/`dfdy`. Unter Metal
-funktioniert das. Faellt Ebitengine auf dem Pi auf GLSL ES 1.00 zurueck,
-verlangen Ableitungen `OES_standard_derivatives`, und der Shader kann erst
-**beim Zeichnen** scheitern: `ebiten.NewShader` faengt das nicht ab, weil die
-Uebersetzung im Treiber passiert. Betroffen ist alles Abgerundete. Der
-Ausweichweg waere ein AA-Faktor je Op als Vertex-Attribut, aber die zwoelf
-Float-Slots sind bereits belegt, also kaeme entweder ein zweiter Shader oder
-allozierende Uniforms hinzu. Das ist eine Designaenderung, keine Korrektur,
-und gehoert deshalb vor den Textstack.
+**Zurueckgenommen: das `fwidth`-Risiko.** Die vorherige Revision hat
+Screen-Space-Ableitungen im Shape-Shader als "Unbekannten mit der groessten
+Varianz" gefuehrt, mit der Begruendung, Ebitengine koenne auf dem Pi auf
+GLSL ES 1.00 zurueckfallen, wo `dfdx`/`dfdy` die Erweiterung
+`OES_standard_derivatives` verlangen. **Das war falsch und ist in der Quelle
+geprueft.** Ebitengine 2.10.1 hat gar keinen ES-1.00-Pfad:
+`internal/shaderir/glsl` kennt genau zwei Versionen und emittiert `#version
+150` oder `#version 300 es`. In GLSL ES 3.00 sind Ableitungen Kernsprache. Die
+Suche nach `ES100`, `#version 100` und `OES_standard_derivatives` im ganzen
+Modul liefert nichts.
+
+Der Shader kommt in WU-E trotzdem ohne Ableitungen aus, aber aus anderen
+Gruenden, und der damals befuerchtete Ausweichweg war ebenfalls ein Irrtum: es
+braucht keinen zusaetzlichen Vertex-Slot und keinen zweiten Shader. Die
+Lokal-nach-Device-Skalierung ist auf der CPU bekannt und wird in die fuenf
+ohnehin uebertragenen Werte eingerechnet. Danach ist das Distanzfeld in
+Device-Pixeln gemessen, die AA-Breite ist konstant 1, und `fwidth` entfaellt.
+Das hat nebenbei einen echten Fehler behoben - die Vertex-Polsterung war in
+lokalen Einheiten und schnitt unter Verkleinerung die aeussere Haelfte jeder
+geglaetteten Kante ab - und die Artefakte an den Knicken des Distanzfeldes
+beseitigt.
+
+**Das tatsaechliche Pi-Risiko** ist, ueberhaupt keinen ES-3.0-Kontext zu
+bekommen. Das betraefe den gesamten Renderer und nicht nur abgerundete Formen,
+und kein Shader-Umbau hilft dagegen. Pi 4 und Pi 5 koennen es mit Mesa v3d;
+zu pruefen bleibt es trotzdem, aber als gewoehnlicher Plattformtest und nicht
+als vorgezogenes Designrisiko.
+
+Lehre fuers Vorgehen: diese Passage stand drei Revisionen lang im Plan, weil
+eine plausible Behauptung eines Agenten ungeprueft uebernommen wurde. Fuer
+Aussagen ueber Fremdcode gilt ab sofort dasselbe wie fuer Messwerte - Beleg
+aus der Quelle oder sie stehen nicht im Plan.
 
 Groesster Einzelposten des Projekts. Shaping-Anbindung an go-text/typesetting,
 Messung, Shaping-Cache, Glyph-Atlas und Eviction. Danach Button-Interaktion,

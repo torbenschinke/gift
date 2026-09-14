@@ -2,6 +2,7 @@ package ebiten
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
@@ -42,6 +43,49 @@ func TestShaderCompiles(t *testing.T) {
 	if _, err := eb.NewShader(ShapeShaderSource()); err != nil {
 		t.Fatalf("shape shader does not compile: %v", err)
 	}
+}
+
+// TestShaderUsesNoScreenSpaceDerivatives guards the decision of WU-E at the
+// source level.
+//
+// ebiten.NewShader compiles Kage on the CPU, but the translation to the
+// platform's shading language happens in the driver, so a shader that uses
+// dfdx or dfdy compiles here and then fails **at draw time** on a GL ES 1.00
+// context without OES_standard_derivatives — a Raspberry Pi 4 with Mesa, for
+// instance. No headless test can catch that, so the only thing that can be
+// asserted without the hardware is that the construct is absent. See
+// shape.kage and the project plan, section 12, step 2.
+func TestShaderUsesNoScreenSpaceDerivatives(t *testing.T) {
+	src := shaderCode(string(ShapeShaderSource()))
+	for _, fn := range []string{"fwidth", "dfdx", "dfdy"} {
+		if strings.Contains(src, fn) {
+			t.Errorf("the shape shader uses %s; that requires OES_standard_derivatives on GL ES 1.00", fn)
+		}
+	}
+	// The same reasoning applies to constructs GLSL ES 1.00 restricts.
+	// Dynamic indexing and non-constant loop bounds are version gated there
+	// and would also fail only in the driver.
+	for _, fn := range []string{"for ", "discard", "texture", "imageSrc"} {
+		if strings.Contains(src, fn) {
+			t.Errorf("the shape shader uses %q, which is not needed and is a portability risk", fn)
+		}
+	}
+}
+
+// shaderCode strips the line comments from a Kage source so that a guard can
+// look at what the shader does rather than at what it says about itself. The
+// shader's own documentation names the functions it avoids, which is the
+// point of it.
+func shaderCode(src string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func TestFillRectGeometry(t *testing.T) {
@@ -323,11 +367,96 @@ func TestScaleXformWithClip(t *testing.T) {
 	r.Submit(&l)
 	r.EndFrame()
 
-	// The clip is device space, so the visible device rectangle is 0..10 and
-	// the local rectangle behind it is 0..5.
-	if c.verts[2].DstX != 10 || c.verts[2].SrcX != 5 {
-		t.Fatalf("dst = %v, src = %v; want 10 and 5", c.verts[2].DstX, c.verts[2].SrcX)
+	// The clip is device space, so the visible device rectangle is 0..10.
+	// The local rectangle behind it is 0..5, but the local coordinate is
+	// emitted in device pixels — the scale is baked in so that the shader
+	// needs no screen space derivative — so it reads 10 again.
+	if c.verts[2].DstX != 10 || c.verts[2].SrcX != 10 {
+		t.Fatalf("dst = %v, src = %v; want 10 and 10", c.verts[2].DstX, c.verts[2].SrcX)
 	}
+}
+
+// TestScaleIsBakedIntoTheShapeAttributes pins the contract the derivative free
+// shader depends on: every geometric attribute leaves the CPU in device
+// pixels.
+func TestScaleIsBakedIntoTheShapeAttributes(t *testing.T) {
+	r, c := newHeadlessRenderer(t)
+	var l render.List
+	l.Reset()
+	x := l.PushXform(geom.Scale(2, 2))
+	l.Add(render.Op{
+		Kind: render.OpStrokeRoundRect, Bounds: geom.Rc(0, 0, 40, 20),
+		Color: render.RGB(255, 255, 255), CornerRadius: 4, StrokeWidth: 2, Xform: x,
+	})
+
+	r.BeginFrame(geom.Sz(200, 200))
+	r.Submit(&l)
+	r.EndFrame()
+
+	v := c.verts[0]
+	if v.Custom0 != 40 || v.Custom1 != 20 || v.Custom2 != 8 || v.Custom3 != 4 {
+		t.Fatalf("attributes = (%v, %v, %v, %v), want (40, 20, 8, 4) in device pixels",
+			v.Custom0, v.Custom1, v.Custom2, v.Custom3)
+	}
+	// The pad is one device pixel, so it is half a local unit under a scale
+	// of two, and the local coordinate of the padded corner is -1 again.
+	if v.DstX != -aaPad || v.SrcX != -aaPad {
+		t.Fatalf("padded corner = (%v, %v), want (%v, %v)", v.DstX, v.SrcX, -aaPad, -aaPad)
+	}
+}
+
+// TestNonUniformScaleClampsTheRadiusWithTheSmallerFactor documents the one
+// approximation of the bake; see deviceScale.
+func TestNonUniformScaleClampsTheRadiusWithTheSmallerFactor(t *testing.T) {
+	r, c := newHeadlessRenderer(t)
+	var l render.List
+	l.Reset()
+	x := l.PushXform(geom.Scale(4, 1))
+	l.Add(render.Op{
+		Kind: render.OpFillRoundRect, Bounds: geom.Rc(0, 0, 40, 20),
+		Color: render.RGB(255, 255, 255), CornerRadius: 10, Xform: x,
+	})
+
+	r.BeginFrame(geom.Sz(400, 200))
+	r.Submit(&l)
+	r.EndFrame()
+
+	v := c.verts[0]
+	// Half extents 80 by 10; the radius must stay within the smaller of them
+	// or the rounded box is not a valid shape any more.
+	if v.Custom0 != 80 || v.Custom1 != 10 || v.Custom2 != 10 {
+		t.Fatalf("attributes = (%v, %v, %v), want (80, 10, 10)", v.Custom0, v.Custom1, v.Custom2)
+	}
+}
+
+// TestRotationLeavesLengthsAlone: a rotation changes no length, so nothing is
+// scaled and the attributes are the plain local ones.
+func TestRotationLeavesLengthsAlone(t *testing.T) {
+	r, c := newHeadlessRenderer(t)
+	var l render.List
+	l.Reset()
+	x := l.PushXform(geom.Rotate(math.Pi / 6))
+	l.Add(render.Op{
+		Kind: render.OpFillRoundRect, Bounds: geom.Rc(-20, -10, 20, 10),
+		Color: render.RGB(255, 255, 255), CornerRadius: 5, Xform: x,
+	})
+
+	r.BeginFrame(geom.Sz(200, 200))
+	r.Submit(&l)
+	r.EndFrame()
+
+	v := c.verts[0]
+	const eps = 1e-5
+	if absf(v.Custom0-20) > eps || absf(v.Custom1-10) > eps || absf(v.Custom2-5) > eps {
+		t.Fatalf("attributes = (%v, %v, %v), want (20, 10, 5)", v.Custom0, v.Custom1, v.Custom2)
+	}
+}
+
+func absf(v float32) float32 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // TestRotatedXformUsesPolygonClip exercises the general path. gift does not

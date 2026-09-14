@@ -3,6 +3,7 @@ package ebiten
 import (
 	_ "embed"
 	"fmt"
+	"math"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
 	"github.com/torbenschinke/gift/geom"
@@ -19,7 +20,8 @@ var shapeShaderSrc []byte
 func ShapeShaderSource() []byte { return shapeShaderSrc }
 
 // aaPad is how far the geometry of an antialiased shape is grown beyond its
-// bounds, in local units.
+// bounds, in device pixels. It is converted to local units per axis by
+// dividing by the scale factors of the transform.
 //
 // Without it the outer half of the coverage ramp would fall outside the quad
 // and be lost, which makes every rounded edge render about half a pixel thin.
@@ -221,26 +223,44 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 		stroke = lim
 	}
 
-	pad := float32(0)
-	if radius > 0 || stroke > 0 {
-		pad = aaPad
-	}
-	quad := geom.Rect{
-		Min: geom.Point{X: b.Min.X - pad, Y: b.Min.Y - pad},
-		Max: geom.Point{X: b.Max.X + pad, Y: b.Max.Y + pad},
+	xf := l.Xform(op.Xform)
+	sx, sy := deviceScale(xf)
+	// A single factor has to do for the radius and the stroke width, because
+	// the distance field has one radius and not two. The smaller of the two
+	// is the safe choice: it can never exceed the clamp limit min(halfW*sx,
+	// halfH*sy) that the baked half extents imply, so the shape stays a valid
+	// rounded box. See deviceScale for what this approximates.
+	sr := sx
+	if sy < sr {
+		sr = sy
 	}
 
-	xf := l.Xform(op.Xform)
+	// The antialiasing pad is one device pixel, so in local units it is one
+	// pixel divided by the scale of the axis it grows along.
+	padX, padY := float32(0), float32(0)
+	if radius > 0 || stroke > 0 {
+		padX, padY = aaPad/sx, aaPad/sy
+	}
+	quad := geom.Rect{
+		Min: geom.Point{X: b.Min.X - padX, Y: b.Min.Y - padY},
+		Max: geom.Point{X: b.Max.X + padX, Y: b.Max.Y + padY},
+	}
+
 	shape := shapeParams{
-		color:  op.Color,
-		halfW:  halfW,
-		halfH:  halfH,
-		radius: radius,
-		stroke: stroke,
+		color: op.Color,
+		// Everything geometric is emitted in device pixels. That is what
+		// lets the shader use a constant one pixel coverage band instead of
+		// a screen space derivative; see shape.kage.
+		halfW:  halfW * sx,
+		halfH:  halfH * sy,
+		radius: radius * sr,
+		stroke: stroke * sr,
 		// The local origin is the unpadded bounds, because that is the
 		// coordinate system the distance field is defined in.
 		originX: b.Min.X,
 		originY: b.Min.Y,
+		scaleX:  sx,
+		scaleY:  sy,
 	}
 
 	if xf.B == 0 && xf.C == 0 && xf.A != 0 && xf.D != 0 {
@@ -252,12 +272,76 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 
 // shapeParams are the per operation values that end up in the vertex
 // attributes.
+//
+// halfW, halfH, radius and stroke are already in device pixels. scaleX and
+// scaleY are the factors that got them there and are applied to the local
+// position of every vertex as it is written, so that the distance field the
+// shader evaluates is measured in device pixels throughout.
 type shapeParams struct {
 	color            render.Color
 	halfW, halfH     float32
 	radius, stroke   float32
 	originX, originY float32
+	scaleX, scaleY   float32
 }
+
+// deviceScale returns how many device pixels one local unit covers along the
+// local x and y axis under xf.
+//
+// This is the whole trick that lets the shape shader work without dfdx and
+// dfdy, so it is worth being precise about when it is exact.
+//
+//   - Identity and pure translation: (1, 1), exactly. A translation does not
+//     change lengths.
+//   - Pure rotation: (1, 1) up to the rounding of sin and cos. A rotation does
+//     not change lengths either.
+//   - Axis aligned scale, including a mirror: (|sx|, |sy|), exactly.
+//   - Rotation composed with a scale: the column norms are exactly the two
+//     scale factors, because the rotation contributes no length.
+//
+// Straight edges stay exact in all of these, because the box is axis aligned
+// in local space and a distance to a vertical edge is a pure x distance. The
+// one approximation is a *rounded corner under a non-uniform scale*: a circle
+// scaled by different factors is an ellipse, and this distance field can only
+// express a circle. gift clamps the radius with the smaller factor, so such a
+// corner is drawn slightly tighter than a true ellipse would be. The
+// alternative — rejecting the transform — was not chosen because nothing in
+// gift produces a non-uniform scale today, the error is bounded by
+// radius*|sx-sy| and confined to the four corner arcs, and a slightly rounder
+// corner is a better failure than a missing widget.
+//
+// A skewing transform has non-orthogonal columns and is the only case where
+// even the edges are approximate; the result is a marginally soft or hard
+// edge, never a wrong shape. gift cannot currently produce one.
+//
+// The function allocates nothing and is inlinable.
+func deviceScale(xf geom.Affine2D) (sx, sy float32) {
+	if xf.IsAxisAligned() {
+		// Exact and square-root free, which is also the only path any
+		// display list gift produces today ever takes.
+		sx, sy = xf.A, xf.D
+		if sx < 0 {
+			sx = -sx
+		}
+		if sy < 0 {
+			sy = -sy
+		}
+	} else {
+		sx, sy = xf.ScaleFactors()
+	}
+	// A singular or non-finite transform collapses the shape anyway; falling
+	// back to 1 only keeps the padding arithmetic finite.
+	if !(sx > 0) || !(sx < inf) {
+		sx = 1
+	}
+	if !(sy > 0) || !(sy < inf) {
+		sy = 1
+	}
+	return sx, sy
+}
+
+// inf bounds the scale sanity check in [deviceScale].
+var inf = float32(math.Inf(1))
 
 // clipVertex is a polygon corner during clipping: a device space position and
 // the local space position that belongs to it.
@@ -437,6 +521,9 @@ func intersectEdge(a, b clipVertex, e edge, v float32) clipVertex {
 
 // vertex builds one Ebitengine vertex.
 //
+// lx and ly arrive in local units and are scaled to device pixels here, which
+// is the last step of the bake described on [deviceScale].
+//
 // The colour is copied straight through: [render.Color] is premultiplied and
 // so is everything Ebitengine consumes, so there is no conversion here and in
 // particular none in the frame path. See the project plan, section 8.
@@ -444,8 +531,8 @@ func vertex(dx, dy, lx, ly float32, sh shapeParams) eb.Vertex {
 	return eb.Vertex{
 		DstX:    dx,
 		DstY:    dy,
-		SrcX:    lx,
-		SrcY:    ly,
+		SrcX:    lx * sh.scaleX,
+		SrcY:    ly * sh.scaleY,
 		ColorR:  sh.color.R,
 		ColorG:  sh.color.G,
 		ColorB:  sh.color.B,

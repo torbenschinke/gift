@@ -881,6 +881,91 @@ func TestTransformRectPureTranslationIsExact(t *testing.T) {
 	}
 }
 
+func TestAffineIsAxisAligned(t *testing.T) {
+	aligned := []geom.Affine2D{
+		geom.Identity(),
+		geom.Translate(geom.Pt(3, -4)),
+		geom.Scale(2, 3),
+		geom.Scale(-1, 1),
+		geom.Translate(geom.Pt(1, 2)).Mul(geom.Scale(0.5, 4)),
+	}
+	for _, m := range aligned {
+		if !m.IsAxisAligned() {
+			t.Errorf("%v.IsAxisAligned() = false, want true", m)
+		}
+	}
+	skewed := []geom.Affine2D{
+		geom.Rotate(0.3),
+		{A: 1, B: 0, C: 0.5, D: 1},
+		{A: 1, B: 0.5, C: 0, D: 1},
+	}
+	for _, m := range skewed {
+		if m.IsAxisAligned() {
+			t.Errorf("%v.IsAxisAligned() = true, want false", m)
+		}
+	}
+}
+
+// TestAffineScaleFactors pins the property the shape shader depends on: for
+// every transform of the form rotation ∘ scale, the returned factors are the
+// scale factors and nothing else, because a rotation and a translation change
+// no length.
+func TestAffineScaleFactors(t *testing.T) {
+	cases := []struct {
+		name         string
+		m            geom.Affine2D
+		wantX, wantY float32
+	}{
+		{"identity", geom.Identity(), 1, 1},
+		{"translation", geom.Translate(geom.Pt(123, -456)), 1, 1},
+		{"uniform scale", geom.Scale(3, 3), 3, 3},
+		{"non uniform scale", geom.Scale(2, 5), 2, 5},
+		{"mirror", geom.Scale(-2, -5), 2, 5},
+		{"rotation", geom.Rotate(0.7), 1, 1},
+		{"quarter turn", geom.Rotate(math.Pi / 2), 1, 1},
+		{"scale then rotate", geom.Scale(2, 4).Mul(geom.Rotate(0.9)), 2, 4},
+		{"scale, rotate, translate", geom.Scale(2, 4).Mul(geom.Rotate(0.9)).Mul(geom.Translate(geom.Pt(7, 8))), 2, 4},
+	}
+	const eps = 1e-5
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sx, sy := c.m.ScaleFactors()
+			if d := sx - c.wantX; d > eps || d < -eps {
+				t.Errorf("sx = %v, want %v", sx, c.wantX)
+			}
+			if d := sy - c.wantY; d > eps || d < -eps {
+				t.Errorf("sy = %v, want %v", sy, c.wantY)
+			}
+		})
+	}
+}
+
+// TestScaleFactorsMatchAppliedLengths is the same claim stated geometrically:
+// a unit step along a local axis really does come out this long in device
+// space.
+func TestScaleFactorsMatchAppliedLengths(t *testing.T) {
+	ms := []geom.Affine2D{
+		geom.Identity(),
+		geom.Scale(0.25, 7).Mul(geom.Rotate(1.2)).Mul(geom.Translate(geom.Pt(-3, 9))),
+		geom.Rotate(-2.4),
+	}
+	const eps = 1e-4
+	for _, m := range ms {
+		sx, sy := m.ScaleFactors()
+		o := m.Apply(geom.Pt(0, 0))
+		ex := m.Apply(geom.Pt(1, 0))
+		ey := m.Apply(geom.Pt(0, 1))
+		lx := float32(math.Hypot(float64(ex.X-o.X), float64(ex.Y-o.Y)))
+		ly := float32(math.Hypot(float64(ey.X-o.X), float64(ey.Y-o.Y)))
+		if d := sx - lx; d > eps || d < -eps {
+			t.Errorf("%v: sx = %v, measured %v", m, sx, lx)
+		}
+		if d := sy - ly; d > eps || d < -eps {
+			t.Errorf("%v: sy = %v, measured %v", m, sy, ly)
+		}
+	}
+}
+
 // Sinks prevent the compiler from eliminating the operations measured by
 // TestNoAllocs.
 var (
@@ -938,7 +1023,9 @@ func TestNoAllocs(t *testing.T) {
 		sinkF32 = m.Det()
 		inv, ok := m.Invert()
 		sinkAff = inv
-		sinkBool = ok || m.IsIdentity() || m.IsTranslationOnly()
+		sinkBool = ok || m.IsIdentity() || m.IsTranslationOnly() || m.IsAxisAligned()
+		sx, sy := m.ScaleFactors()
+		sinkF32 = sx + sy
 		sinkRect = m.TransformRect(r)
 		sinkRect = geom.Translate(q).TransformRect(r)
 

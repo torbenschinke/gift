@@ -14,12 +14,43 @@ package main
 // allocate once per operation, which the project plan, section 11, does not
 // allow in the frame path.
 //
-//	src0Pos  local position inside the rectangle, 0..size, origin top left
+//	src0Pos  position inside the rectangle, 0..size, origin top left
 //	color    premultiplied fill or stroke colour
 //	custom.x half width
 //	custom.y half height
 //	custom.z corner radius, already clamped by the CPU side
 //	custom.w stroke width; zero or less means fill
+//
+// # No screen space derivatives
+//
+// All five geometric values above arrive pre-scaled to device pixels. The CPU
+// side knows the local-to-device scale of the transform — see the renderer's
+// deviceScale — and bakes it into the half extents, the radius, the stroke
+// width and the local position before it writes the vertex. The distance
+// field below is therefore already measured in device pixels, so the width of
+// the antialiasing band is the constant 1 and this shader needs no fwidth,
+// dfdx or dfdy at all.
+//
+// That is deliberate, but the original reason for it turned out to be wrong
+// and is recorded here so nobody reinstates it. The project plan once named
+// derivatives as the highest-variance unknown of the project, on the theory
+// that Ebitengine might fall back to GLSL ES 1.00 on a Raspberry Pi 4, where
+// dfdx and dfdy need the OES_standard_derivatives extension. Ebitengine 2.10.1
+// has no ES 1.00 path at all: internal/shaderir/glsl emits either #version 150
+// or #version 300 es, and nothing else. Derivatives are core in GLSL ES 3.00.
+//
+// The rewrite is kept on its own merits, which are real. Coverage in device
+// pixels fixed a latent bug in the vertex padding, which used to pad one
+// *local* unit and therefore clipped the outer half of every antialiased edge
+// under a downscale. It also removed the artefacts fwidth produced at the
+// kinks of the distance field — the corner diagonals and the centre line of a
+// stroke band — where a finite difference across a 2x2 fragment quad straddles
+// a fold and blurs pixels that are genuinely fully covered. And it makes the
+// output independent of how a driver lays out those quads.
+//
+// The actual Pi risk is failing to obtain an ES 3.0 context at all, which
+// would break the whole renderer rather than just rounded corners, and which
+// no shader rewrite can help with.
 
 // sdRoundBox is the signed distance from p to a rounded box centred at the
 // origin with half extents b and corner radius r. Negative inside.
@@ -43,19 +74,11 @@ func Fragment(dstPos vec4, src0Pos vec2, color vec4, custom vec4) vec4 {
 		}
 	}
 
-	// The local coordinate arrives as 0..size so that no vertex attribute is
-	// ever negative; the distance field wants it centred.
+	// The position arrives as 0..size so that no vertex attribute is ever
+	// negative; the distance field wants it centred.
 	p := src0Pos - half
 
 	d := sdRoundBox(p, half, radius)
-
-	// The coverage width is derived from the screen space derivative of the
-	// distance, so the antialiasing is correct under any transform without a
-	// per operation scale attribute.
-	w := fwidth(d)
-	if w <= 0.0 {
-		w = 0.0001
-	}
 
 	if stroke > 0.0 {
 		// The stroke lies inside the bounds: the band runs from -stroke to
@@ -64,5 +87,8 @@ func Fragment(dstPos vec4, src0Pos vec2, color vec4, custom vec4) vec4 {
 		d = abs(d+stroke*0.5) - stroke*0.5
 	}
 
-	return color * clamp(0.5-d/w, 0.0, 1.0)
+	// d is in device pixels, so the coverage ramp is one pixel wide and
+	// centred on the boundary. Scaling the whole vec4, colour and alpha
+	// together, is what keeps the result premultiplied.
+	return color * clamp(0.5-d, 0.0, 1.0)
 }

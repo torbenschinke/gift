@@ -143,3 +143,33 @@ func (m Affine2D) IsIdentity() bool {
 func (m Affine2D) IsTranslationOnly() bool {
 	return m.A == 1 && m.B == 0 && m.C == 0 && m.D == 1
 }
+
+// IsAxisAligned reports whether the linear part of m maps the coordinate axes
+// onto themselves, so that m is a combination of a translation and a scale
+// with no rotation and no skew. The scale may be negative, which mirrors.
+//
+// The comparison is exact, because this is a fast path predicate.
+func (m Affine2D) IsAxisAligned() bool {
+	return m.B == 0 && m.C == 0
+}
+
+// ScaleFactors returns how much m stretches a unit length along the local x and
+// y axis. They are the Euclidean lengths of the two columns of the linear part,
+// hypot(A, B) and hypot(C, D), and are therefore never negative.
+//
+// The factors are exact for every transform of the form rotation ∘ scale, which
+// covers the identity (1, 1), a pure translation (1, 1), an axis aligned scale
+// (|sx|, |sy|), a mirror (|sx|, |sy|) and a rotation (1, 1). For a transform
+// that also skews, the two columns are not orthogonal and the factors describe
+// only the two axes, not the directions in between.
+//
+// This is the number a renderer needs to convert a length measured in local
+// coordinates into a length measured in device pixels without asking the GPU
+// for a screen space derivative.
+//
+// The computation is two multiplications and a square root per axis, allocates
+// nothing and is inlinable.
+func (m Affine2D) ScaleFactors() (sx, sy float32) {
+	return float32(math.Sqrt(float64(m.A*m.A + m.B*m.B))),
+		float32(math.Sqrt(float64(m.C*m.C + m.D*m.D)))
+}
