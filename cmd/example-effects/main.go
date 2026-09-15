@@ -38,6 +38,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -78,8 +79,16 @@ func run() error {
 	gallery = ui.NewGallery(asset.NewCollection(placeholders(*count)))
 
 	app := gift.New(gift.Options{Root: root})
+	// A logger, because this is the example where the adaptive policy runs.
+	// The project plan, section 15, wants `Warn` for degraded quality and
+	// names a fall back to Glass Reduced as the example of it; without a
+	// logger gift stays silent, and the one event section 15 names by name
+	// would be invisible outside a giftmetrics build. Nothing is logged per
+	// frame: the level is a counter and only a *change* is a line.
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	return backend.Run(app, backend.Config{
 		Title: "gift effects", Width: 1280, Height: 800,
+		Logger:       log,
 		GlassQuality: q,
 		OnRenderer:   func(r *backend.Renderer) { renderer = r },
 	})

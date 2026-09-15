@@ -47,7 +47,7 @@ func loadFont() {
 // refinements that make it a control: the minus button is disabled at zero,
 // and every part that a test refers to carries a key.
 //
-// It is deliberately the same program as cmd/example-layout, minus the
+// It is deliberately the same program as cmd/example-counter, minus the
 // colours. A harness that only works against fixtures written for it is not a
 // harness.
 func counter(ctx *gift.Context) gift.View {

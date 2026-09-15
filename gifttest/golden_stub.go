@@ -50,6 +50,36 @@ func (h *Harness) Image() image.Image {
 	return nil
 }
 
+// Warm is a no-op in a build without a graphics context.
+//
+// With the giftgpu tag it renders one throwaway frame so that a picture is
+// resident before a golden is taken; see the tagged half. Without it there is
+// no renderer, no texture cache and no upload budget, so there is nothing to
+// warm and nothing to report. This is the one method of the package that is
+// deliberately silent in both modes, because "no GPU" is not a missing answer
+// here — it is the absence of the question.
+func (h *Harness) Warm() {}
+
+// framebuffer is the pixel source of [Harness.AssertPixel].
+//
+// Without the giftgpu tag there is none, so it skips — or fails under
+// GIFT_REQUIRE_GOLDEN — under exactly the rule [Harness.AssertGolden] uses,
+// and for the same reason: a developer running `go test ./...` is not testing
+// rendering, and a CI job that believes it is must not pass on skips.
+func (h *Harness) framebuffer(what string) (image.Image, bool) {
+	h.t.Helper()
+	const msg = "gifttest: %s needs real pixels.\n" +
+		"Run it with the build tag:  go test -tags giftgpu ./...\n" +
+		"Set GIFT_REQUIRE_GOLDEN=1 to turn this skip into a failure in a CI job that " +
+		"is supposed to check rendering."
+	if requireGolden() {
+		h.t.Fatalf(msg, what)
+		return nil, false
+	}
+	h.t.Skipf(msg, what)
+	return nil, false
+}
+
 // Main is the TestMain a package with golden tests installs:
 //
 //	func TestMain(m *testing.M) { gifttest.Main(m) }

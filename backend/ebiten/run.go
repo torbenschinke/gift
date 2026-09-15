@@ -371,7 +371,55 @@ func (g *game) Update() error {
 		g.rec.RecordUpdate(time.Since(start))
 		g.rec.Tick()
 	}
+	g.logGlassLevel()
 	return err
+}
+
+// logGlassLevel reports an adaptive quality change through the configured
+// logger, once per change.
+//
+// # Why this is not a violation of the no-logging-in-the-frame-path rule
+//
+// The project plan, section 15, asks for two things and they are different
+// things. "Zaehler statt Logzeilen" governs what the frame path writes per
+// frame, and the effective glass level obeys it: it is
+// [GlassPolicyStats.EffectiveLevel], a plain enum field. But the same section
+// also asks for "`Warn` fuer degradierte Qualitaet, etwa Rueckfall auf Glass
+// Reduced", and a fall back is not a per frame quantity — it happens a handful
+// of times in a whole run. Only counting it meant the one event section 15
+// names by name was invisible outside a giftmetrics build.
+//
+// The cost when nothing changed is a nil check and a bool load; no attribute
+// is constructed, so the 0 B/op benchmark of the project plan, section 11, is
+// unaffected. It runs after gift's build and layout, not between them.
+func (g *game) logGlassLevel() {
+	if g.log == nil {
+		return
+	}
+	p := g.r.GlassPolicy()
+	if p == nil {
+		return
+	}
+	q, ok := p.TakeLevelChange()
+	if !ok {
+		return
+	}
+	s := p.Stats()
+	if q == render.Full {
+		g.log.Info("gift/backend/ebiten: glass quality restored",
+			slog.String("level", q.String()),
+			slog.Float64("material_area_fraction", s.AreaFraction),
+			slog.Uint64("changes", s.Changes))
+		return
+	}
+	// Warn, because this is degraded quality and section 15 names exactly
+	// this case as its example of it.
+	g.log.Warn("gift/backend/ebiten: glass quality degraded",
+		slog.String("level", q.String()),
+		slog.Bool("pinned", s.Pinned),
+		slog.Duration("median_frame_interval", s.MedianInterval),
+		slog.Float64("material_area_fraction", s.AreaFraction),
+		slog.Uint64("changes", s.Changes))
 }
 
 // applyIdlePolicy raises or lowers the tick rate. See [Config.IdleTPS].

@@ -99,6 +99,43 @@ func (h *Harness) Image() image.Image {
 	return out
 }
 
+// Warm renders one frame through the backend and throws the pixels away.
+//
+// It exists for pictures. The upload budget of the project plan, section 11,
+// is per *drawn* frame, so the frame in which a painter first resolves an
+// image handle is the frame that requests the upload, and the texture is
+// resident only from the next one. A golden taken without this would be a
+// golden of a placeholder — and would pass for ever, which is the failure mode
+// [Harness.backendRenderer] exists to prevent in the first place.
+//
+// It is a no-op without the giftgpu tag, where there is no texture residency
+// to warm.
+func (h *Harness) Warm() {
+	h.t.Helper()
+	r := h.backendRenderer()
+	if r == nil {
+		return
+	}
+	w, hgt := int(h.size.W), int(h.size.H)
+	if w <= 0 || hgt <= 0 {
+		return
+	}
+	dst := eb.NewImage(w, hgt)
+	defer dst.Deallocate()
+	r.SetTarget(dst)
+	r.BeginFrame(geom.Sz(float32(w), float32(hgt)))
+	h.list = h.app.Paint()
+	r.Submit(h.list)
+	r.EndFrame()
+}
+
+// framebuffer renders the current frame and returns its pixels. With a
+// graphics context there is always one; see the stub for the other half.
+func (h *Harness) framebuffer(string) (image.Image, bool) {
+	h.t.Helper()
+	return h.Image(), true
+}
+
 // backendRenderer returns the harness's renderer, creating it and wiring its
 // image service into the application on first use.
 //

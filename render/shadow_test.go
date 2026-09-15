@@ -37,10 +37,14 @@ func TestShadowPaintBoundsGrowByThreeSigma(t *testing.T) {
 	if got, want := s.Extent(), float32(24); got != want {
 		t.Fatalf("Extent = %v, want %v", got, want)
 	}
-	// 24 on every side, plus the 4 pixel downward offset on the shape.
+	// 24 on every side, plus the 4 pixel downward offset on the shape. The
+	// paint bounds live on the *operation*, whose Bounds is already the
+	// shape; see [Op.PaintBounds] and the note in shadow.go on why there is
+	// no second formulation on Shadow.
+	op := Op{Kind: OpShadow, Bounds: s.Shape(shadowBounds), Blur: s.Blur, Color: s.Color}
 	want := geom.Rc(76, 80, 224, 178)
-	if got := s.PaintBounds(shadowBounds); got != want {
-		t.Errorf("PaintBounds = %v, want %v", got, want)
+	if got := op.PaintBounds(); got != want {
+		t.Errorf("Op.PaintBounds = %v, want %v", got, want)
 	}
 }
 
@@ -56,8 +60,18 @@ func TestInvisibleShadowDoesNotGrowAnything(t *testing.T) {
 		if s.IsVisible() {
 			t.Errorf("%s: IsVisible = true, want false", name)
 		}
-		if got := s.PaintBounds(shadowBounds); got != shadowBounds {
-			t.Errorf("%s: PaintBounds = %v, want the bounds unchanged %v", name, got, shadowBounds)
+		// An invisible shadow is never emitted at all, so the paint bounds
+		// of one are not a question; [Op.PaintBounds] deliberately does not
+		// consult the colour, and the "inf offset" case has a perfectly good
+		// blur whose infinity lives in the offset the producer already folded
+		// into Bounds. What must hold at the operation level is the narrower
+		// statement: no usable blur, no larger quad.
+		if (Shadow{Blur: s.Blur}).Extent() != 0 {
+			continue
+		}
+		op := Op{Kind: OpShadow, Bounds: shadowBounds, Blur: s.Blur, Color: s.Color}
+		if got := op.PaintBounds(); got != shadowBounds {
+			t.Errorf("%s: Op.PaintBounds = %v, want the bounds unchanged %v", name, got, shadowBounds)
 		}
 	}
 	visible := Shadow{Blur: 8, Color: RGB(0, 0, 0)}

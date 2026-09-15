@@ -322,6 +322,10 @@ func kindName(k render.OpKind) string {
 		return "glyphs"
 	case render.OpShadow:
 		return "shadow"
+	case render.OpImage:
+		return "image"
+	case render.OpMaterial:
+		return "material"
 	default:
 		return fmt.Sprintf("kind %d", k)
 	}
@@ -343,6 +347,12 @@ func formatOps(ops []render.Op) string {
 		if op.GlyphCount != 0 {
 			fmt.Fprintf(&b, " glyphs=%d", op.GlyphCount)
 		}
+		if op.Material != 0 {
+			fmt.Fprintf(&b, " material=%d", op.Material)
+		}
+		if op.Image != 0 {
+			fmt.Fprintf(&b, " image=%d", op.Image)
+		}
 		if op.Clip != 0 {
 			fmt.Fprintf(&b, " clip=%d", op.Clip)
 		}
@@ -352,6 +362,147 @@ func formatOps(ops []render.Op) string {
 		return "  <empty display list>\n"
 	}
 	return b.String()
+}
+
+// --- background, material and image assertions ------------------------------
+//
+// These exist because the harness could not see two fifths of the framework.
+// It was built for steps 1 to 3 of the project plan, section 12, and steps 4
+// and 5 — pictures and the glass material — were never wired back into it:
+// `grep -r Glass gifttest/` returned nothing at all, so a glass scene had no
+// coverage in the framework's own public testing story. The project plan,
+// section 13, puts structural assertions ahead of images ("Strukturelle
+// Assertions haben Vorrang vor Bildern"), so these come first and the goldens
+// come after.
+
+// Background returns the colour the node fills its shape with in the most
+// recent frame, and whether it fills one at all.
+//
+// It reads the display list rather than the view, which is the whole point: a
+// modifier that was set and never painted is exactly the defect worth
+// catching. A node whose background is a material has no colour here; use
+// [Node.Material].
+func (n Node) Background() (render.Color, bool) {
+	n.h.t.Helper()
+	n.check("Background")
+	b := n.Bounds()
+	for _, op := range n.h.List().Ops() {
+		if op.Kind != render.OpFillRect && op.Kind != render.OpFillRoundRect {
+			continue
+		}
+		if nearRect(op.Bounds, b) {
+			return op.Color, true
+		}
+	}
+	return render.Color{}, false
+}
+
+// AssertBackground fails unless the node fills its shape with want.
+func (n Node) AssertBackground(want render.Color) Node {
+	n.h.t.Helper()
+	got, ok := n.Background()
+	switch {
+	case !ok:
+		n.h.t.Errorf("gifttest: %s\n  paints no background at all in this frame, want %v.\nthe frame was:\n%s",
+			n.describe(), want, formatOps(n.h.List().Ops()))
+	case got != want:
+		n.h.t.Errorf("gifttest: %s\n  background = %v\n  want         %v", n.describe(), got, want)
+	}
+	return n
+}
+
+// Material returns the backdrop dependent background of the node in the most
+// recent frame, and whether it has one.
+//
+// This is how a test asserts a glass panel without a GPU: the material
+// parameters travel in the side table of the display list, so the level, the
+// tint, the blur radius and the corner radius are all readable headless. A
+// golden says the panel changed; this says what was asked for.
+func (n Node) Material() (render.Material, bool) {
+	n.h.t.Helper()
+	n.check("Material")
+	b := n.Bounds()
+	l := n.h.List()
+	for _, op := range l.Ops() {
+		if op.Kind != render.OpMaterial || op.Material == 0 {
+			continue
+		}
+		if nearRect(op.Bounds, b) {
+			return l.Material(op.Material), true
+		}
+	}
+	return render.Material{}, false
+}
+
+// AssertMaterial fails unless the node paints a material of kind want.
+//
+// [render.MaterialNone] asserts the absence of one, which is the assertion a
+// test writes after removing a glass background — the failure mode otherwise
+// is a panel that costs a screen sized render target and looks almost the
+// same.
+func (n Node) AssertMaterial(want render.MaterialKind) Node {
+	n.h.t.Helper()
+	m, ok := n.Material()
+	got := render.MaterialNone
+	if ok {
+		got = m.Kind
+	}
+	if got != want {
+		n.h.t.Errorf("gifttest: %s\n  material = %s\n  want       %s\nthe frame was:\n%s",
+			n.describe(), got, want, formatOps(n.h.List().Ops()))
+	}
+	return n
+}
+
+// Glass returns the glass parameters of the node's material and fails when it
+// has none. It is the accessor behind assertions like "this panel asked for
+// Reduced" and "the blur radius survived the modifier".
+func (n Node) Glass() render.GlassParams {
+	n.h.t.Helper()
+	m, ok := n.Material()
+	if !ok || m.Kind != render.MaterialGlass {
+		n.h.t.Fatalf("gifttest: %s\n  paints no glass material in this frame.\nthe frame was:\n%s",
+			n.describe(), formatOps(n.h.List().Ops()))
+		return render.GlassParams{}
+	}
+	return m.Glass
+}
+
+// AssertGlassQuality fails unless the node's glass material requested want.
+//
+// It asserts what the *display list* asked for, which is a property of the
+// application. Which level the backend then drew is a property of the machine
+// and of the adaptive policy, and is in the backend's own counters; the two
+// are deliberately not the same assertion.
+func (n Node) AssertGlassQuality(want render.GlassQuality) Node {
+	n.h.t.Helper()
+	if got := n.Glass().Level; got != want {
+		n.h.t.Errorf("gifttest: %s\n  glass quality = %s\n  want            %s", n.describe(), got, want)
+	}
+	return n
+}
+
+// AssertDrawsImage fails when the node draws no picture in the most recent
+// frame.
+//
+// It is the picture counterpart of [Node.AssertDrawsGlyphs], and it catches
+// the failure that every image test has: a tile whose thumbnail never arrived,
+// or whose texture was never resolved, draws its placeholder and looks
+// plausible. An [render.OpImage] with a resolved [render.ImageID] is the
+// headless proof that a real picture reached the display list.
+func (n Node) AssertDrawsImage() Node {
+	n.h.t.Helper()
+	n.check("AssertDrawsImage")
+	b := n.Bounds()
+	ops := n.h.List().Ops()
+	for _, op := range ops {
+		if op.Kind == render.OpImage && op.Image != 0 && nearRect(op.Bounds, b) {
+			return n
+		}
+	}
+	n.h.t.Errorf("gifttest: %s\n  draws no picture in this frame; either no texture was resolved for it "+
+		"or it fell back to its placeholder.\nthe frame was:\n%s", n.describe(), formatOps(ops))
+	return n
 }
 
 // --- scroll and visibility assertions ---------------------------------------

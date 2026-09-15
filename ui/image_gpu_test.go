@@ -57,6 +57,10 @@ func TestImageViewDrawsTheRealPixels(t *testing.T) {
 	img := h.Image()
 	img = h.Image()
 
+	// And structurally: a *picture* reached the display list, not the
+	// placeholder that looks just like success. See gifttest.Node.AssertDrawsImage.
+	h.Find(gifttest.ByType("ui.Image")).AssertDrawsImage()
+
 	got := colorAt(img, 32, 32)
 	if !nearRGBA(got, want, 6) {
 		t.Errorf("the picture at its centre is %v, want %v; a decoded PNG reaches the "+

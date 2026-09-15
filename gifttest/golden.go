@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/render"
 )
 
@@ -271,4 +272,44 @@ func writePNG(path string, img image.Image) error {
 		return err
 	}
 	return os.WriteFile(path, buf.Bytes(), 0o644)
+}
+
+// AssertPixel fails unless the pixel at p is want, within [GoldenTolerance].
+//
+// # Why there is an image assertion next to the goldens
+//
+// A golden answers "did this change" and needs a file to compare against; it
+// cannot answer "is the background still behind the panel", because a golden
+// recorded while it was not would happily pin the defect. This is the
+// assertion for a single stated fact about the framebuffer, and it is the one
+// that covers the scene blit: a frame containing a material must not alter
+// pixels the frame did not touch.
+//
+// The colour is a [render.Color], premultiplied like everything else in gift,
+// so a test names the colour it gave [Options.Background] rather than
+// converting one.
+//
+// Without the giftgpu tag there are no pixels. It then skips, or fails when
+// GIFT_REQUIRE_GOLDEN is set, exactly like [Harness.AssertGolden].
+func (h *Harness) AssertPixel(p geom.Point, want render.Color) {
+	h.t.Helper()
+	img, ok := h.framebuffer("AssertPixel")
+	if !ok {
+		return
+	}
+	x, y := int(p.X), int(p.Y)
+	b := img.Bounds()
+	if x < b.Min.X || y < b.Min.Y || x >= b.Max.X || y >= b.Max.Y {
+		h.t.Errorf("gifttest: AssertPixel at (%g, %g) is outside the %dx%d viewport",
+			p.X, p.Y, b.Dx(), b.Dy())
+		return
+	}
+	got := rgba8(img.At(x, y))
+	exp := clearFor(want)
+	if maxChannelDelta(got, exp) <= GoldenTolerance {
+		return
+	}
+	h.t.Errorf("gifttest: the pixel at (%g, %g) is {%d %d %d %d}, want {%d %d %d %d} "+
+		"within %d per channel",
+		p.X, p.Y, got.R, got.G, got.B, got.A, exp.R, exp.G, exp.B, exp.A, GoldenTolerance)
 }

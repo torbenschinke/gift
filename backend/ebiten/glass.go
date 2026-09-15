@@ -44,6 +44,31 @@ type GlassPolicyConfig struct {
 	// frame is outside the envelope the threshold was stated for", which is
 	// known before the frame is drawn and is therefore acted on immediately.
 	MaxAreaFraction float64
+
+	// UpAreaFraction is the share of the screen the material area must be
+	// *below* before [render.Full] may be restored. Zero selects
+	// [DefaultGlassUpArea].
+	//
+	// It is the hysteresis of the area signal and it is exactly as
+	// non-optional as the gap between DownInterval and UpInterval. With one
+	// threshold for both directions, a panel whose area oscillates around
+	// the limit vetoes Full, resets the dwell, climbs back the moment the
+	// dwell expires on whatever the area happened to be in that single
+	// frame, and is vetoed again on the next one — measured at 39 level
+	// changes in thirty simulated seconds, one every 0.77 s, which is a
+	// blurred background switching on and off twice a second.
+	//
+	// The gap alone is not enough either, because the climb back is decided
+	// from a single frame's area. See [GlassPolicyConfig.AreaWindow].
+	UpAreaFraction float64
+
+	// AreaWindow is the number of consecutive drawn frames the material area
+	// must have stayed at or below UpAreaFraction before [render.Full] may
+	// be restored. Zero selects [GlassPolicyConfig.Window], that is the same
+	// window the interval median is taken over; a negative value means one
+	// frame, which is the flickering behaviour and exists only so that a
+	// test can reproduce it.
+	AreaWindow int
 }
 
 // Defaults for [GlassPolicyConfig].
@@ -85,6 +110,17 @@ const (
 	// DefaultGlassMaxArea is 0.25, the fraction the project plan,
 	// section 13, states the Full threshold under.
 	DefaultGlassMaxArea = 0.25
+
+	// DefaultGlassUpArea is 0.20, four fifths of [DefaultGlassMaxArea].
+	//
+	// The same shape of choice as DefaultGlassUpInterval against
+	// DefaultGlassDownInterval: far enough below the veto that a scene which
+	// reaches it is genuinely back inside the envelope and not merely
+	// jittering around its edge, close enough that a panel which shrank for
+	// good gets its blur back. A fifth of the screen against a quarter is
+	// twenty percent of headroom, which is five times the plausible frame to
+	// frame jitter of a panel whose size is decided by a layout.
+	DefaultGlassUpArea = 0.20
 )
 
 // GlassPolicy chooses between [render.Reduced] and [render.Full].
@@ -107,12 +143,14 @@ const (
 //     have already been missed, and the hysteresis and dwell exist so that it
 //     cannot oscillate while reacting.
 //   - The material area of the frame as a fraction of the screen. This is
-//     the leading signal and it is not subject to dwell at all: the project
-//     plan, section 13, states the Full budget only for a material area up to
-//     a quarter of the screen, so a frame that exceeds it is outside the
-//     envelope and is drawn Reduced immediately. Coming back is subject to
-//     dwell like everything else, so a panel that hovers around the limit
-//     does not flicker.
+//     the leading signal: the project plan, section 13, states the Full budget
+//     only for a material area up to a quarter of the screen, so a frame that
+//     exceeds it is outside the envelope and is drawn Reduced immediately,
+//     with no dwell at all. Coming back is a different question and is
+//     answered with a band of its own — [GlassPolicyConfig.UpAreaFraction] and
+//     [GlassPolicyConfig.AreaWindow] — so a panel that hovers around the limit
+//     does not flicker. The asymmetry is deliberate: leaving the envelope has
+//     to be acted on now, re-entering it has to be believed first.
 //
 // # Pinning
 //
@@ -143,6 +181,16 @@ type GlassPolicy struct {
 	// panels of one frame different levels.
 	lastArea float64
 	area     float64
+	// areaStreak is the number of consecutive drawn frames whose material
+	// area was at or below [GlassPolicyConfig.UpAreaFraction]. The climb back
+	// to Full requires a full window of them, not the single frame the dwell
+	// happens to expire on.
+	areaStreak int
+
+	// pendingLevel and hasPending carry a level change out of the frame path
+	// to whoever logs it; see [GlassPolicy.TakeLevelChange].
+	pendingLevel render.GlassQuality
+	hasPending   bool
 
 	stats GlassPolicyStats
 }
@@ -178,6 +226,28 @@ func NewGlassPolicy(cfg GlassPolicyConfig) *GlassPolicy {
 	if cfg.MaxAreaFraction <= 0 {
 		cfg.MaxAreaFraction = DefaultGlassMaxArea
 	}
+	if cfg.UpAreaFraction <= 0 {
+		cfg.UpAreaFraction = DefaultGlassUpArea
+		if cfg.UpAreaFraction >= cfg.MaxAreaFraction {
+			// A caller that lowered MaxAreaFraction below the default up
+			// threshold gets a proportional one rather than a panic, because
+			// it did not ask for the up threshold at all.
+			cfg.UpAreaFraction = cfg.MaxAreaFraction * 0.8
+		}
+	}
+	if cfg.UpAreaFraction >= cfg.MaxAreaFraction {
+		// The same rule as for the intervals, and for the same reason: with
+		// no gap there is no hysteresis, and an area that oscillates around
+		// one threshold changes the level every dwell period for ever.
+		panic("gift/backend/ebiten: GlassPolicyConfig.UpAreaFraction must be below MaxAreaFraction; " +
+			"the gap between them is the hysteresis of the area signal")
+	}
+	if cfg.AreaWindow == 0 {
+		cfg.AreaWindow = cfg.Window
+	}
+	if cfg.AreaWindow < 1 {
+		cfg.AreaWindow = 1
+	}
 	return &GlassPolicy{
 		cfg:   cfg,
 		ring:  make([]time.Duration, cfg.Window),
@@ -196,6 +266,10 @@ func (p *GlassPolicy) Pin(q render.GlassQuality) {
 	if p.level != q {
 		p.level = q
 		p.stats.Changes++
+		// Deliberately *not* recorded as a pending level change: an
+		// application that pins a level configured it, and configuration is
+		// Info at startup rather than a degradation warning. See
+		// [GlassPolicy.TakeLevelChange].
 	}
 	p.stats.Pinned = true
 }
@@ -286,6 +360,17 @@ func (p *GlassPolicy) BeginFrame(screenArea float64) render.GlassQuality {
 		p.lastArea = 0
 	}
 	p.stats.AreaFraction = p.lastArea
+	// The streak of frames spent below the *up* threshold. It is maintained
+	// unconditionally, including while pinned and during the dwell, so that
+	// the moment the policy is allowed to decide it is deciding on a window
+	// of evidence rather than on one frame.
+	if p.lastArea <= p.cfg.UpAreaFraction {
+		if p.areaStreak < p.cfg.AreaWindow {
+			p.areaStreak++
+		}
+	} else {
+		p.areaStreak = 0
+	}
 
 	if p.pinned {
 		p.stats.EffectiveLevel = p.level
@@ -317,7 +402,12 @@ func (p *GlassPolicy) BeginFrame(screenArea float64) render.GlassQuality {
 			p.stats.Downgrades++
 		}
 	default:
-		if med < p.cfg.UpInterval && p.lastArea <= p.cfg.MaxAreaFraction {
+		// Both halves of the area hysteresis: the area must be well below
+		// the veto threshold, and it must have been there for a whole
+		// window. Asking only "is it below the limit right now" is what
+		// produced a level change every 0.77 s on an area that oscillated by
+		// four percent around the limit.
+		if med < p.cfg.UpInterval && p.areaStreak >= p.cfg.AreaWindow {
 			p.setLevel(render.Full)
 			p.stats.Upgrades++
 		}
@@ -333,6 +423,9 @@ func (p *GlassPolicy) setLevel(q render.GlassQuality) {
 	p.level = q
 	p.dwell = 0
 	p.stats.Changes++
+	// Handed out of band, never logged from here: see
+	// [GlassPolicy.TakeLevelChange] and the project plan, section 15.
+	p.pendingLevel, p.hasPending = q, true
 	// The window is deliberately *not* cleared. Clearing it would make the
 	// policy blind for a whole window right after a change, and then the
 	// first decision after the dwell would be taken on a partly filled
@@ -354,7 +447,11 @@ type GlassPolicyStats struct {
 	// the material area budget. Upgrades is the number of climbs back.
 	//
 	// Changes is the number a flicker test asserts on: a scene that sits on a
-	// threshold must produce a small constant, not one per dwell period.
+	// threshold must produce a small constant, not one per dwell period. Both
+	// signals have a band and a hold: the intervals have DownInterval against
+	// UpInterval plus MinDwellFrames, and the area has MaxAreaFraction against
+	// UpAreaFraction plus AreaWindow. TestGlassPolicyDoesNotFlicker and
+	// TestGlassPolicyDoesNotFlickerOnArea pin one each.
 	Changes, Downgrades, AreaDowngrades, Upgrades uint64
 	// MedianInterval is the median of the window at the last decision and
 	// AreaFraction the material area of the last frame as a share of the
@@ -369,6 +466,33 @@ type GlassPolicyStats struct {
 
 // Stats returns a snapshot of the policy counters.
 func (p *GlassPolicy) Stats() GlassPolicyStats { return p.stats }
+
+// TakeLevelChange reports the level the policy last switched to and clears the
+// flag, so that every change is reported exactly once and a run that did not
+// change reports nothing.
+//
+// # Why this exists rather than a log call in setLevel
+//
+// The project plan, section 15, asks for both halves and they are not the same
+// half. The effective level is a *counter*, written in the frame path with no
+// formatting and no interface boxing — that is [GlassPolicyStats.EffectiveLevel]
+// and it stays a counter. Section 15 also asks for `Warn` on degraded quality
+// and names a fall back to Glass Reduced as its example, and a level change is
+// out of band by definition: it happens a handful of times in a whole run,
+// never per frame, and there is nothing to rate limit.
+//
+// So the change is *recorded* in the frame path as one enum store and one
+// bool, and it is formatted and logged where a logger exists; see [Run]. A
+// caller that never drains it pays those two stores per level change and
+// nothing else, so the 0 B/op contract of the project plan, section 11, is
+// untouched.
+func (p *GlassPolicy) TakeLevelChange() (render.GlassQuality, bool) {
+	if !p.hasPending {
+		return p.level, false
+	}
+	p.hasPending = false
+	return p.pendingLevel, true
+}
 
 // glassPass names one stage of a material pass chain, for the counters and for
 // the pass trace a headless test records.
@@ -444,9 +568,16 @@ func blurLevels(radiusDev float32) int {
 // packGlassStyle packs the three scalars that share the last vertex attribute.
 //
 // See glass.kage for the layout and for why the packing exists at all. The
-// largest value this can produce is 255*65536 + 255*256 + 255 = 16777215,
-// which is the last integer a float32 holds exactly; the clamps in
-// [render.Glass] are what keep it there.
+// refraction field is quantised to 63 and the other two to 255, so the largest
+// value this can produce is 63*65536 + 255*256 + 255 = 4194303. That is 2^22-1
+// and leaves two whole bits of margin below 2^24-1, the last integer a float32
+// holds exactly, which is the bound the packing actually needs. The comment
+// here used to quote 16777215, describing a scheme with a tighter margin than
+// the code has; the arithmetic below is the binding statement.
+//
+// refraction arrives in *device* pixels, like every other geometric value that
+// reaches a shader in this package, because that is what the shader adds to a
+// device space sample position. See [Renderer.compositeGlass].
 func packGlassStyle(refraction, highlight, grain float32) float32 {
 	r := quant(refraction, 63)
 	h := quant(highlight*255, 255)
@@ -507,6 +638,14 @@ func (r *Renderer) appendMaterial(l *render.List, op render.Op) {
 	// Glass-Backdrop wird an seiner Materialform geclippt", and a parent clip
 	// is already folded into the clip rectangle by render.List.PushClip.
 	vis := region.Intersect(clip)
+	// And against the screen. A material entirely off screen draws nothing,
+	// and saying so here is what keeps this function and
+	// [listHasVisibleMaterial] agreeing about which materials are visible —
+	// they have to, or a frame could acquire a scene target for a panel this
+	// function then skips, or skip acquiring one for a panel it then draws.
+	if r.frameSize.W > 0 && r.frameSize.H > 0 {
+		vis = vis.Intersect(geom.Rc(0, 0, r.frameSize.W, r.frameSize.H))
+	}
 	if r.scene != nil {
 		vis = vis.Intersect(geom.Rc(0, 0, float32(r.sceneW), float32(r.sceneH)))
 	}
@@ -540,10 +679,17 @@ func (r *Renderer) appendMaterial(l *render.List, op render.Op) {
 	}
 
 	q := r.frameQuality
-	if g.Level != render.Adaptive {
+	if g.Level != render.Adaptive && !r.policyPinned() {
 		// A material may pin its own level, which is what makes the two
 		// levels comparable side by side in example-effects and what section
 		// 13 needs for a measurement.
+		//
+		// It may not override a pinned *policy*. A pin is the application
+		// saying "this whole run is measured at one level", which section 13
+		// makes a precondition of comparing one measurement with another, and
+		// a per material request that quietly won left the reported level
+		// describing a frame that was drawn at the other one. When both are
+		// set the policy wins and the material's own request is ignored.
 		q = g.Level
 	}
 
@@ -562,7 +708,7 @@ func (r *Renderer) appendMaterial(l *render.List, op render.Op) {
 	}
 
 	r.glassPass(glassPassComposite)
-	r.compositeGlass(back, vis, region, halfW, halfH, radius, g, q)
+	r.compositeGlass(back, vis, region, halfW, halfH, radius, sr, g, q)
 	r.targets.Release(back)
 }
 
@@ -665,7 +811,7 @@ func (r *Renderer) blurRegion(src *eb.Image, w, h int, radiusDev float32) {
 // for what is on screen; the source coordinates are the position inside the
 // region, which is also the position inside the backdrop target.
 func (r *Renderer) compositeGlass(back *eb.Image, vis, region geom.Rect,
-	halfW, halfH, radius float32, g render.GlassParams, q render.GlassQuality) {
+	halfW, halfH, radius, scale float32, g render.GlassParams, q render.GlassQuality) {
 	if r.dst == nil && r.drawFn == nil {
 		return
 	}
@@ -676,7 +822,13 @@ func (r *Renderer) compositeGlass(back *eb.Image, vis, region geom.Rect,
 		// artefact than having no grain at all.
 		grain = 0
 	}
-	packed := packGlassStyle(g.Refraction, g.Highlight, grain)
+	// Refraction is a length in logical pixels and the shader consumes it in
+	// device pixels, exactly like the corner radius and the blur radius two
+	// callers up. It was packed raw, which was latent only because nothing in
+	// gift emits a scale transform yet — the same class of defect WU-E fixed
+	// for the shape shader, where a local-unit pad cut the outer half of every
+	// antialiased edge under a shrink.
+	packed := packGlassStyle(g.Refraction*scale, g.Highlight, grain)
 
 	r.passVerts = r.passVerts[:0]
 	r.passIdx = r.passIdx[:0]
@@ -716,15 +868,24 @@ func (r *Renderer) compositeGlass(back *eb.Image, vis, region geom.Rect,
 // exercised without a graphics context, exactly as project plan section 12,
 // criterion 4 requires of everything else.
 //
-// It is a degradation and it is counted as one; see
-// [RendererStats.GlassFallbacks].
+// It is a degradation and it is counted as one — see
+// [RendererStats.GlassFallbacks] — and it is also *visible* as one, which used
+// not to be true. A pane whose tint is fully transparent is a clear pane: with
+// a backdrop it is glass, and without one it is nothing at all. Returning
+// early for that case meant a default-tinted panel degraded to a ghost while a
+// clear one degraded to a hole in the layout, with the only evidence behind
+// the giftmetrics build tag. So a transparent tint falls back to
+// [render.DefaultGlassTint], which is the barely-there cool white that says
+// "there is a pane here and it is not working" without inventing a colour the
+// application never asked for.
 func (r *Renderer) drawGlassFallback(vis, clip, region geom.Rect, halfW, halfH, radius float32, g render.GlassParams) {
-	if g.Tint.IsTransparent() {
-		return
+	tint := g.Tint
+	if tint.IsTransparent() {
+		tint = render.DefaultGlassTint()
 	}
 	r.material(MaterialShape, nil)
 	sh := shapeParams{
-		color:   g.Tint,
+		color:   tint,
 		halfW:   halfW,
 		halfH:   halfH,
 		radius:  radius,
@@ -744,7 +905,8 @@ func (r *Renderer) drawGlassFallback(vis, clip, region geom.Rect, halfW, halfH, 
 }
 
 // blitCopy copies srcRect of src into dst with the destination replaced
-// rather than blended.
+// rather than blended. It is the region copy of a backdrop; the scene to
+// screen blit uses [Renderer.blitOver] instead.
 //
 // DrawTriangles and not DrawImage, and that is about allocation rather than
 // taste: drawing a sub-rectangle with DrawImage needs an [eb.Image.SubImage],
@@ -752,6 +914,16 @@ func (r *Renderer) drawGlassFallback(vis, clip, region geom.Rect, halfW, halfH, 
 // panel per frame. Four vertices in a buffer this package already owns cost
 // nothing.
 func (r *Renderer) blitCopy(dst, src *eb.Image, srcRect geom.Rect, dstX, dstY float32) {
+	r.blit(dst, src, srcRect, dstX, dstY, &r.copyOpts)
+}
+
+// blitOver composites srcRect of src onto dst with source over. See
+// [Renderer.SetTarget] for why the scene blit must not replace.
+func (r *Renderer) blitOver(dst, src *eb.Image, srcRect geom.Rect, dstX, dstY float32) {
+	r.blit(dst, src, srcRect, dstX, dstY, &r.blitOpts)
+}
+
+func (r *Renderer) blit(dst, src *eb.Image, srcRect geom.Rect, dstX, dstY float32, opts *eb.DrawTrianglesOptions) {
 	if dst == nil || src == nil {
 		return
 	}
@@ -776,7 +948,7 @@ func (r *Renderer) blitCopy(dst, src *eb.Image, srcRect geom.Rect, dstX, dstY fl
 		// command is not; see [Renderer.drawFn].
 		r.drawFn(MaterialGlass, r.passVerts, r.passIdx)
 	} else {
-		dst.DrawTriangles32(r.passVerts, r.passIdx, src, &r.copyOpts)
+		dst.DrawTriangles32(r.passVerts, r.passIdx, src, opts)
 	}
 	r.countGlassBatch()
 }
@@ -847,3 +1019,8 @@ func (r *Renderer) countGlassBatch() {
 	r.frameBatches++
 	r.glassBatches++
 }
+
+// policyPinned reports whether the application fixed the quality level for the
+// whole run. See [Renderer.appendMaterial] for why a material's own level
+// request yields to it.
+func (r *Renderer) policyPinned() bool { return r.policy != nil && r.policy.IsPinned() }

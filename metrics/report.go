@@ -211,7 +211,12 @@ type rendererCounters struct {
 	ShadowOps      uint64 `json:"shadow_ops"`
 	ShadowSharpOps uint64 `json:"shadow_sharp_ops"`
 
-	Glass    glassCounters   `json:"glass"`
+	// Glass is omitted entirely on a run with no material on screen. A block
+	// reporting `"level":"full"` and seven zeroes for an application that
+	// has never drawn a pane says something about the policy's internal
+	// state and nothing about the run, and a reader comparing two reports
+	// has to know that to discount it. No glass, no glass block.
+	Glass    *glassCounters  `json:"glass,omitempty"`
 	Atlas    atlasCounters   `json:"atlas"`
 	Textures textureCounters `json:"textures"`
 	Targets  targetCounters  `json:"targets"`
@@ -237,6 +242,21 @@ type glassCounters struct {
 	// LevelChanges over the whole run. In an adaptive run a large number is
 	// the flicker the hysteresis exists to prevent.
 	LevelChanges uint64 `json:"level_changes"`
+}
+
+// glassOf returns the glass block of a report, or nil when the run drew no
+// material at all. See [report.Renderer].
+func glassOf(rs RendererStats) *glassCounters {
+	if rs.GlassOps == 0 && rs.GlassPasses == 0 && rs.GlassFallbacks == 0 && !rs.GlassPinned {
+		return nil
+	}
+	return &glassCounters{
+		Ops: rs.GlassOps, ReducedOps: rs.GlassReducedOps,
+		FullOps: rs.GlassFullOps, Fallbacks: rs.GlassFallbacks,
+		Passes: rs.GlassPasses, DrawCalls: rs.GlassDrawCalls,
+		Level: rs.GlassLevel, Pinned: rs.GlassPinned,
+		LevelChanges: rs.GlassLevelChanges,
+	}
 }
 
 // targetCounters are the intermediate render target numbers; see
@@ -427,13 +447,7 @@ func (r *Recorder) emit(kind string) {
 			ImageOps:           rs.ImageOps,
 			ShadowOps:          rs.ShadowOps,
 			ShadowSharpOps:     rs.ShadowSharpOps,
-			Glass: glassCounters{
-				Ops: rs.GlassOps, ReducedOps: rs.GlassReducedOps,
-				FullOps: rs.GlassFullOps, Fallbacks: rs.GlassFallbacks,
-				Passes: rs.GlassPasses, DrawCalls: rs.GlassDrawCalls,
-				Level: rs.GlassLevel, Pinned: rs.GlassPinned,
-				LevelChanges: rs.GlassLevelChanges,
-			},
+			Glass:              glassOf(rs),
 			Targets: targetCounters{
 				Leases: rs.Targets.Leases, Reuses: rs.Targets.Reuses,
 				Allocations: rs.Targets.Allocations, Deallocations: rs.Targets.Deallocations,

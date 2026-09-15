@@ -265,11 +265,23 @@ func (p *TargetPool) Tick() {
 
 // Close deallocates every target the pool holds, leased or not. It is for
 // shutdown and for a test that wants to prove the release path runs.
+//
+// A still-leased target is deallocated too, and counted in
+// [TargetStats.ClosedWhileLeased]. That counter is not decoration: after Close
+// the holder of such a lease has a pointer to a deallocated image, and its
+// [TargetPool.Release] is a silent no-op because the record is gone. Closing
+// mid-frame is a caller error, and [Renderer.EndFrame] panics for the same
+// condition, but Close cannot panic — it is the shutdown path and is called
+// from a defer — so it counts instead of pretending the pool was empty.
 func (p *TargetPool) Close() {
 	for i := range p.recs {
-		if p.recs[i].live {
-			p.deallocate(uint32(i))
+		if !p.recs[i].live {
+			continue
 		}
+		if p.recs[i].leased {
+			p.stats.ClosedWhileLeased++
+		}
+		p.deallocate(uint32(i))
 	}
 }
 
@@ -365,6 +377,15 @@ type TargetStats struct {
 	Rejected uint64
 	// Malformed counts leases asked for with a non positive extent.
 	Malformed uint64
+	// ClosedWhileLeased counts targets that [TargetPool.Close] deallocated
+	// while they were still leased.
+	//
+	// It is a caller error and, unlike the same condition at
+	// [Renderer.EndFrame], it cannot be a panic, because Close is the
+	// shutdown path. A non zero value means somebody closed the pool in the
+	// middle of a frame and is holding a pointer to a deallocated image whose
+	// Release will do nothing.
+	ClosedWhileLeased uint64
 	// Targets and Bytes are the current residency, PeakTargets and PeakBytes
 	// their high water marks. Bytes is logical pixel bytes.
 	Targets     int

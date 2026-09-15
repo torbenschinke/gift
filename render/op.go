@@ -210,17 +210,27 @@ type Op struct {
 // PaintBounds returns the rectangle this operation can touch.
 //
 // For every kind but [OpShadow] it is Bounds. For a shadow it is Bounds grown
-// by [ShadowSigmas] times half the blur on each side, which is the "Shadow
-// erweitert die Paint-Bounds" of the project plan, section 8, stated in terms
-// of a single operation. The backend sizes the quad it emits from exactly this
-// rectangle.
+// by [Shadow.Extent], which is the "Shadow erweitert die Paint-Bounds" of the
+// project plan, section 8, stated in terms of a single operation. The backend
+// sizes the quad it emits from exactly this rectangle.
+//
+// Bounds of an [OpShadow] is already the shadow *shape* — the node's
+// rectangle inflated by the spread and moved by the offset; see
+// [Shadow.Shape] — so the extent is all that is left to add. The arithmetic
+// is [Shadow]'s and is not repeated here, which is the point: this and the
+// quad the Ebitengine backend emits must not be able to drift apart, and for
+// a while they were two independent inline copies of the same formula.
 //
 // It is not the *visible* area: a clip may cut it, and a hit test ignores it
-// entirely.
+// entirely. In particular it does not consult the colour: a transparent
+// shadow is skipped by the backend rather than resized here.
 func (o Op) PaintBounds() geom.Rect {
-	if o.Kind != OpShadow || !(o.Blur > 0) {
+	if o.Kind != OpShadow {
 		return o.Bounds
 	}
-	e := ShadowSigmas * o.Blur * 0.5
+	e := Shadow{Blur: o.Blur}.Extent()
+	if !(e > 0) {
+		return o.Bounds
+	}
 	return geom.Rc(o.Bounds.Min.X-e, o.Bounds.Min.Y-e, o.Bounds.Max.X+e, o.Bounds.Max.Y+e)
 }

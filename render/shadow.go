@@ -106,20 +106,17 @@ func (s Shadow) Radius(r float32) float32 {
 	return v
 }
 
-// PaintBounds returns the rectangle the shadow of a node with bounds b
-// touches: the shape, grown by [Shadow.Extent] on all four sides.
+// There is deliberately no Shadow.PaintBounds.
 //
-// This is the "Shadow erweitert die Paint-Bounds" of the project plan,
-// section 8, expressed as a function. Nothing in the layout or the hit test
-// calls it.
-func (s Shadow) PaintBounds(b geom.Rect) geom.Rect {
-	if !s.IsVisible() {
-		return b
-	}
-	e := s.Extent()
-	sh := s.Shape(b)
-	return geom.Rc(sh.Min.X-e, sh.Min.Y-e, sh.Max.X+e, sh.Max.Y+e)
-}
+// There was one, with no caller outside its own test, beside an independent
+// inline reimplementation of the same formula in [Op.PaintBounds] and a third
+// in the Ebitengine backend's quad padding — the review-gate-4 pattern of a
+// tidy exported formulation next to the code that actually runs. The "Shadow
+// erweitert die Paint-Bounds" of the project plan, section 8, is expressed
+// once, in [Op.PaintBounds], which is the form every consumer has: the paint
+// bounds are a property of an emitted operation, whose Bounds is already the
+// shape. [Shadow.Sigma] and [Shadow.Extent] are the shared arithmetic and both
+// are now called from there and from the backend.
 
 // shadowFinite is the local copy of the finiteness test. render has no shared
 // one and a shadow is the only thing in the package that needs it.

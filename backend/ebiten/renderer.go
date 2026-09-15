@@ -79,9 +79,14 @@ type Renderer struct {
 	glassOpts                         eb.DrawTrianglesShaderOptions
 	blurOpts                          eb.DrawTrianglesShaderOptions
 	// copyOpts replace the destination instead of blending into it. Used for
-	// the region copy and for the final scene to screen blit, both of which
-	// are copies and not composites.
+	// the region copy, which genuinely wants replace: the backdrop target is
+	// scratch memory and whatever a previous tenant left in it must not
+	// survive.
 	copyOpts eb.DrawTrianglesOptions
+	// blitOpts composite the scene onto the real target with source over.
+	// See [Renderer.SetTarget] for why that is not interchangeable with
+	// copyOpts.
+	blitOpts eb.DrawTrianglesOptions
 
 	// targets owns the intermediate render targets. See [TargetPool].
 	targets *TargetPool
@@ -299,14 +304,24 @@ func NewRenderer() (*Renderer, error) {
 	r.glyphOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
 	r.imageOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
 	r.imageOpts.Filter = eb.FilterLinear
-	// A copy and not a composite: the region copy of a backdrop and the final
-	// scene to screen blit both want the destination replaced. Blending a
-	// premultiplied copy over an already cleared target would give the same
-	// answer and cost a read of the destination for every pixel of the
-	// screen, every frame a material is on it.
+	// A copy and not a composite, and only for the region copy of a backdrop:
+	// the pooled target is scratch memory, it is bucketed larger than the
+	// request, and replacing it is the point.
 	r.copyOpts.Blend = eb.BlendCopy
 	r.copyOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
 	r.copyOpts.Filter = eb.FilterNearest
+	// The scene to screen blit is a *composite*, source over, and that is a
+	// semantic choice and not a performance one. Porter-Duff over is
+	// associative, so compositing the scene onto the destination is pixel
+	// identical to having drawn the frame onto the destination directly —
+	// which is exactly what a frame without a material does. A copy would
+	// make the same display list mean two different things depending on
+	// whether a material happened to be present, and would erase whatever
+	// the caller had already put in the target. The price is one destination
+	// read per pixel per glass frame; see [Renderer.SetTarget].
+	r.blitOpts.Blend = eb.BlendSourceOver
+	r.blitOpts.ColorScaleMode = eb.ColorScaleModePremultipliedAlpha
+	r.blitOpts.Filter = eb.FilterNearest
 	// A blur pass replaces its target rather than blending into it. There is
 	// deliberately no Filter here and there could not be one:
 	// DrawTrianglesShaderOptions has no such field, because Ebitengine samples
@@ -330,6 +345,16 @@ func NewRenderer() (*Renderer, error) {
 
 // SetTarget selects the image the next frame is drawn into. The backend does
 // not own it and never keeps it beyond [Renderer.EndFrame].
+//
+// # What the target holds afterwards
+//
+// The frame is composited onto dst, source over, whatever it contains.
+// Nothing in dst that the frame did not draw over is disturbed, and that is
+// true whether or not the frame contains a material: a frame with a material
+// is drawn into an offscreen and composited back with the same operator, so
+// the two cases are pixel identical. Ebitengine clears the real screen before
+// every Draw anyway; a caller that hands over its own image — a golden
+// harness, for instance — keeps whatever it put there.
 func (r *Renderer) SetTarget(dst *eb.Image) { r.screen, r.dst = dst, dst }
 
 // Targets returns the intermediate render target pool, for [TargetStats] and
@@ -511,16 +536,16 @@ func (r *Renderer) ensureScene(l *render.List) {
 	if r.scene != nil || r.screen == nil || r.targets == nil {
 		return
 	}
-	if !listHasMaterial(l) {
+	b := r.screen.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 {
+		return
+	}
+	if !listHasVisibleMaterial(l, geom.Rc(0, 0, float32(w), float32(h))) {
 		return
 	}
 	if r.frameBatches != 0 || len(r.idx) != 0 {
 		r.glassLate++
-		return
-	}
-	b := r.screen.Bounds()
-	w, h := b.Dx(), b.Dy()
-	if w <= 0 || h <= 0 {
 		return
 	}
 	img := r.targets.Acquire(w, h)
@@ -541,18 +566,49 @@ func (r *Renderer) ensureScene(l *render.List) {
 	r.dst = img
 }
 
-// listHasMaterial reports whether l contains an operation that needs a
-// backdrop.
-func listHasMaterial(l *render.List) bool {
+// listHasVisibleMaterial reports whether l contains a material that will
+// actually be drawn inside screen.
+//
+// # Why it is not merely "is there an OpMaterial"
+//
+// Because the project plan, section 11, as amended after WU-S, draws the line
+// exactly here: the screen sized scene target is paid "nur solange ein
+// Material *sichtbar* ist - nicht bloss, solange eines in der Display-Liste
+// steht. Wer diesen Unterschied nicht erzwingt, zahlt bei 1080p acht Megabyte,
+// ein Clear und einen Vollbild-Blit je Frame fuer ein Panel, das niemand
+// sieht." A glass header scrolled out of its clip is precisely that panel.
+//
+// So the scan applies the same three tests [Renderer.appendMaterial] applies
+// — empty bounds, empty clip, nothing surviving the clip and the screen — and
+// it applies them in the same order and with the same arithmetic, so the two
+// cannot disagree about whether a material is going to draw. It is still one
+// pass over the operations with no allocation, and it short circuits on the
+// first material that survives.
+func listHasVisibleMaterial(l *render.List, screen geom.Rect) bool {
 	if l.MaterialsLen() <= 1 {
 		// The side table holds nothing but its sentinel, so no painter added
 		// a material. One integer compare for the overwhelmingly common case.
 		return false
 	}
 	for _, op := range l.Ops() {
-		if op.Kind == render.OpMaterial && op.Material != 0 {
-			return true
+		if op.Kind != render.OpMaterial || op.Material == 0 {
+			continue
 		}
+		if l.Material(op.Material).Kind != render.MaterialGlass {
+			continue
+		}
+		if op.Bounds.IsEmpty() {
+			continue
+		}
+		clip := l.Clip(op.Clip)
+		if clip.IsEmpty() {
+			continue
+		}
+		region := l.Xform(op.Xform).TransformRect(op.Bounds).Canon()
+		if region.Intersect(clip).Intersect(screen).IsEmpty() {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -569,7 +625,7 @@ func (r *Renderer) EndFrame() {
 	if r.scene != nil {
 		if r.screen != nil {
 			r.glassPass(glassPassScene)
-			r.blitCopy(r.screen, r.scene, geom.Rc(0, 0, float32(r.sceneW), float32(r.sceneH)), 0, 0)
+			r.blitOver(r.screen, r.scene, geom.Rc(0, 0, float32(r.sceneW), float32(r.sceneH)), 0, 0)
 		}
 		r.targets.Release(r.scene)
 		r.scene = nil
@@ -629,10 +685,9 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 		// evaluated analytically in the shape shader, so a shadow is one quad
 		// in the same batch as everything else. See shape.kage.
 		radius = op.CornerRadius
-		sigma = op.Blur * 0.5
-		if !(sigma > 0) {
-			sigma = 0
-		}
+		// Through render.Shadow and not inline: the exported formulation and
+		// the renderer's must be one piece of arithmetic, or they drift.
+		sigma = render.Shadow{Blur: op.Blur}.Sigma()
 	case render.OpGlyphs:
 		r.appendGlyphs(l, op)
 		return
@@ -701,10 +756,11 @@ func (r *Renderer) appendOp(l *render.List, op render.Op) {
 	}
 	if sigma > 0 {
 		// A shadow needs no antialiasing pad — it has no hard edge — but it
-		// does need room for the falloff. The shader measures in device
-		// pixels, so the device pad is ShadowSigmas*sigma*sr and the local pad
-		// is that divided by the scale of the axis.
-		dev := render.ShadowSigmas * sigma * sr
+		// does need room for the falloff. [render.Shadow.Extent] is how far
+		// the drawn falloff reaches in logical pixels; the shader measures in
+		// device pixels, so the device pad is that times the scale and the
+		// local pad is the device pad divided by the scale of the axis.
+		dev := render.Shadow{Blur: op.Blur}.Extent() * sr
 		padX, padY = dev/sx, dev/sy
 	}
 	quad := geom.Rect{

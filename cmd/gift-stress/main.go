@@ -1,6 +1,6 @@
 // Command gift-stress puts the stress scene of internal/stress into a window.
 //
-// It is a measurement harness, not an example. Read cmd/example-layout to
+// It is a measurement harness, not an example. Read cmd/example-counter to
 // learn gift; read this only to reproduce a number. The scene is the several
 // hundred node stack scene the project plan, section 12, "Go/No-Go vor
 // Schritt 2", criterion 2, asks to be held at sixty frames per second on a

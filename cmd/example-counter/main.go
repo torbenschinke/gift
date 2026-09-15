@@ -1,9 +1,9 @@
-// Command example-layout is the first gift program to read: the counter from
+// Command example-counter is the first gift program to read: the counter from
 // the project plan, section 4, with the styling and the keyboard handling that
 // make it a real control rather than a click handler.
 //
-//	go run ./cmd/example-layout
-//	GIFT_METRICS=1 go run -tags giftmetrics ./cmd/example-layout
+//	go run ./cmd/example-counter
+//	GIFT_METRICS=1 go run -tags giftmetrics ./cmd/example-counter
 //
 // Click the buttons, or tab to one and press space or enter. gift ships no
 // font, so loadFont finds one; GIFT_FONT overrides the search.
@@ -22,12 +22,12 @@ import (
 
 func main() {
 	if err := loadFont(); err != nil {
-		fmt.Fprintln(os.Stderr, "example-layout:", err)
+		fmt.Fprintln(os.Stderr, "example-counter:", err)
 		os.Exit(1)
 	}
 	app := gift.New(gift.Options{Root: counter})
 	if err := backend.Run(app, backend.Config{Title: "gift counter", Width: 480, Height: 280}); err != nil {
-		fmt.Fprintln(os.Stderr, "example-layout:", err)
+		fmt.Fprintln(os.Stderr, "example-counter:", err)
 		os.Exit(1)
 	}
 }

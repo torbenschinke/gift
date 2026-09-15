@@ -1,6 +1,8 @@
 package ebiten
 
 import (
+	"log/slog"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -250,10 +252,15 @@ func TestMaterialEntirelyOutsideItsClipDrawsNothing(t *testing.T) {
 	l.PopClip()
 	submit(t, r, c, &l)
 
-	// Only the scene blit, which the frame pays because the list declared a
-	// material even though that material turned out to be invisible.
-	if got := trace(); got != "scene" {
-		t.Errorf("passes %q, want only the scene blit", got)
+	// Nothing at all: no scene target, no clear, no full screen blit. The
+	// material is in the list but is not visible, and the project plan,
+	// section 11, as amended after WU-S, makes that distinction the
+	// condition for paying for the screen sized target.
+	if got := trace(); got != "" {
+		t.Errorf("passes %q, want none: an invisible material costs no scene target", got)
+	}
+	if n := r.Targets().Stats().Leases; n != 0 {
+		t.Errorf("%d target lease(s) for a material nobody can see, want 0", n)
 	}
 	s := r.Stats()
 	if s.GlassOps != 0 {
@@ -521,6 +528,94 @@ func TestGlassPolicyAreaBudget(t *testing.T) {
 	}
 }
 
+// TestGlassPolicyDoesNotFlickerOnArea is the mirror of
+// [TestGlassPolicyDoesNotFlicker] for the second signal.
+//
+// The interval half of the policy had a carefully argued down/up gap and a
+// dwell; the area half had one threshold for both the immediate veto and the
+// climb-back gate, and the suite tested only the safe direction. With a
+// material area oscillating by four percent around the 25 % limit — which is
+// an ordinary panel over a scrolling gallery — that produced 39 level changes
+// in thirty simulated seconds, one every 0.77 s. The eye is very good at
+// seeing a background change and very bad at seeing how blurred it is, so
+// that is the worst failure mode the policy has.
+//
+// The frame interval is held comfortably healthy throughout, so the only
+// signal moving is the area and the number below is attributable to it.
+func TestGlassPolicyDoesNotFlickerOnArea(t *testing.T) {
+	p := NewGlassPolicy(GlassPolicyConfig{})
+	// ±4 % around the limit, in the units BeginFrame takes: a screen area of
+	// 1000 and material areas of 240 and 260, that is 24 % and 26 %.
+	areas := []float64{260, 240, 258, 242, 255, 245}
+	const frames = 1800 // thirty seconds at sixty hertz
+	for i := range frames {
+		p.RecordInterval(16 * time.Millisecond)
+		p.AddArea(areas[i%len(areas)])
+		p.BeginFrame(1000)
+	}
+	if got := p.Stats().Changes; got > 1 {
+		t.Errorf("the level changed %d times in thirty seconds of an area oscillating around "+
+			"the limit; the area band and the area window exist to make that at most 1.\n"+
+			"stats: %+v", got, p.Stats())
+	}
+	// And the level it settled on is the safe one: the area exceeds the veto
+	// threshold in half the frames, so Full is not available.
+	if got := p.Level(); got != render.Reduced {
+		t.Errorf("the policy settled on %v, want reduced: the area is over the limit half the time", got)
+	}
+}
+
+// TestGlassPolicyAreaRecoversWhenTheAreaReallyShrinks is the other side of the
+// same coin. A band and a window that never let the policy climb back would
+// be a policy that only goes down, which is not hysteresis but a ratchet.
+func TestGlassPolicyAreaRecoversWhenTheAreaReallyShrinks(t *testing.T) {
+	p := NewGlassPolicy(GlassPolicyConfig{})
+	// Over the limit long enough to be vetoed.
+	for range 10 {
+		p.RecordInterval(16 * time.Millisecond)
+		p.AddArea(300)
+		p.BeginFrame(1000)
+	}
+	if p.Level() != render.Reduced {
+		t.Fatalf("the veto did not fire; level is %v", p.Level())
+	}
+	// The panel closed: well under the up threshold, for longer than the
+	// dwell and the area window together.
+	for range DefaultGlassDwellFrames + DefaultGlassWindow + 10 {
+		p.RecordInterval(16 * time.Millisecond)
+		p.AddArea(50)
+		p.BeginFrame(1000)
+	}
+	if got := p.Level(); got != render.Full {
+		t.Errorf("the policy stayed at %v after the material area fell to 5 %% for two seconds; "+
+			"hysteresis must not be a ratchet.\nstats: %+v", got, p.Stats())
+	}
+}
+
+// TestGlassPolicyAreaWindowIsWhatStopsTheFlicker isolates the second half of
+// the fix. A band alone is not enough: with AreaWindow at one frame the climb
+// back is decided on whatever the area happened to be in the single frame the
+// dwell expired on, and the oscillation returns. This is the measurement the
+// reviewer took, reproduced as a test so that removing the window is a
+// failure rather than a regression nobody sees.
+func TestGlassPolicyAreaWindowIsWhatStopsTheFlicker(t *testing.T) {
+	// AreaWindow: -1 means one frame, which is the old behaviour, and
+	// UpAreaFraction equal to the old single threshold.
+	p := NewGlassPolicy(GlassPolicyConfig{AreaWindow: -1, UpAreaFraction: 0.2499})
+	areas := []float64{260, 240, 258, 242, 255, 245}
+	for i := range 1800 {
+		p.RecordInterval(16 * time.Millisecond)
+		p.AddArea(areas[i%len(areas)])
+		p.BeginFrame(1000)
+	}
+	if got := p.Stats().Changes; got < 10 {
+		t.Fatalf("the degenerate configuration produced only %d changes; this test no longer "+
+			"reproduces the defect it pins and has stopped being evidence", got)
+	}
+	t.Logf("with a one frame area gate the level changes %d times in thirty seconds",
+		p.Stats().Changes)
+}
+
 // TestPinnedGlassLevelNeverChanges. The project plan, section 13, makes
 // pinning mandatory for comparable measurements, which is worth nothing unless
 // a pin actually holds under exactly the conditions that would otherwise move
@@ -691,12 +786,16 @@ func TestEffectiveGlassLevelIsVisible(t *testing.T) {
 	}
 }
 
-// TestMaterialLevelOverridesThePolicy. A material may pin its own level, which
-// is what lets example-effects show both side by side and what section 13
-// needs for an isolated measurement.
-func TestMaterialLevelOverridesThePolicy(t *testing.T) {
+// TestMaterialLevelOverridesAnAdaptivePolicy. A material may pin its own
+// level, which is what lets example-effects show both side by side and what
+// section 13 needs for an isolated measurement.
+func TestMaterialLevelOverridesAnAdaptivePolicy(t *testing.T) {
 	r, c := sceneRenderer(t, 800, 600)
-	r.PinGlassQuality(render.Reduced)
+	// Adaptive, and forced to Reduced so that the two panels below would
+	// otherwise be identical.
+	r.SetGlassPolicy(NewGlassPolicy(GlassPolicyConfig{}))
+	r.GlassPolicy().Pin(render.Reduced)
+	r.GlassPolicy().Unpin()
 	var l render.List
 	l.Reset()
 	addGlass(&l, geom.Rc(0, 0, 200, 100), 8, render.NewGlass().Quality(render.Full).Blur(16))
@@ -706,6 +805,32 @@ func TestMaterialLevelOverridesThePolicy(t *testing.T) {
 	s := r.Stats()
 	if s.GlassFullOps != 1 || s.GlassReducedOps != 1 {
 		t.Errorf("full=%d reduced=%d, want 1 each", s.GlassFullOps, s.GlassReducedOps)
+	}
+}
+
+// TestAPinnedPolicyBeatsAMaterialLevel is the other half, and the one that was
+// wrong: a material's own level used to override a pinned *policy*, after
+// which [RendererStats.GlassLevel] reported a level the frame had not used.
+//
+// The project plan, section 13, makes a fixed level a precondition of
+// comparing one measurement with another. A pin that a display list can
+// silently escape is not a fixed level.
+func TestAPinnedPolicyBeatsAMaterialLevel(t *testing.T) {
+	r, c := sceneRenderer(t, 800, 600)
+	r.PinGlassQuality(render.Reduced)
+	var l render.List
+	l.Reset()
+	addGlass(&l, geom.Rc(0, 0, 200, 100), 8, render.NewGlass().Quality(render.Full).Blur(16))
+	addGlass(&l, geom.Rc(0, 200, 200, 300), 8, render.NewGlass().Quality(render.Adaptive))
+	submit(t, r, c, &l)
+
+	s := r.Stats()
+	if s.GlassReducedOps != 2 || s.GlassFullOps != 0 {
+		t.Errorf("reduced=%d full=%d, want 2 and 0: a pinned policy is not negotiable",
+			s.GlassReducedOps, s.GlassFullOps)
+	}
+	if s.GlassLevel != render.Reduced || !s.GlassPinned {
+		t.Errorf("GlassLevel=%v pinned=%v, want reduced and true", s.GlassLevel, s.GlassPinned)
 	}
 }
 
@@ -756,4 +881,244 @@ func TestGlassSubmitPathIsAllocationFree(t *testing.T) {
 	if got := r.Targets().Stats().Allocations; got > 5 {
 		t.Errorf("%d target allocations over %d frames, want at most 5", got, 232)
 	}
+}
+
+// TestInvisibleMaterialCostsNoScreenTarget is the project plan, section 11, as
+// amended after WU-S, expressed as a number of allocations.
+//
+// The scan that decides whether a frame needs the screen sized scene target
+// used to vote yes on the mere presence of an OpMaterial in the list, before
+// any operation had been translated, so it never learned that the material was
+// clipped away, had empty bounds or was off screen. Measured: one glass op at
+// (1000,1000) inside a 10x10 clip still leased a full screen target. At 1080p
+// that is eight megabytes, a full screen clear and a full screen blit every
+// frame for a glass header somebody scrolled out of view.
+func TestInvisibleMaterialCostsNoScreenTarget(t *testing.T) {
+	cases := map[string]func(l *render.List){
+		"clipped away": func(l *render.List) {
+			l.PushClip(geom.Rc(0, 0, 10, 10))
+			l.Add(render.Op{
+				Kind: render.OpMaterial, Bounds: geom.Rc(1000, 1000, 1200, 1100),
+				Clip:     l.CurrentClip(),
+				Material: l.AddMaterial(render.NewGlass().Material()),
+			})
+			l.PopClip()
+		},
+		"empty bounds": func(l *render.List) {
+			addGlass(l, geom.Rc(20, 20, 20, 120), 8, render.NewGlass())
+		},
+		"off screen": func(l *render.List) {
+			addGlass(l, geom.Rc(2000, 2000, 2200, 2100), 8, render.NewGlass())
+		},
+	}
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, c := sceneRenderer(t, 800, 600)
+			var l render.List
+			l.Reset()
+			build(&l)
+			submit(t, r, c, &l)
+
+			ts := r.Targets().Stats()
+			if ts.Leases != 0 || ts.Allocations != 0 {
+				t.Errorf("%d lease(s) and %d allocation(s) for a material nobody can see, want none: %+v",
+					ts.Leases, ts.Allocations, ts)
+			}
+			if got := r.Stats().GlassPasses; got != 0 {
+				t.Errorf("%d material pass(es), want none", got)
+			}
+		})
+	}
+
+	// And the control: a material that *is* visible still pays for the
+	// target, or the test above would pass on a renderer that had stopped
+	// supporting glass altogether.
+	t.Run("visible", func(t *testing.T) {
+		r, c := sceneRenderer(t, 800, 600)
+		var l render.List
+		l.Reset()
+		addGlass(&l, geom.Rc(20, 20, 220, 120), 8, render.NewGlass())
+		submit(t, r, c, &l)
+		if got := r.Targets().Stats().Leases; got == 0 {
+			t.Error("a visible material leased no target at all")
+		}
+	})
+}
+
+// TestGlassStylePackingBoundaries checks the packing against the unpacking the
+// shader performs, at the extremes the clamps allow.
+//
+// The comment on packGlassStyle used to claim a maximum of 16777215, which
+// describes a scheme with a tighter margin than the code has: the refraction
+// field is quantised to 63, not 255, so the real maximum is 4194303. The
+// packing is sound either way, and this is the arithmetic that says so rather
+// than a sentence.
+func TestGlassStylePackingBoundaries(t *testing.T) {
+	// unpack mirrors glass.kage exactly.
+	unpack := func(p float32) (r, h, g float32) {
+		rq := float32(math.Floor(float64(p) / 65536))
+		rest := p - rq*65536
+		hq := float32(math.Floor(float64(rest) / 256))
+		gq := rest - hq*256
+		return rq, hq / 255, gq / 255
+	}
+	if got := packGlassStyle(63, 1, 1); got != 4194303 {
+		t.Errorf("the largest packed value is %v, want 4194303", got)
+	}
+	if got := packGlassStyle(1e9, 1e9, 1e9); got != 4194303 {
+		t.Errorf("an out of range packing gave %v, want the clamped maximum 4194303", got)
+	}
+	for _, c := range []struct{ r, h, g float32 }{
+		{0, 0, 0}, {63, 1, 1}, {1, 0, 1}, {62, 0.5, 0.25}, {0, 1, 0},
+	} {
+		p := packGlassStyle(c.r, c.h, c.g)
+		if float64(p) != math.Trunc(float64(p)) || p > 1<<24-1 {
+			t.Fatalf("packed %v is not an exact integer below 2^24-1", p)
+		}
+		r, h, g := unpack(p)
+		if r != c.r {
+			t.Errorf("refraction %v round tripped to %v", c.r, r)
+		}
+		if d := h - c.h; d > 1.0/255 || d < -1.0/255 {
+			t.Errorf("highlight %v round tripped to %v", c.h, h)
+		}
+		if d := g - c.g; d > 1.0/255 || d < -1.0/255 {
+			t.Errorf("grain %v round tripped to %v", c.g, g)
+		}
+	}
+}
+
+// TestRefractionIsScaledToDevicePixels. The shader adds the refraction to a
+// device space sample position, so it has to arrive in device pixels like the
+// corner radius and the blur radius beside it. It was packed raw, which was
+// latent only because nothing in gift emits a scale transform yet — the same
+// class of defect WU-E fixed for the shape shader.
+func TestRefractionIsScaledToDevicePixels(t *testing.T) {
+	packedAt := func(scale float32) float32 {
+		r, _ := newHeadlessRenderer(t)
+		r.SetTarget(eb.NewImage(800, 600))
+		var got float32
+		var stage glassPass
+		r.passFn = func(p glassPass) { stage = p }
+		r.drawFn = func(m Material, verts []eb.Vertex, idx []uint32) {
+			if stage == glassPassComposite && len(verts) == 4 {
+				got = verts[0].Custom3
+			}
+		}
+		var l render.List
+		l.Reset()
+		xf := l.PushXform(geom.Affine2D{A: scale, D: scale})
+		l.Add(render.Op{
+			Kind: render.OpMaterial, Bounds: geom.Rc(0, 0, 100, 50), CornerRadius: 8,
+			Xform:    xf,
+			Clip:     l.CurrentClip(),
+			Material: l.AddMaterial(render.NewGlass().Refraction(6).Highlight(0).Grain(0).Material()),
+		})
+		r.BeginFrame(geom.Sz(800, 600))
+		r.Submit(&l)
+		r.EndFrame()
+		return got
+	}
+	one, two := packedAt(1), packedAt(2)
+	// The refraction occupies the high field, so the packed value is the
+	// device refraction times 65536 when highlight and grain are zero.
+	if want := float32(6 * 65536); one != want {
+		t.Errorf("at scale 1 the packed style is %v, want %v", one, want)
+	}
+	if want := float32(12 * 65536); two != want {
+		t.Errorf("at scale 2 the packed style is %v, want %v; refraction is a length and the "+
+			"shader consumes it in device pixels", two, want)
+	}
+}
+
+// TestGlassFallbackIsVisibleForAClearPane is the visibility half of the
+// degradation contract.
+//
+// drawGlassFallback used to return early when the tint was fully transparent,
+// so a clear pane that lost its backdrop drew absolutely nothing while a
+// default tinted one drew a ghost. Both are degradations, both are counted,
+// and only one of them was visible — the other left a hole in the layout whose
+// only evidence was a counter behind the giftmetrics build tag.
+func TestGlassFallbackIsVisibleForAClearPane(t *testing.T) {
+	// No target at all, so there is no scene and every material degrades.
+	r, c := newHeadlessRenderer(t)
+	var l render.List
+	l.Reset()
+	addGlass(&l, geom.Rc(10, 10, 110, 60), 8,
+		render.NewGlass().Tint(render.RGBA(0, 0, 0, 0)))
+	submit(t, r, c, &l)
+
+	s := r.Stats()
+	if s.GlassFallbacks != 1 {
+		t.Fatalf("GlassFallbacks = %d, want 1", s.GlassFallbacks)
+	}
+	if len(c.mats) != 1 || c.mats[0] != MaterialShape {
+		t.Fatalf("the fallback issued batches %v, want one shape batch", c.mats)
+	}
+	verts := c.verts
+	if len(verts) != 4 {
+		t.Fatalf("the fallback emitted %d vertices, want a quad; a counted degradation that "+
+			"draws nothing is not visible", len(verts))
+	}
+	if verts[0].ColorA <= 0 {
+		t.Errorf("the fallback quad is fully transparent (alpha %v); a clear pane without a "+
+			"backdrop must still show that there is a pane", verts[0].ColorA)
+	}
+}
+
+// TestGlassLevelChangeIsReportedOnceOutOfBand is the logging half.
+//
+// The project plan, section 15, asks for both a counter in the hot path *and*
+// a `Warn` on degraded quality, naming a fall back to Glass Reduced as its
+// example. Nothing logged a downgrade at all. The frame path still only stores
+// an enum and a bool; this is the drain that turns it into one line.
+func TestGlassLevelChangeIsReportedOnceOutOfBand(t *testing.T) {
+	var buf strings.Builder
+	g := &game{
+		r:   mustRenderer(t),
+		log: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+	// Nothing has changed yet, so nothing is logged and no attribute is even
+	// constructed.
+	g.logGlassLevel()
+	if buf.Len() != 0 {
+		t.Fatalf("an unchanged policy logged %q", buf.String())
+	}
+
+	p := g.r.GlassPolicy()
+	p.setLevel(render.Reduced)
+	g.logGlassLevel()
+	first := buf.String()
+	if !strings.Contains(first, "level=WARN") || !strings.Contains(first, "degraded") {
+		t.Errorf("the downgrade was logged as %q, want a Warn naming the degradation", first)
+	}
+	if !strings.Contains(first, "level=reduced") {
+		t.Errorf("the downgrade line %q does not name the level", first)
+	}
+
+	// Once per change and not once per frame: a hundred more updates with no
+	// further change say nothing at all.
+	for range 100 {
+		g.logGlassLevel()
+	}
+	if got := buf.String(); got != first {
+		t.Errorf("a level change was reported more than once:\n%s", got)
+	}
+
+	// And the way back is Info, not Warn: restored quality is not a warning.
+	p.setLevel(render.Full)
+	g.logGlassLevel()
+	rest := strings.TrimPrefix(buf.String(), first)
+	if !strings.Contains(rest, "level=INFO") || !strings.Contains(rest, "restored") {
+		t.Errorf("the upgrade was logged as %q, want an Info naming the restoration", rest)
+	}
+}
+
+func mustRenderer(t testing.TB) *Renderer {
+	t.Helper()
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatalf("NewRenderer: %v", err)
+	}
+	return r
 }

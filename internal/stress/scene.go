@@ -5,7 +5,8 @@
 //
 // # Why it is here and not in an example
 //
-// It used to be cmd/example-layout, where it was doing two incompatible jobs.
+// It used to be the body of the layout example, where it was doing two
+// incompatible jobs.
 // A benchmark scene wants knobs, hundreds of nodes and determinism; an
 // example wants to be read in one sitting. The scene lost the second contest,
 // so it moved here, to a package that is honest about being a fixture:

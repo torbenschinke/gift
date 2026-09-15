@@ -129,7 +129,10 @@ func TestShadowExtendsPaintBoundsButNotLayout(t *testing.T) {
 	// by three sigma, plus the offset downwards.
 	node := b.Ops()[1].Bounds
 	pb := b.Ops()[0].PaintBounds()
-	if want := planShadow.PaintBounds(node); pb != want {
+	// Computed the way a consumer has to: the shape the shadow is the blurred
+	// image of, grown by the extent. There is one formulation of that in
+	// gift and it lives on the operation; see [render.Op.PaintBounds].
+	if want := grownBy(planShadow.Shape(node), planShadow.Extent()); pb != want {
 		t.Errorf("shadow PaintBounds = %v, want %v", pb, want)
 	}
 	if !(pb.Min.X < node.Min.X && pb.Min.Y < node.Min.Y &&
@@ -310,3 +313,9 @@ func TestShadowRejectsNonsense(t *testing.T) {
 }
 
 func nan32() float32 { var z float32; return z / z }
+
+// grownBy inflates a rectangle on all four sides. The shadow tests want it and
+// geom has no such helper.
+func grownBy(r geom.Rect, e float32) geom.Rect {
+	return geom.Rc(r.Min.X-e, r.Min.Y-e, r.Max.X+e, r.Max.Y+e)
+}

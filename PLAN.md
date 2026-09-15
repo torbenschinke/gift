@@ -61,16 +61,23 @@ gift/                       Modulwurzel, Package gift
   render/                   Backend-Vertrag, Display-Listen, Ressourcen
   backend/
     ebiten/                 Fenster, Eingabe, Text und GPU-Ausgabe
+  metrics/                  Messung und Bericht, hinter Build-Tag giftmetrics
+  gifttest/                 Testharness fuer Anwendungen, siehe Abschnitt 13
   internal/
     scene/                  Indexierte retained Nodes und Handles
     layout/                 Layoutalgorithmen, Masonry-/Zeilenindex
     text/                   Shaping, Messung, Zeilenumbruch, Glyphenschluessel
+    stress/                 Parametrisierte Lastszene als Fixture
   cmd/
     example-counter/
-    example-layout/
     example-gallery/
     example-effects/
+    gift-stress/
 ```
+
+Stand nach Review-Gate 6. `metrics`, `gifttest` und `internal/stress` sind
+nach dem urspruenglichen Entwurf dazugekommen und standen bisher nicht im
+Baum. `cmd/example-layout` ist entfallen; siehe Abschnitt 12 Schritt 2.
 
 Die Modulwurzel wird als `github.com/torbenschinke/gift` importiert. Kein
 weiteres Verzeichnis gift innerhalb des Moduls und kein generischer
@@ -811,7 +818,7 @@ pruefen. View-/Scope-Vertrag, State/Binding, retained Speicher, Frame-Modell aus
 Abschnitt 6 und Backend-Vertrag implementieren. VStack, HStack, Spacer, Frame,
 Padding und Alignment umsetzen.
 
-Ergebnis: example-layout mit stabiler Identitaet und rendererunabhaengigen
+Ergebnis: ein Layout-Beispiel mit stabiler Identitaet und rendererunabhaengigen
 Layout-/State-Tests. Keine leeren Public-Packages nur zur Vorwegnahme des Plans.
 
 **Go/No-Go vor Schritt 2.** Alle vier Kriterien muessen erfuellt sein:

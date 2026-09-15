@@ -151,11 +151,20 @@
 // with "atlas: a screen image cannot be created as a source" the moment the
 // screen image is used as a draw source, so the pixels under a material cannot
 // be copied off the screen at all. gift therefore renders a frame that
-// contains a material into one screen sized offscreen and blits that to the
-// screen at the end. The costs — one screen sized target, one clear and one
-// blit, all of them only while a material is on screen — are stated on
-// [Renderer.ensureScene] rather than buried. The region copy is still a region
-// copy and the blur chain is still confined to the region.
+// contains a material into one screen sized offscreen and composites that onto
+// the screen at the end. The costs — one screen sized target, one clear and
+// one blit, all of them only while a material is *visible*, not merely while
+// one is in the display list — are stated on [Renderer.ensureScene] rather than
+// buried. The region copy is still a region copy and the blur chain is still
+// confined to the region.
+//
+// The final blit is source over and not a replace, which is a semantic point
+// and not a performance one: Porter-Duff over is associative, so compositing
+// the offscreen onto the target gives exactly the pixels drawing straight onto
+// the target would have given. A copy made the same display list mean two
+// different things depending on whether a material happened to be in it, and
+// erased whatever the caller had already put in the target. See
+// [Renderer.SetTarget].
 //
 // Two more numbers worth knowing before using it. A material region is a
 // *batching barrier*: everything before it has to reach the target before its
