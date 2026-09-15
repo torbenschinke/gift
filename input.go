@@ -300,7 +300,28 @@ type EventContext struct {
 
 // Bounds returns the absolute rectangle of the receiving node, as computed by
 // the last layout pass.
+//
+// It is in *local* space and is therefore not the space [Event.Pos] lives in:
+// the two are the same rectangle until something above the node scrolls, and
+// then they differ by that offset. An interactor that compares a pointer
+// position against a rectangle of its own wants [EventContext.DeviceBounds].
 func (c *EventContext) Bounds() geom.Rect { return c.app.store.Get(c.cur).Bounds }
+
+// DeviceBounds returns the rectangle of the receiving node mapped through the
+// transforms of its ancestors, which is the space [Event.Pos] lives in.
+//
+// It is the input half of [PaintContext.DeviceBounds] and exists for the same
+// reason: the two rectangles are the same one until something above the node
+// scrolls, and then they differ by that offset. An interactor that compares a
+// pointer position against a rectangle of its own — a scroll indicator does —
+// has to compare in one space, and [Event.Pos] fixes which one.
+func (c *EventContext) DeviceBounds() geom.Rect {
+	_, m, ok := c.app.deviceSpace(c.cur)
+	if !ok {
+		return geom.Rect{}
+	}
+	return m.TransformRect(c.app.store.Get(c.cur).Bounds)
+}
 
 // Interaction returns the hover, press, focus and disabled state gift
 // maintains for the receiving node.
@@ -417,12 +438,42 @@ type pointer struct {
 	// capture is the node that took the press, zero while no button is down.
 	capture scene.Handle
 
-	down      bool
-	downPos   geom.Point
-	downAt    time.Duration
-	dragged   bool
+	down    bool
+	downPos geom.Point
+	downAt  time.Duration
+	// dragged says the pointer has travelled further than [DragSlop] since
+	// the press. It is set in [App.PointerMove], read by [App.pointerEvent]
+	// into [Event.Dragged], and cleared by [pointer.endGesture] — that is,
+	// by every one of the three ways a gesture can end, and not only by the
+	// next press.
+	//
+	// It used to be cleared in [App.PointerDown] alone. A touch escaped the
+	// consequence because its slot is zeroed on release, but the mouse keeps
+	// slot zero for the life of the process, so after one drag every
+	// button-less hover move carried Dragged and a scroll container read it
+	// as the continuation of a drag. See [pointer.endGesture].
+	dragged bool
+	// longFired says [EventLongPress] has already been delivered for the
+	// current press. It is deliberately *not* cleared by
+	// [pointer.endGesture]: every reader of it in [App.BeginInput] is behind
+	// a p.down test, so a stale true cannot be observed between a release and
+	// the next press, and [App.PointerDown] clears it before the press it
+	// belongs to can be timed. Clearing it in a second place would look
+	// symmetric and would pin no behaviour any test could show.
 	longFired bool
 	insideCap bool
+}
+
+// endGesture records that the pointer no longer has a gesture in flight.
+//
+// It is called by [App.PointerUp] and [App.PointerCancel] *after* the
+// terminating event has been delivered, because that event still describes the
+// gesture that is ending: a button declines a release whose [Event.Dragged] is
+// set, and clearing the flag first would turn a drag that ended over a button
+// into a click on it.
+func (p *pointer) endGesture() {
+	p.down = false
+	p.dragged = false
 }
 
 // inputState is everything the dispatcher remembers between events. It is a
@@ -446,6 +497,11 @@ type inputState struct {
 	// animation. It is a reused slice compacted in place, so a fling costs
 	// no allocation per frame; see [App.tickScrolls].
 	flings []scene.Handle
+
+	// indicators is the set of scroll containers inside their
+	// [ScrollIndicatorLinger] window. Same shape and same reason as flings;
+	// see [App.tickIndicators].
+	indicators []scene.Handle
 
 	// focusScan is the reusable stack of the focus traversal; see
 	// [App.focusNeighbour].
@@ -471,6 +527,7 @@ func (a *App) BeginInput(now time.Duration) {
 	a.assertInputPhase("BeginInput")
 	a.in.now = now
 	a.tickScrolls(now)
+	a.tickIndicators(now)
 	for i := range a.in.pointers {
 		p := &a.in.pointers[i]
 		if !p.active || !p.down || p.longFired || p.dragged {
@@ -597,6 +654,10 @@ func (a *App) PointerDown(id PointerID, kind PointerKind, pos geom.Point) {
 // The event goes to the capturing node with [Event.Inside] telling it whether
 // the release happened over it. A touch pointer stops existing here; the
 // mouse keeps its position and its hover.
+//
+// It also ends the gesture, which for the mouse is not the same thing as
+// ceasing to exist: see [pointer.endGesture] for what that costs when it is
+// forgotten.
 func (a *App) PointerUp(id PointerID, kind PointerKind, pos geom.Point) {
 	a.assertInputPhase("PointerUp")
 	p := a.pointerFor(id, kind, false)
@@ -617,6 +678,9 @@ func (a *App) PointerUp(id PointerID, kind PointerKind, pos geom.Point) {
 		e.Inside = inside
 		a.deliver(cap, e, false)
 	}
+	// After the release was delivered, never before it; see
+	// [pointer.endGesture].
+	p.endGesture()
 	if kind == PointerTouch {
 		a.releasePointer(p)
 		return
@@ -644,6 +708,7 @@ func (a *App) PointerCancel(id PointerID) {
 		a.setPressed(cap, false)
 		a.deliver(cap, a.pointerEvent(EventPointerCancel, p), true)
 	}
+	p.endGesture()
 	if p.kind == PointerTouch {
 		a.releasePointer(p)
 		return
@@ -911,6 +976,15 @@ func (a *App) forgetNode(h scene.Handle) {
 	for i, f := range a.in.flings {
 		if f == h {
 			a.in.flings = append(a.in.flings[:i], a.in.flings[i+1:]...)
+			break
+		}
+	}
+	// The same for the indicator linger: an unmounted container has no bar to
+	// fade out. The tick already skips invalid handles; this keeps the slice
+	// from growing across a long sequence of mounts and unmounts.
+	for i, f := range a.in.indicators {
+		if f == h {
+			a.in.indicators = append(a.in.indicators[:i], a.in.indicators[i+1:]...)
 			break
 		}
 	}

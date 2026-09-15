@@ -274,9 +274,79 @@ type scrollState struct {
 	// drag, which is also what says it has taken the press.
 	dragging bool
 
+	// lastActive is the clock value at which this container last moved or was
+	// last touched by a gesture. [ScrollInfo.IdleFor] is derived from it.
+	//
+	// It exists for the scroll indicator and for nothing else. An indicator
+	// that is only visible *while* the content moves is invisible at exactly
+	// the moment the user stops to read where they are, so it has to linger;
+	// a lingering indicator has to fade; and a fade is a function of elapsed
+	// time. gift keeps the timestamp rather than the fade, because the fade
+	// is a look and belongs in ui, while "when did this container last move"
+	// is a fact about the container.
+	//
+	// It starts as a negative sentinel rather than at zero, so that a
+	// container which has never moved is reported as idle since forever
+	// instead of as freshly active at the origin of the injected clock; see
+	// [ScrollInfo.IdleFor].
+	lastActive time.Duration
+
+	// indicator is the presentation state of whatever decoration draws this
+	// container's scroll position; see [ScrollIndicatorState].
+	indicator ScrollIndicatorState
+
 	samples [velSamples]velSample
 	nsam    int
 }
+
+// ScrollIndicatorState is the presentation state of the decoration that draws
+// a scroll container's position — the grab of its thumb and the hover of its
+// track. It is read with [PaintContext.ScrollIndicator] and written with
+// [EventContext.SetScrollIndicator].
+//
+// # Why the core holds it
+//
+// Because gift, and not the decoration, owns the lifetime it has to have. A
+// scroll bar is drawn and grabbed by the container itself — see the accessors
+// below for why it cannot be a child — so the only object the decoration can
+// keep state in is the one a build hands to [Element.Layouter], and that
+// object is *replaced* on every rebuild. A component that rebuilds from a
+// timer while the user holds the thumb would therefore lose the grab in the
+// middle of the gesture, and the next move would fall through to
+// [ScrollInteractor] and be read as a content drag — which moves the content
+// the opposite way from the thumb. The scroll offset is kept across a rebuild
+// for exactly the same reason (see [App.applyScroll]), and the grab that
+// drives the offset cannot be held to a weaker standard than the offset.
+//
+// So it lives here, beside the offset, in the state object a rebuild
+// preserves. gift does not interpret any of these fields: it stores them,
+// hands them back, and treats a change to them as activity — see
+// [EventContext.SetScrollIndicator].
+type ScrollIndicatorState struct {
+	// Grabbed says the indicator's thumb is currently being dragged.
+	Grabbed bool
+	// Grab is where along the axis inside the thumb it was taken hold of, in
+	// the space [Event.Pos] lives in. Keeping that offset — rather than
+	// recentring the thumb on the pointer — is what makes the content not
+	// jump at the moment of the press. It is meaningless while Grabbed is
+	// false.
+	Grab float32
+	// Hover says the pointer is resting over the indicator, which is what
+	// lets a faded decoration wake up before it is clicked.
+	Hover bool
+}
+
+// Active reports whether the indicator is engaged by the pointer in either
+// sense. A decoration that fades on idleness stays fully visible while this is
+// true; both halves are the same rule and separating them is how one of the
+// two ends up without hysteresis.
+func (s ScrollIndicatorState) Active() bool { return s.Grabbed || s.Hover }
+
+// neverActive is the lastActive of a container that has not moved yet. It is
+// far enough in the past that any linger window has long expired, and it is
+// deliberately not zero because zero is a perfectly ordinary value of the
+// injected clock of gifttest.
+const neverActive = time.Duration(-1) << 40
 
 // maxOffset is the largest legal offset.
 //
@@ -433,8 +503,30 @@ func (scrollHandler) HandleEvent(ctx *EventContext, e Event) bool {
 			// Take the press away from whoever holds it. A drag that started
 			// on a button inside the scroller must not leave that button
 			// pressed and must not activate it on release.
-			ctx.StealPointer()
+			//
+			// The answer is honoured and not discarded. StealPointer reports
+			// false when no pointer is down at all, and a move with no button
+			// held is not a drag no matter what [Event.Dragged] says: a
+			// container that started dragging on one would follow the bare
+			// cursor around until the next click.
+			//
+			// That is the second of the two guards against exactly this
+			// failure, and both are kept on purpose. The first one is in the
+			// dispatcher — [pointer.endGesture] clears the drag flag on every
+			// release — and it is where the defect was. This one is the
+			// property the handler can state about itself without trusting
+			// its caller: a scroll gesture requires a held button, and that is
+			// a local invariant of this state machine rather than a claim
+			// about the dispatcher's bookkeeping. Removing either leaves a
+			// correct program; removing the dispatcher fix again with this one
+			// in place would leave the drag flag lying, and removing this one
+			// would make the handler's correctness depend on a field it does
+			// not own. Each has its own regression test.
+			if !ctx.StealPointer() {
+				return false
+			}
 			s.dragging = true
+			a.markActive(h, s)
 			s.resetTrack()
 		}
 		s.track(e.Time, s.axis.of(e.Pos))
@@ -496,12 +588,100 @@ func (a *App) setScroll(h scene.Handle, s *scrollState, v float64) bool {
 	}
 	s.off = v
 	a.diag.Scrolls++
+	a.markActive(h, s)
 	if s.virtual {
 		a.markNeedsLayout(h)
 		return true
 	}
 	a.markNeedsPaint(h)
 	return true
+}
+
+// ScrollIndicatorLinger is how long after the last movement a scroll container
+// keeps asking for repaints.
+//
+// It is what makes a scroll indicator that fades out possible at all. gift
+// redraws the whole visible list every frame anyway — the project plan,
+// section 6 — so this changes no pixels by itself; what it changes is
+// [App.NeedsPaint], and with it the idle tick policy of the backend. Without
+// it the backend would drop to [Config.IdleTPS] the moment the content stopped
+// moving, and an indicator that fades over a quarter of a second would do it
+// in three visible steps.
+//
+// It bounds the linger and the fade of every indicator built on
+// [ScrollInfo.IdleFor]. ui's default scroll bar holds for 500 ms and fades for
+// 250 ms, so it is finished 150 ms — nine frames at sixty hertz — before this
+// window closes; a style that lingers longer than this gets a last frame at
+// the idle rate, which looks like the bar snapping away rather than fading.
+// TestDefaultScrollBarFitsInsideTheIndicatorLinger in package ui pins that
+// margin, so raising the hold cannot silently ship a snapping bar.
+//
+// # It is charged to every scroll container, on purpose
+//
+// [App.setScroll] enrols a container here unconditionally, including one whose
+// decoration is hidden and one in an application that never imports ui. That
+// is a real cost — up to 900 ms of full rate ticking after the last movement —
+// and it is deliberate. The alternative is for the core to learn whether
+// anybody is watching, which means either a flag on [ScrollSpec] that every
+// view type has to thread through and keep in sync with its own style, or a
+// registration call from the decoration; both put a second source of truth
+// next to a number that is already only a heuristic. The cost is bounded, it
+// settles by itself, and it lands in the window right after a gesture the user
+// just made, which is the one window in which the application is least likely
+// to be asleep — a fling is still running through most of it anyway.
+//
+// An application that wants none of it sets this to zero before the first
+// frame: a container is then dropped from the list on the very next tick,
+// after the one repaint that draws the frame in which the indicator is gone.
+// That is the opt out, and it is a value rather than an API because "how long
+// does an indicator linger" is exactly the question being answered.
+var ScrollIndicatorLinger = 900 * time.Millisecond
+
+// markActive records that the container moved now and enrols it in the
+// indicator tick.
+//
+// The enrolment list is a reused slice compacted in place, exactly like
+// [inputState.flings], so an active container costs no allocation per frame
+// after the first one.
+func (a *App) markActive(h scene.Handle, s *scrollState) {
+	s.lastActive = a.in.now
+	for _, existing := range a.in.indicators {
+		if existing == h {
+			return
+		}
+	}
+	a.in.indicators = append(a.in.indicators, h)
+}
+
+// tickIndicators keeps every recently active scroll container marked for
+// repaint until its linger window has passed, and then drops it.
+//
+// It is the counterpart of [App.tickScrolls] and runs next to it in
+// [App.BeginInput]. A container is removed from the list once the window is
+// over, so an application that scrolled once and then sat still costs nothing:
+// the list is empty and the first comparison in [App.BeginInput] returns.
+func (a *App) tickIndicators(now time.Duration) {
+	if len(a.in.indicators) == 0 {
+		return
+	}
+	out := a.in.indicators[:0]
+	for _, h := range a.in.indicators {
+		if !a.store.Valid(h) {
+			continue
+		}
+		s := a.data(h).scroll
+		if s == nil || now-s.lastActive > ScrollIndicatorLinger {
+			// One last mark, so the frame that ends the fade is drawn with
+			// the indicator gone rather than with its last visible alpha.
+			if s != nil {
+				a.markNeedsPaint(h)
+			}
+			continue
+		}
+		a.markNeedsPaint(h)
+		out = append(out, h)
+	}
+	a.in.indicators = out
 }
 
 // startFling begins a kinetic scroll at v document units per second.
@@ -627,15 +807,24 @@ type ScrollInfo struct {
 	Dragging bool
 	// Virtual mirrors [ScrollSpec.Virtual].
 	Virtual bool
+
+	// IdleFor is how long ago this container last moved, measured on the
+	// clock passed to [App.BeginInput].
+	//
+	// It is what a scroll indicator fades on: visible while the content
+	// moves, held for a moment afterwards so the user can see where they
+	// are, then gone. A container that has never moved reports a very large
+	// duration rather than zero, so "has been idle for longer than the hold"
+	// is true from the first frame and a bar does not flash on at startup.
+	//
+	// It is not a substitute for Dragging and Flinging. A drag that is held
+	// still, or a fling that has reached the end of the document, moves
+	// nothing and would otherwise start fading under the user's finger.
+	IdleFor time.Duration
 }
 
-// ScrollInfo returns the state of the scroll container r, and false when r is
-// stale or is not a scroll container.
-func (a *App) ScrollInfo(r NodeRef) (ScrollInfo, bool) {
-	s := a.scrollOf(r.h)
-	if s == nil {
-		return ScrollInfo{}, false
-	}
+// info returns the snapshot of s, relative to the clock value now.
+func (s *scrollState) info(now time.Duration) ScrollInfo {
 	return ScrollInfo{
 		Axis:           s.axis,
 		Offset:         s.off,
@@ -647,11 +836,133 @@ func (a *App) ScrollInfo(r NodeRef) (ScrollInfo, bool) {
 		Flinging:       s.flinging,
 		Dragging:       s.dragging,
 		Virtual:        s.virtual,
-	}, true
+		IdleFor:        now - s.lastActive,
+	}
+}
+
+// ScrollInfo returns the state of the scroll container r, and false when r is
+// stale or is not a scroll container.
+func (a *App) ScrollInfo(r NodeRef) (ScrollInfo, bool) {
+	s := a.scrollOf(r.h)
+	if s == nil {
+		return ScrollInfo{}, false
+	}
+	return s.info(a.in.now), true
 }
 
 // IsScrollable reports whether r is a scroll container.
 func (a *App) IsScrollable(r NodeRef) bool { return a.scrollOf(r.h) != nil }
+
+// --- the scroll state of the node being painted or handled -------------------
+
+// The three accessors below all answer about the *current* node rather than
+// about an arbitrary [NodeRef], and they exist because a scroll indicator is
+// drawn and grabbed by the container it belongs to.
+//
+// That is not the obvious design. The obvious one is a separate thumb node
+// inside the container, which is how a browser and most toolkits do it, and it
+// is unavailable here for two independent reasons. A child of a scroll
+// container is translated by the scroll offset — see [App.beginSubtree] — so a
+// thumb child would slide off the top of its own track. And a virtualising
+// container's children are a positional tile pool whose indices are its
+// bookkeeping; see ui.Gallery. Restructuring either to accommodate a
+// decoration would be a worse trade than handing the container the four
+// numbers it already owns.
+
+// ScrollInfo returns the state of the scroll container being painted, and
+// false when this node is not one.
+func (p *PaintContext) ScrollInfo() (ScrollInfo, bool) {
+	s := p.nd.scroll
+	if s == nil {
+		return ScrollInfo{}, false
+	}
+	return s.info(p.app.in.now), true
+}
+
+// ScrollInfo returns the state of the scroll container receiving the event,
+// and false when this node is not one.
+func (c *EventContext) ScrollInfo() (ScrollInfo, bool) {
+	s := c.nd.scroll
+	if s == nil {
+		return ScrollInfo{}, false
+	}
+	return s.info(c.app.in.now), true
+}
+
+// ScrollTo moves the scroll container receiving the event to the document
+// offset off, clamped, and reports whether the offset changed. It is
+// [App.ScrollTo] for the current node, and like it, it cancels a running
+// fling: a thumb the user has taken hold of and a fling still coasting would
+// otherwise fight over the same number.
+//
+// It returns false for a node that is not a scroll container, rather than
+// panicking, because an interactor that delegates is entitled to ask.
+func (c *EventContext) ScrollTo(off float64) bool {
+	s := c.nd.scroll
+	if s == nil {
+		return false
+	}
+	c.app.stopFling(s)
+	return c.app.setScroll(c.cur, s, off)
+}
+
+// ScrollBy moves the scroll container receiving the event by d document units
+// and reports whether the offset changed; see [EventContext.ScrollTo].
+func (c *EventContext) ScrollBy(d float64) bool {
+	s := c.nd.scroll
+	if s == nil {
+		return false
+	}
+	c.app.stopFling(s)
+	return c.app.setScroll(c.cur, s, s.off+d)
+}
+
+// ScrollIndicator returns the indicator state of the scroll container
+// receiving the event, and false when this node is not one.
+func (c *EventContext) ScrollIndicator() (ScrollIndicatorState, bool) {
+	s := c.nd.scroll
+	if s == nil {
+		return ScrollIndicatorState{}, false
+	}
+	return s.indicator, true
+}
+
+// SetScrollIndicator writes the indicator state of the scroll container
+// receiving the event and reports whether it changed. It answers false for a
+// node that is not a scroll container, like [EventContext.ScrollTo].
+//
+// A change marks the node for repaint — the decoration is about to look
+// different — and also counts as activity, exactly as a movement of the
+// content does. That second half is not bookkeeping but the fade rule: a
+// pointer resting on the track emits no events at all, so without it
+// [ScrollInfo.IdleFor] would keep growing underneath a bar that is held
+// visible by the hover, and the moment the pointer left the bar would be
+// several hundred milliseconds idle already and would vanish in one frame
+// instead of fading. Marking the *end* of a hover as activity is what gives
+// that transition its hold and its fade.
+func (c *EventContext) SetScrollIndicator(v ScrollIndicatorState) bool {
+	s := c.nd.scroll
+	if s == nil {
+		return false
+	}
+	if v == s.indicator {
+		return false
+	}
+	s.indicator = v
+	c.app.markActive(c.cur, s)
+	c.app.markNeedsPaint(c.cur)
+	return true
+}
+
+// ScrollIndicator returns the indicator state of the scroll container being
+// painted, and false when this node is not one.
+func (p *PaintContext) ScrollIndicator() (ScrollIndicatorState, bool) {
+	s := p.nd.scroll
+	if s == nil {
+		return ScrollIndicatorState{}, false
+	}
+	return s.indicator, true
+}
 
 // ScrollTo moves the scroll container r to the document offset off, clamped to
 // its bounds, and reports whether the offset changed.
@@ -920,8 +1231,12 @@ func ScrollInteractor() Interactor { return scrollHandler{} }
 //
 // The state object survives a rebuild, which is the whole point: the offset is
 // presentation state of the node and a rebuild of the component around it must
-// not send the user back to the top of the list. It is replaced only when the
-// axis changes, because an offset measured along y means nothing along x.
+// not send the user back to the top of the list. The same applies to the
+// [ScrollIndicatorState] beside it, which is why that lives here and not in
+// the decoration: a rebuild in the middle of a thumb drag must not drop the
+// grab. It is replaced only when the axis changes, because an offset measured
+// along y means nothing along x — and a grab taken along y means nothing
+// along x either.
 func (a *App) applyScroll(nd *nodeData, spec *ScrollSpec) {
 	if spec == nil {
 		nd.scroll = nil
@@ -932,7 +1247,7 @@ func (a *App) applyScroll(nd *nodeData, spec *ScrollSpec) {
 	}
 	s := nd.scroll
 	if s == nil || s.axis != spec.Axis {
-		s = &scrollState{}
+		s = &scrollState{lastActive: neverActive}
 		nd.scroll = s
 	}
 	s.axis = spec.Axis

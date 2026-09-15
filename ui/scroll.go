@@ -56,12 +56,21 @@ var (
 // and a kinetic fling on release. The container is a hit target over its whole
 // bounds, so a click on its empty background does not fall through to whatever
 // is behind it, which is what every platform scroller does.
+//
+// # The indicator
+//
+// A scroll view draws a scroll bar along its trailing edge whenever there is
+// more content than viewport. It appears while the content moves, holds for a
+// moment and then fades; the thumb can be grabbed and dragged, and a click on
+// the track pages one viewport towards the click. See [ScrollBar] for the
+// style and for why it is a decoration of the container rather than a child.
 type ScrollView struct {
 	base
 	axis     layout.Axis
 	cross    layout.CrossAlign
 	gap      float32
 	cfg      gift.ScrollConfig
+	bar      ScrollBar
 	children []gift.View
 }
 
@@ -105,8 +114,9 @@ func (s ScrollView) Build(*gift.BuildContext) gift.Element {
 		fr: s.frame,
 		st: s.style,
 	}
+	n.bar.style = s.bar.withDefaults()
 	var p gift.Painter
-	if s.style.needsPainter() {
+	if s.style.needsPainter() || !n.bar.style.Hidden {
 		p = n
 	}
 	axis := gift.ScrollVertical
@@ -119,6 +129,11 @@ func (s ScrollView) Build(*gift.BuildContext) gift.Element {
 		Layouter: n,
 		Painter:  p,
 		Children: s.children,
+		// The indicator is the reason there is an interactor here at all. A
+		// scroll view with no bar would be served by the one gift installs
+		// itself; this one has to see the press before the gesture does, so
+		// it brings its own and delegates. See [node.HandleEvent].
+		Interactor: n,
 		// Always. A viewport that did not clip would paint its whole content
 		// over its neighbours and would be indistinguishable from a stack;
 		// see [ScrollView.Clip].
@@ -149,6 +164,15 @@ func (s ScrollView) FlingVelocity(v float32) ScrollView { s.cfg.FlingVelocity = 
 // Config replaces the whole gesture configuration in one call. A zero field
 // takes the corresponding package default; see [gift.ScrollConfig].
 func (s ScrollView) Config(v gift.ScrollConfig) ScrollView { s.cfg = v; return s }
+
+// ScrollBar sets the look and the timing of the scroll indicator. A zero value
+// takes [DefaultScrollBar]; ScrollBar(ui.ScrollBar{Hidden: true}) turns it off.
+//
+// It is accepted by [GalleryView.ScrollBar] under the same name and with the
+// same meaning, because the package documentation promises that a view never
+// accepts a modifier it then ignores and the two are the same kind of
+// viewport.
+func (s ScrollView) ScrollBar(v ScrollBar) ScrollView { s.bar = v; return s }
 
 // --- stack modifiers ---------------------------------------------------------
 

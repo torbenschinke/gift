@@ -38,6 +38,12 @@ type node struct {
 	items   []layout.Item
 	origins []geom.Point
 
+	// bar is the scroll indicator of a kindScroll node and is unused by every
+	// other kind. It sits here rather than in a scroll specific node type
+	// because one struct per container is what keeps a build to one
+	// allocation; see the type documentation.
+	bar scrollBarState
+
 	// ctx is the layout context of the call in progress. It exists so that
 	// the node can implement layout.Measurer through a pointer receiver:
 	// boxing a wrapper value into the Measurer interface on every layout
@@ -132,8 +138,28 @@ func (n *node) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 // Paint draws the node in the fixed order of the project plan, section 8.
 // It is installed as the painter only when there is something to draw; see
 // [styleSpec.needsPainter].
+//
+// A scroll container has one more step after the border: its indicator, which
+// is an overlay and therefore comes last. See [scrollBarState.paint].
 func (n *node) Paint(ctx *gift.PaintContext) {
 	paintStyle(ctx, n.st)
+	if n.kind == kindScroll {
+		n.bar.paint(ctx)
+	}
+}
+
+// HandleEvent is the interactor of a scroll container: the indicator first,
+// gift's gesture afterwards.
+//
+// It is installed on kindScroll nodes only, and it is the shape
+// [gift.ScrollInteractor] documents. The order matters and is not a
+// preference: a grabbed thumb has to consume the move before the viewport can
+// recognise the same movement as a content drag.
+func (n *node) HandleEvent(ctx *gift.EventContext, e gift.Event) bool {
+	if n.bar.handleEvent(ctx, e) {
+		return true
+	}
+	return gift.ScrollInteractor().HandleEvent(ctx, e)
 }
 
 // ensure sizes the scratch buffers to k children, reusing the backing arrays

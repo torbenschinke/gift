@@ -978,6 +978,13 @@ func (s *tileSlot) binding(slot int) TileBinding {
 // unbounded height reports a zero viewport, binds no tiles and is blank, which
 // is the loud version of the failure.
 //
+// # The indicator
+//
+// A gallery draws the same scroll bar a [ScrollView] does, along its trailing
+// edge; see [ScrollBar] and [GalleryView.ScrollBar]. A grab on the thumb takes
+// the press away from the tile underneath it, so dragging the bar across the
+// picture band scrolls and selects nothing.
+//
 // # What it costs to scroll
 //
 // More than an ordinary scroller and much less than a rebuild. A virtualising
@@ -1005,6 +1012,7 @@ type GalleryView struct {
 	hasTile    bool
 	overscan   float32
 	cfg        gift.ScrollConfig
+	bar        ScrollBar
 	onSelect   func(asset.ID)
 	onActivate func(asset.ID)
 	name       string
@@ -1045,6 +1053,7 @@ func (v GalleryView) Build(*gift.BuildContext) gift.Element {
 	g.onSelect, g.onActivate = v.onSelect, v.onActivate
 
 	n := &galleryNode{g: g, fr: v.frame, st: v.style, pad: v.pad}
+	n.bar.style = v.bar.withDefaults()
 	kids := g.resizePool(g.desiredSlots)
 
 	return gift.Element{
@@ -1171,6 +1180,10 @@ func (v GalleryView) WheelStep(f float32) GalleryView { v.cfg.WheelStep = f; ret
 
 // Config replaces the whole gesture configuration; see [gift.ScrollConfig].
 func (v GalleryView) Config(c gift.ScrollConfig) GalleryView { v.cfg = c; return v }
+
+// ScrollBar sets the look and the timing of the scroll indicator, exactly as
+// [ScrollView.ScrollBar]. A zero value takes [DefaultScrollBar].
+func (v GalleryView) ScrollBar(b ScrollBar) GalleryView { v.bar = b; return v }
 
 // --- the shared modifier set -------------------------------------------------
 
@@ -1369,6 +1382,7 @@ type galleryNode struct {
 	fr  frameSpec
 	st  styleSpec
 	pad geom.Insets
+	bar scrollBarState
 }
 
 // Layout is the whole of the virtualisation.
@@ -1935,6 +1949,10 @@ func (n *galleryNode) Paint(ctx *gift.PaintContext) {
 	paintBackground(ctx, n.st, b)
 	ctx.PaintChildren()
 	paintBorder(ctx, n.st, b)
+	// Last, because an indicator is an overlay: it has to sit over the tiles
+	// and over the viewport border, not under the band of pictures it
+	// describes.
+	n.bar.paint(ctx)
 }
 
 // --- input -------------------------------------------------------------------
@@ -1955,6 +1973,15 @@ func (n *galleryNode) Paint(ctx *gift.PaintContext) {
 // exactly as if the tile were not there.
 func (n *galleryNode) HandleEvent(ctx *gift.EventContext, e gift.Event) bool {
 	g := n.g
+	// The indicator gets first refusal, before the focus is taken and before
+	// the gesture is delegated. A grab on the thumb is not a click into the
+	// picture band and must not move the keyboard cursor there; and a move
+	// while the thumb is held has to stop here, or gift's scroll handler
+	// would read the same movement as a content drag. See
+	// [scrollBarState.handleEvent].
+	if n.bar.handleEvent(ctx, e) {
+		return true
+	}
 	switch e.Kind {
 	case gift.EventPointerDown:
 		// Take the focus so the arrow keys go somewhere, but do not consume

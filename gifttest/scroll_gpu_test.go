@@ -51,7 +51,15 @@ func gpuScrollScene() gift.View {
 			Key("row"+strconv.Itoa(i)))
 	}
 	return ui.VStack(
-		ui.VScroll(rows...).Frame(gpuViewW, gpuViewH).Key("scroller"),
+		ui.VScroll(rows...).
+			Frame(gpuViewW, gpuViewH).
+			// No indicator. The subject here is the transform and the clip,
+			// counted in pixels of an exact colour, and a scroll bar drawn
+			// over the trailing edge of the rows would subtract a strip from
+			// every count and turn a precise assertion into an approximate
+			// one. The bar has its own pixel tests in ui.
+			ScrollBar(ui.ScrollBar{Hidden: true}).
+			Key("scroller"),
 	)
 }
 

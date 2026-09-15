@@ -78,6 +78,43 @@ func TestButtonKeyboardActivation(t *testing.T) {
 	}
 }
 
+// TestButtonDoesNotActivateOnADraggedRelease is the end to end consequence of
+// the ordering inside the dispatcher: [gift.Event.Dragged] has to still be
+// true when the release is delivered, because that flag is the only thing that
+// distinguishes a click from the end of a drag that happened to finish over
+// the control.
+//
+// The button here is large enough to contain a drag of more than
+// [gift.DragSlop], so the release lands *inside* it: e.Inside is true and
+// e.Dragged is what declines the activation. Clearing the gesture before the
+// release is delivered — which is where the defect of scroll_stuck_test.go
+// was, in the other direction — would make this button fire on the end of
+// every drag across it, and until now no button test would have noticed.
+func TestButtonDoesNotActivateOnADraggedRelease(t *testing.T) {
+	n := 0
+	h := harness(t, ui.ZStack(ui.Button(probe(180, 120), func() { n++ }).Key("b").Frame(200, 140)))
+
+	b := h.Find(gifttest.ByKey("b")).Bounds()
+	from := geom.Pt(b.Min.X+20, b.Min.Y+20)
+	to := geom.Pt(b.Max.X-20, b.Max.Y-20)
+
+	h.PressAt(from)
+	h.MoveTo(to)
+	h.ReleaseAt(to)
+
+	if n != 0 {
+		t.Fatalf("a release that ended a drag inside the button activated it %d time(s), want 0", n)
+	}
+
+	// And the control is not broken by the drag: an ordinary click still
+	// works, so the assertion above is about Dragged and not about a button
+	// that stopped responding.
+	h.Find(gifttest.ByKey("b")).Click()
+	if n != 1 {
+		t.Fatalf("a plain click after the drag activated %d time(s), want 1", n)
+	}
+}
+
 func TestDisabledButtonIsInert(t *testing.T) {
 	n := 0
 	h := harness(t, ui.ZStack(
