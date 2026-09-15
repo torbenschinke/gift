@@ -698,6 +698,11 @@ type inputState struct {
 	// repeat is the key gift is currently repeating, if any; see
 	// [KeyRepeatDelay].
 	repeat keyRepeat
+
+	// soft is the on-screen keyboard state of the project plan, section 19:
+	// whether the focused node wants characters, and what is covering the
+	// screen because of it. See softinput.go.
+	soft softInputState
 }
 
 // keyRepeat is the state of the one key gift repeats.
@@ -818,6 +823,7 @@ func (a *App) BeginInput(now time.Duration) {
 	a.tickIndicators(now)
 	a.tickAnimations(now)
 	a.tickKeyRepeat(now)
+	a.tickReveal()
 	for i := range a.in.pointers {
 		p := &a.in.pointers[i]
 		if !p.active || !p.down || p.longFired || p.dragged {
@@ -1378,6 +1384,13 @@ func (a *App) markNeedsPaint(h scene.Handle) {
 func (a *App) forgetNode(h scene.Handle) {
 	if a.in.focus == h {
 		a.in.focus = scene.Handle{}
+	}
+	if a.in.soft.obstruct == h {
+		// The keyboard was unmounted. What it covered is visible again, so
+		// the reveal that pushed the focused field up may now be undone by
+		// nothing at all — a scroll container does not scroll back on its
+		// own, and deliberately so: see [App.tickReveal].
+		a.setObstruction(scene.Handle{})
 	}
 	// A fling on an unmounted container has nothing left to move. The tick
 	// loop already skips invalid handles, so this only keeps the slice from

@@ -40,6 +40,11 @@ type nodeData struct {
 	disabled   bool
 	clip       bool
 
+	// obstructs is [Element.Obstructs]. It is read by nothing in the frame
+	// path; the node it names is remembered in [softInputState] instead, and
+	// this field only says whether this node is that one.
+	obstructs bool
+
 	// xform is [Element.Transform]. It is a pointer because the common case
 	// is the identity and a nil check is cheaper than comparing six floats.
 	xform *geom.Affine2D

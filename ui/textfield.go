@@ -701,9 +701,26 @@ func (n *textFieldNode) HandleEvent(ctx *gift.EventContext, e gift.Event) bool {
 		// [gift.App.ScrollIntoView] does and what the project plan, section
 		// 19, names it for.
 		ctx.ScrollIntoView()
+		// The on-screen keyboard of the project plan, section 19. The switch
+		// is read here rather than in gift, because gift has no business
+		// knowing what a kiosk is, and it is read *before* the request rather
+		// than inside it so that an application which is not a kiosk pays one
+		// atomic load per focus change and no rebuild at all; see
+		// [SetOnScreenKeyboard].
+		if onScreenKeyboard.Load() {
+			ctx.RequestSoftKeyboard(true)
+		}
 		return true
 
 	case gift.EventFocusLost:
+		if onScreenKeyboard.Load() {
+			// Dismissed on blur, unconditionally. A focus move from one field
+			// to the next is a lost and a gained in that order, so the
+			// keyboard is taken down and put back up within one dispatch and
+			// the user sees it stay; the cost is one extra build, once per
+			// field the user walks through.
+			ctx.RequestSoftKeyboard(false)
+		}
 		n.ed.drag = dragNone
 		// Stop asking for frames. Without this the application would keep
 		// ticking at full rate for the rest of the blink window with nothing

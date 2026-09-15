@@ -120,6 +120,25 @@ type Element struct {
 	// acquires no hover or press state and is skipped by the focus order.
 	Disabled bool
 
+	// Obstructs declares that this node covers part of the window on top of
+	// the ordinary layout, so that [App.ScrollIntoView] keeps its target
+	// clear of it.
+	//
+	// It exists for the on-screen keyboard of the project plan, section 19,
+	// which is an overlay in a [ui.ZStack] and therefore takes no space away
+	// from the form behind it. Without this flag a field revealed at the
+	// bottom of a scrolling form would be revealed to a viewport the keyboard
+	// is sitting on, which is the one failure the whole feature exists to
+	// prevent.
+	//
+	// What it is not: it is not a safe area, not an inset system and not a
+	// general occlusion model. Exactly one node can be the obstruction at a
+	// time — the last one built wins — and the only reader is the reveal.
+	// Layout, hit testing and painting ignore it completely. gift has no
+	// second consumer for a larger idea and inventing one here would be
+	// inventing it in the wrong place.
+	Obstructs bool
+
 	// Clip confines this node's subtree to its bounds, for painting and for
 	// input alike.
 	//

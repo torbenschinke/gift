@@ -151,6 +151,12 @@ func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *
 	nd.focusable = desc.elem.Focusable && desc.elem.Interactor != nil
 	nd.disabled = desc.elem.Disabled
 	nd.clip = desc.elem.Clip
+	nd.obstructs = desc.elem.Obstructs
+	if nd.obstructs {
+		a.setObstruction(h)
+	} else if a.in.soft.obstruct == h {
+		a.setObstruction(scene.Handle{})
+	}
 	nd.xform = desc.elem.Transform
 	a.applyScroll(nd, desc.elem.Scroll)
 	nd.ia.Disabled = desc.elem.Disabled

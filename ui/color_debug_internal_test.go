@@ -45,6 +45,8 @@ func TestTheGateInventoryIsComplete(t *testing.T) {
 		"textFieldNode.paintContent": "guarded: four assertResolved calls, the first four statements",
 		"tileNode.Paint":             "guarded: assertResolved on TileStyle.Error and TileStyle.Provisional",
 		"imageNode.Paint":            "guarded: assertResolved on the placeholder colour of an Image",
+		"keyboardNode.paintKeys": "guarded: five assertResolved calls, the first five statements of the " +
+			"function",
 		"styleSpec.needsPainter": "not a gate: it decides whether a painter is allocated at all, so an " +
 			"unresolved colour there costs an interface and never a pixel",
 		"ScrollBar.withDefaults": "not a gate: it resolves first and then reads the transparency as " +
@@ -243,6 +245,48 @@ func TestEveryVisibilityGateIsGuarded(t *testing.T) {
 					paintContent(nil, geom.Rect{}, gift.Interaction{Focused: true})
 			},
 			want: "the caret colour of a TextField",
+		},
+		{
+			name: "the keyboard key face",
+			call: func() {
+				(&keyboardNode{face: ColorControl, st8: &keyboardState{pressed: -1}}).
+					paintKeys(nil, geom.Rect{})
+			},
+			want: "the key face of an OnScreenKeyboard",
+		},
+		{
+			name: "the keyboard pressed key face",
+			call: func() {
+				(&keyboardNode{pressed: ColorControlPressed, st8: &keyboardState{pressed: -1}}).
+					paintKeys(nil, geom.Rect{})
+			},
+			want: "the pressed key face of an OnScreenKeyboard",
+		},
+		{
+			name: "the keyboard shift colour",
+			call: func() {
+				(&keyboardNode{accent: ColorAccent, st8: &keyboardState{pressed: -1}}).
+					paintKeys(nil, geom.Rect{})
+			},
+			want: "the armed shift colour of an OnScreenKeyboard",
+		},
+		{
+			name: "the keyboard label colour",
+			call: func() {
+				(&keyboardNode{fg: ColorLabel, st8: &keyboardState{pressed: -1}}).
+					paintKeys(nil, geom.Rect{})
+			},
+			want: "the key label colour of an OnScreenKeyboard",
+		},
+		{
+			name: "the keyboard key border",
+			call: func() {
+				(&keyboardNode{
+					keyBorder: Border{Width: 1, Color: ColorSeparator},
+					st8:       &keyboardState{pressed: -1},
+				}).paintKeys(nil, geom.Rect{})
+			},
+			want: "the key border colour of an OnScreenKeyboard",
 		},
 		{
 			name: "the image placeholder",

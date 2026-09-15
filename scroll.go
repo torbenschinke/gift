@@ -1063,6 +1063,10 @@ func (a *App) revealIn(vh scene.Handle, s *scrollState, target scene.Handle) boo
 	if t.IsEmpty() || v.IsEmpty() {
 		return false
 	}
+	v = a.unobstructed(v, s.axis)
+	if v.IsEmpty() {
+		return false
+	}
 
 	var lo, hi, vlo, vhi float32
 	if s.axis == ScrollHorizontal {
@@ -1095,6 +1099,55 @@ func (a *App) revealIn(vh scene.Handle, s *scrollState, target scene.Handle) boo
 	}
 	a.stopFling(s)
 	return a.setScroll(vh, s, s.off+float64(d))
+}
+
+// unobstructed shrinks the viewport rectangle v by whatever declared
+// [Element.Obstructs], along the scrolling axis only.
+//
+// It handles the two cases a band of viewport can be taken away in — the
+// obstruction covers the leading edge, or it covers the trailing one — and
+// deliberately nothing else. An obstruction that sits in the middle of the
+// viewport would split it into two intervals, and a reveal cannot aim at a set
+// of intervals; one that covers the whole viewport leaves nothing to reveal
+// into. Both are returned unchanged and untouched respectively, which means
+// the reveal behaves exactly as it did before this existed. The on-screen
+// keyboard of the project plan, section 19, is a full width band at the bottom
+// of the window, which is the trailing case.
+//
+// It allocates nothing and costs one handle validity check on every reveal
+// where nothing obstructs, which is every application that never shows a
+// keyboard.
+func (a *App) unobstructed(v geom.Rect, axis ScrollAxis) geom.Rect {
+	o, ok := a.obstruction()
+	if !ok {
+		return v
+	}
+	if axis == ScrollHorizontal {
+		if o.Min.Y > v.Min.Y || o.Max.Y < v.Max.Y {
+			return v
+		}
+		switch {
+		case o.Min.X <= v.Min.X && o.Max.X > v.Min.X && o.Max.X < v.Max.X:
+			v.Min.X = o.Max.X
+		case o.Max.X >= v.Max.X && o.Min.X < v.Max.X && o.Min.X > v.Min.X:
+			v.Max.X = o.Min.X
+		}
+		return v
+	}
+	// A band has to span the cross axis of the viewport to be a band. An
+	// obstruction narrower than that leaves a column of viewport beside it
+	// through which the target is perfectly visible, and shrinking the whole
+	// viewport for it would scroll a form that did not need scrolling.
+	if o.Min.X > v.Min.X || o.Max.X < v.Max.X {
+		return v
+	}
+	switch {
+	case o.Min.Y <= v.Min.Y && o.Max.Y > v.Min.Y && o.Max.Y < v.Max.Y:
+		v.Min.Y = o.Max.Y
+	case o.Max.Y >= v.Max.Y && o.Min.Y < v.Max.Y && o.Min.Y > v.Min.Y:
+		v.Max.Y = o.Min.Y
+	}
+	return v
 }
 
 func (a *App) scrollOf(h scene.Handle) *scrollState {

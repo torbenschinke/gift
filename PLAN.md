@@ -1404,6 +1404,31 @@ gift zeichnet sie also selbst, als Overlay im vorhandenen `ZStack`,
 eingeblendet auf `EventFocusGained`. Fuer das Freihalten des Eingabefelds
 dient das bereits vorhandene und getestete `ScrollIntoView`.
 
+Zwei Praezisierungen, nach der Umsetzung nachgetragen. Beide standen hier zu
+knapp, und beide wurden beim Bauen gefunden, nicht beim Planen:
+
+`ScrollIntoView` allein genuegt nicht, und zwar aus einem Grund der
+Reihenfolge, nicht des Koennens. Wenn das Feld um Freistellung bittet, ist es
+in der Eingabephase; die Tastatur wird erst danach im selben Frame gebaut und
+vermessen. Die erste Freistellung hat also nichts, wovor sie ausweichen
+koennte. Es braucht daher eine Kennzeichnung des verdeckenden Knotens und
+eine nachgezogene zweite Freistellung. Das ist Verkabelung, damit der hier
+genannte Mechanismus zum richtigen Zeitpunkt laeuft, und kein zweiter
+Mechanismus.
+
+Das Overlay kann ein Feld nicht freistellen, das die **letzte** Zeile eines
+Formulars ist. Ein Container kann nur so weit heben, wie er noch scrollen
+kann, und unterhalb der letzten Zeile ist kein Inhalt mehr. Ein
+Content-Inset, der den Scrollbereich waehrend der Einblendung verlaengert,
+waere die Loesung von iOS und Android; er greift aber in `ScrollInfo`, die
+Proportionen des Scrollbalkens, die Overscroll-Verkettung und die
+Fling-Begrenzung ein und ist damit nicht klein. Er bleibt vorerst
+ausgeschlossen. Stattdessen gilt: das Overlay ist die richtige Anordnung,
+wenn hinter der Tastatur kein Scrollcontainer liegt; liegt dort einer, ist
+die Spaltenanordnung exakt, weil der Viewport dann wirklich schrumpft. Beide
+Wege sind dokumentiert und getestet, und die Hoehe der Tastatur ist abfragbar,
+damit eine Anwendung sich stattdessen Platz lassen kann.
+
 **Die Einblendung haengt an einem ausdruecklichen Kioskschalter, nicht an
 `PointerKind`.** Begruendung, und sie ist belegt: Ebitengines Dokumentation
 zu `AppendTouchIDs` haelt fest, dass die Funktion auf Desktops nichts tut;

@@ -63,6 +63,7 @@ var views = []struct {
 	{name: "ui.Image", set: setStyled, v: ui.Image(asset.File("x.jpg"))},
 	{name: "ui.TextField", set: setStyled, v: ui.TextField(ui.NewTextEditor(""))},
 	{name: "ui.ImageGallery", set: setStyled, v: ui.ImageGallery(ui.NewGallery(asset.NewCollection(nil)))},
+	{name: "ui.OnScreenKeyboard", set: setStyled, v: ui.OnScreenKeyboard()},
 	{
 		name: "ui.GalleryTile", set: setInternal,
 		why: "a tile is one slot of the gallery's recycled pool. It has no exported " +

@@ -143,6 +143,17 @@
 // it is deliberate: a caret drag that starts with an upward stroke scrolls
 // instead of selecting. See [TextFieldView].
 //
+// [OnScreenKeyboard] is the other half of section 19: a German on-screen
+// keyboard with umlauts and ß, drawn by gift because Ebitengine can raise no
+// native one and the kiosk has none to raise. It appears when a field takes
+// the focus and only with the kiosk switch on — an explicit
+// [SetOnScreenKeyboard] and emphatically not the pointer kind, which on the
+// target hardware reports a finger as a mouse and would therefore never fire.
+// A drawn key injects through [gift.App.TypeRune] and [gift.App.KeyDown], so
+// what reaches a widget is the ordinary event and no widget has a second code
+// path for it. See [KeyboardView] for what it costs and for what its keyboard
+// avoidance cannot do.
+//
 // Copy, cut and paste go through [Clipboard], a seam with an in-process
 // default, so they work and are testable before the platform implementation of
 // section 19 exists. Install one with [SetClipboard].
