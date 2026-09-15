@@ -656,7 +656,16 @@ func aspectSize(c geom.Constraints, w, h uint32) geom.Size {
 
 // Paint draws the background, the picture or its placeholder, and the border,
 // in the order the project plan, section 8, fixes.
+//
+// The assertion is the first statement and stands in front of the placeholder
+// gate below, for the reason [assertResolved] gives: an unresolved semantic
+// colour is transparent, so the gate would drop the fill and an image whose
+// pixels have not arrived yet would be an invisible hole rather than a grey
+// rectangle. It was the one gate in this package that had no assertion in
+// front of it, which is also the evidence that
+// TestEveryVisibilityGateIsGuarded does not find a new one by itself.
 func (n *imageNode) Paint(ctx *gift.PaintContext) {
+	assertResolved(n.placeholder, "the placeholder colour of an Image")
 	b := ctx.Bounds()
 	paintBackground(ctx, n.st, b)
 	inner := b.Inset(n.pad)

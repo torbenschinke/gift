@@ -183,8 +183,11 @@ type runRange struct {
 type lineRange struct {
 	runStart, runEnd int
 	width            float32
-	byteStart        int
-	byteEnd          int
+	// advance is the width including the trailing whitespace width excludes;
+	// see [Line.Advance].
+	advance   float32
+	byteStart int
+	byteEnd   int
 }
 
 // NewShaper returns a Shaper with the given cache configuration.
@@ -335,6 +338,7 @@ func (s *Shaper) build(key cacheKey, req Request) *Paragraph {
 		e.lines = append(e.lines, Line{
 			Baseline: metrics.FirstBaseline + float32(n)*metrics.LineHeight,
 			Width:    l.width,
+			Advance:  l.advance,
 			Runs:     e.runs[l.runStart:l.runEnd:l.runEnd],
 			Start:    l.byteStart,
 			End:      l.byteEnd,
@@ -422,7 +426,8 @@ func (s *Shaper) shapeParagraph(e *entry, f *Font, size float32, para source, bo
 	for {
 		line, done := s.wrapper.WrapNextLineF(limit)
 		if len(line.Line) > 0 || emitted == 0 {
-			s.emitLine(e, para, line.Line, s.byteAt(runeStart), s.byteAt(line.NextLine))
+			s.emitLine(e, para, line.Line, s.byteAt(runeStart), s.byteAt(line.NextLine),
+				f26(line.TrimmedTrailingWhitespace))
 			emitted++
 		}
 		runeStart = line.NextLine
@@ -447,7 +452,12 @@ func (s *Shaper) byteAt(i int) int {
 
 // emitLine copies the glyphs of one visual line into the entry and records the
 // run and line ranges.
-func (s *Shaper) emitLine(e *entry, para source, outs []shaping.Output, byteStart, byteEnd int) {
+// trimmed is the advance the line wrapper zeroed on the final whitespace
+// glyph before this function ever saw it; it is part of [Line.Advance] and of
+// nothing else. The wrapper reports it and does not undo it, so it has to be
+// carried in rather than recovered here — the glyph's own advance is already
+// zero by then.
+func (s *Shaper) emitLine(e *entry, para source, outs []shaping.Output, byteStart, byteEnd int, trimmed float32) {
 	runStart := len(s.tmpRuns)
 	lineStart := len(e.glyphs)
 	s.blank = s.blank[:0]
@@ -474,6 +484,14 @@ func (s *Shaper) emitLine(e *entry, para source, outs []shaping.Output, byteStar
 		}
 		s.tmpRuns = append(s.tmpRuns, runRange{start: glyphStart, end: len(e.glyphs)})
 		pen = x
+	}
+
+	// The advance including the trailing whitespace, taken before that
+	// whitespace is zeroed below, because afterwards it cannot be recovered
+	// from the glyphs. See [Line.Advance] for who needs it.
+	advance := trimmed
+	for _, g := range e.glyphs[lineStart:] {
+		advance += g.Advance
 	}
 
 	// Trailing whitespace does not contribute to the width of a line. It stays
@@ -506,6 +524,7 @@ func (s *Shaper) emitLine(e *entry, para source, outs []shaping.Output, byteStar
 		runStart:  runStart,
 		runEnd:    len(s.tmpRuns),
 		width:     width,
+		advance:   advance,
 		byteStart: para.start + byteStart,
 		byteEnd:   para.start + byteEnd,
 	})

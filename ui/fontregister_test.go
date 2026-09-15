@@ -2,6 +2,7 @@ package ui_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -101,7 +102,7 @@ func TestBundledFacesAreRegisteredAsAdvertised(t *testing.T) {
 // TestWeightResolution pins the rule of [ui.ResolveFont]: exact family, exact
 // style, nearest weight with a tie going up.
 func TestWeightResolution(t *testing.T) {
-	const family = "TestWeightResolution"
+	family := testFamily(t)
 	light := loadTestFont(t)
 	// Three distinct parses, so that the three faces are three identities and
 	// a wrong pick is visible rather than accidentally equal.
@@ -203,7 +204,7 @@ func parseTestFont(t testing.TB) ui.Font {
 // one that is a decision rather than an implementation detail: gift does not
 // slant an upright face to stand in for a missing italic.
 func TestStyleIsNeverSubstituted(t *testing.T) {
-	const family = "TestStyleIsNeverSubstituted"
+	family := testFamily(t)
 	ui.RegisterFont(family, ui.WeightRegular, ui.StyleNormal, loadTestFont(t))
 
 	if _, ok := ui.ResolveFont(ui.FontQuery{Family: family, Style: ui.StyleItalic}); ok {
@@ -218,7 +219,7 @@ func TestStyleIsNeverSubstituted(t *testing.T) {
 // twice is two packages that both think they own it, and last-writer-wins is
 // the silent clobbering this register exists to prevent.
 func TestRegisterFontRejectsADuplicate(t *testing.T) {
-	const family = "TestRegisterFontRejectsADuplicate"
+	family := testFamily(t)
 	ui.RegisterFont(family, ui.WeightRegular, ui.StyleNormal, loadTestFont(t))
 
 	defer func() {
@@ -232,6 +233,24 @@ func TestRegisterFontRejectsADuplicate(t *testing.T) {
 	}()
 	ui.RegisterFont(family, ui.WeightRegular, ui.StyleNormal, loadTestFont(t))
 }
+
+// testFamily returns a family name no other registration in this process has
+// used, so that a test which registers a face can be run twice.
+//
+// It is needed because the register is process wide and a duplicate panics —
+// both on purpose, see [ui.RegisterFont] — and neither of those has an undo.
+// A test whose family was a constant therefore passed on the first run and
+// panicked on the second, which is what `go test -count=3` is for and how this
+// was found. The counter is not for concurrency: the project plan, section 13,
+// records that no test in this repository calls t.Parallel, and this one does
+// not either.
+func testFamily(t *testing.T) string {
+	t.Helper()
+	testFamilySeq++
+	return fmt.Sprintf("%s#%d", t.Name(), testFamilySeq)
+}
+
+var testFamilySeq int
 
 // TestRegisterFontRejectsNonsense checks the argument validation. A weight of
 // zero is a caller who forgot the field, and the zero Font is a caller whose

@@ -258,9 +258,53 @@ func (s Mods) Has(m Mods) bool { return s&m == m }
 // both platforms and is right on both.
 var ShortcutModifier = defaultShortcutModifier()
 
+// WordModifier is the modifier that turns a caret move into a word move:
+// option on macOS, control everywhere else.
+//
+// It is the sibling of [ShortcutModifier] and everything that variable says
+// about itself applies here: it is a property of the keyboard and not of a
+// window, gift dispatches nothing on it, and an application whose hardware
+// disagrees with [runtime.GOOS] assigns to it before the first frame.
+//
+// The two are deliberately *different* modifiers on macOS and deliberately the
+// *same* one on everything else, and that is not an inconsistency — it is what
+// the two conventions are. On macOS command-left is the start of the line and
+// option-left is the previous word; on X11 and Windows control-left is the
+// previous word and there is no chord for the start of the line beyond home.
+// A field that hard coded either convention would be wrong on the other
+// platform, and a field that invented a third would be wrong on both.
+//
+// # When the two collide, the word wins
+//
+// Binding rule, and it belongs here rather than in each view, because the
+// collision is a property of these two values and not of any one widget: where
+// this modifier and [ShortcutModifier] are the same key — which is every
+// platform except macOS, and therefore the platform of the project plan,
+// section 1 — a caret motion key held with it means the *word* motion. Home
+// and end are then the only way to the ends of the line, which is exactly what
+// the paragraph above says the X11 convention is.
+//
+// It cannot be resolved here, by making the two values distinct. Control is
+// genuinely both "the shortcut key" and "the word key" on X11: copy is
+// control-C and the previous word is control-left, and moving either of them
+// to another key would invent the third convention that is wrong on both
+// platforms. So what is fixed here is the precedence, and a view spells it as
+// testing [WordModifier] before [ShortcutModifier] in its motion keys; see
+// ui.TextField, whose key handler is the only consumer today. Shortcuts that
+// are not caret motions — the letters of copy, cut, paste and select all — are
+// unaffected: there is no word motion on a letter key to collide with.
+var WordModifier = defaultWordModifier()
+
 func defaultShortcutModifier() Mods {
 	if runtime.GOOS == "darwin" {
 		return ModMeta
+	}
+	return ModControl
+}
+
+func defaultWordModifier() Mods {
+	if runtime.GOOS == "darwin" {
+		return ModAlt
 	}
 	return ModControl
 }
@@ -643,6 +687,10 @@ type inputState struct {
 	// see [App.tickIndicators].
 	indicators []scene.Handle
 
+	// anims is the set of nodes inside their [EventContext.Animate] window.
+	// Same shape and same reason as indicators; see [App.tickAnimations].
+	anims []animation
+
 	// focusScan is the reusable stack of the focus traversal; see
 	// [App.focusNeighbour].
 	focusScan []scene.Handle
@@ -768,6 +816,7 @@ func (a *App) BeginInput(now time.Duration) {
 	a.in.now = now
 	a.tickScrolls(now)
 	a.tickIndicators(now)
+	a.tickAnimations(now)
 	a.tickKeyRepeat(now)
 	for i := range a.in.pointers {
 		p := &a.in.pointers[i]
@@ -1348,6 +1397,10 @@ func (a *App) forgetNode(h scene.Handle) {
 			break
 		}
 	}
+	// An unmounted node has no painter left to animate. The tick already
+	// skips invalid handles; this keeps the slice from growing across a long
+	// sequence of mounts and unmounts, exactly like the two above.
+	a.stopAnimating(h)
 	for i := range a.in.pointers {
 		p := &a.in.pointers[i]
 		if p.over == h {

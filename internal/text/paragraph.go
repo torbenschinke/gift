@@ -68,6 +68,24 @@ type Line struct {
 	// trailing whitespace. It may exceed the width limit of the request; see
 	// [Paragraph.Overflow].
 	Width float32
+	// Advance is the advance width of the line *including* the trailing
+	// whitespace Width leaves out.
+	//
+	// The two differ only for a line that ends in spaces, and then they
+	// differ for a good reason on both sides: a label that happens to end in
+	// a space must not be wider than the text it shows, which is Width, and a
+	// caret placed after that space must not sit on top of the character
+	// before it, which is this. Everything that measures wants Width;
+	// everything that maps a byte offset to an x coordinate wants Advance for
+	// the offset at the end of the line, because there is no glyph there to
+	// read a position from.
+	//
+	// It is a field and not a sum a caller can compute, because the advances
+	// of exactly those trailing glyphs are zeroed in the glyph list; see the
+	// trimming in the shaper. Without it the information does not exist
+	// outside this package at all, and a text field would have to re-shape
+	// the string to recover it.
+	Advance float32
 	// Runs are the glyph runs of this line, in logical order. A line produced
 	// by an empty paragraph, for example between two consecutive newlines, has
 	// no runs but still has a baseline and a height.

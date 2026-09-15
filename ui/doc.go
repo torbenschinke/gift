@@ -115,9 +115,11 @@
 //
 // # Input
 //
-// [Button] is the only interactive view so far. It is the full control the
-// project plan, section 7, describes and not a click handler: a press captures
-// the pointer, so a release somewhere else does not activate; a tap works
+// [Button], [TextField] and [Gallery] are the interactive views: the three
+// that declare themselves focusable and carry a keyboard handler. Button is
+// the full control the project plan, section 7, describes and not a click
+// handler: a press captures the pointer, so a release elsewhere does not
+// activate; a tap works
 // without ever producing a hover; tab reaches it and space or enter fires it;
 // and [ButtonView.Disabled] takes it out of all of that at once.
 //
@@ -126,6 +128,29 @@
 // the looks are declared up front, with [ButtonView.HoverStyle],
 // [ButtonView.PressedStyle] and [ButtonView.DisabledStyle], rather than chosen
 // per frame by the application.
+//
+// [TextField] is the single line text field of the project plan, section 19.
+// It edits a [TextEditor], which the application holds — that is where the
+// text, the caret and the selection live, and it is what makes them survive
+// the rebuild that every keystroke causes. Click to place the caret, drag to
+// select, double click for a word; the arrows with shift and with
+// [gift.WordModifier]; backspace and delete with gift's own key repeat; and
+// select all, copy, cut and paste on [gift.ShortcutModifier].
+//
+// A drag that leaves the press more vertically than horizontally is not a
+// selection but a scroll of whatever container the field sits in, so a form
+// of text fields stays scrollable by a finger that lands on one. The cost, and
+// it is deliberate: a caret drag that starts with an upward stroke scrolls
+// instead of selecting. See [TextFieldView].
+//
+// Copy, cut and paste go through [Clipboard], a seam with an in-process
+// default, so they work and are testable before the platform implementation of
+// section 19 exists. Install one with [SetClipboard].
+//
+// Umlauts, accents, AltGr and dead keys work, because they are ordinary
+// characters that arrive on [gift.EventRune] fully resolved. CJK composition,
+// a preedit string and a candidate window do not, and stay excluded by the
+// project plan, section 14. There is no undo and no multi line editing.
 //
 // Only a view that declares an interactor is a hit target. A plain [VStack] is
 // transparent to input: a click in its padding or in the gap between two

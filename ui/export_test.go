@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/torbenschinke/gift/asset"
 	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/internal/text"
@@ -13,9 +16,31 @@ import (
 // to be checked from outside.
 
 // MeasureForTest returns the extent internal/text computes for the given text.
+//
+// It panics on a string that ends in whitespace, and that is not pedantry. A
+// shaped line reports a width that *excludes* its trailing whitespace, on
+// purpose — a label ending in a space must not be wider than the text it shows
+// — so measuring "hello " returns the width of "hello". A test that converts a
+// measured width into a window coordinate, which is what every click test in
+// textfield_test.go does, would then compute an x that is one space too far to
+// the left and fail somewhere else entirely, with an offset that looks like an
+// off-by-one in the widget. The caret position after a trailing space is a
+// different quantity with a test of its own; see
+// TestTheCaretSitsAfterATrailingSpace.
 func MeasureForTest(f Font, s string, size, maxWidth float32) geom.Size {
+	if t := strings.TrimRight(s, " \t\n\v\f\r\u0085\u00a0"); t != s {
+		panic("gift/ui: MeasureForTest(" + strconv.Quote(s) + "): a shaped line does not count " +
+			"its trailing whitespace, so this returns the width of " + strconv.Quote(t) +
+			" and a test that turns it into a coordinate lands in the wrong place. Measure the " +
+			"prefix you actually mean, or assert the caret position instead.")
+	}
 	return text.Default().Measure(text.Request{Text: s, Font: f.f, Size: size, MaxWidth: maxWidth})
 }
+
+// DefaultFieldWidth is the width a [TextFieldView] gives itself when nothing
+// bounds it. It is exported here rather than as API for the one test of the
+// unbounded branch; a caller who wants another width writes Frame or Flex.
+const DefaultFieldWidth = defaultFieldWidth
 
 // LineCountForTest returns the number of visual lines the given text produces.
 func LineCountForTest(f Font, s string, size, maxWidth float32) int {
