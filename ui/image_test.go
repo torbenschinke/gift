@@ -3,6 +3,7 @@ package ui_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -1035,5 +1036,144 @@ func TestWarmBindUsesThePipelineRevision(t *testing.T) {
 	}
 	if n := countImageOps(h); n != 2 {
 		t.Errorf("%d image operations, want 2 — both views drew the picture\n%s", n, h.Dump())
+	}
+}
+
+// --- the device density ---------------------------------------------------------
+
+// TestImageRungIsChosenInDevicePixels is the image half of the project plan,
+// section 18: "Die Bildleiter waehlt ihre Sprosse in Geraetepixeln. Heute
+// waehlt sie nach der Layoutgroesse in Punkten, ein Foto ist also auf einem
+// 2x-Display unabhaengig vom Framebuffer-Problem um den Faktor zwei
+// unterversorgt."
+//
+// The view is 60 logical pixels on a ladder of 64, 128 and 256. At density 1
+// it asks for 60 and gets the 64 rung; at density 2 it covers 120 real pixels,
+// asks for 120 and gets 128. The texture that reaches the backend is therefore
+// twice as wide, which is the number this test reads — a rung chosen from the
+// logical size would hand a 2x display the 64 pixel thumbnail and magnify it.
+func TestImageRungIsChosenInDevicePixels(t *testing.T) {
+	for _, c := range []struct {
+		density float64
+		wantPx  int
+	}{
+		{1, 64},
+		{2, 128},
+		// A fractional factor is rounded before it ever reaches the ladder;
+		// see gift.RoundDensity. 1.5 is 2, so it gets the same rung as 2 and
+		// not a third one between the two.
+		{1.5, 128},
+	} {
+		t.Run(fmt.Sprintf("density-%v", c.density), func(t *testing.T) {
+			// A source large enough that the ladder, and not the picture,
+			// decides the rung. The fixtures next door are 64 pixels wide, so
+			// against them every density would answer 64 and the test would
+			// pass without measuring anything.
+			dir := t.TempDir()
+			path := filepath.Join(dir, "big.png")
+			if err := os.WriteFile(path, pngOf(t, 512, 512, color.RGBA{200, 80, 60, 255}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			src := asset.File(path)
+			del := newDeliverer()
+			pipe := asset.NewPipeline(asset.Config{
+				Deliver: del.deliver, Sizes: []int{64, 128, 256}, Workers: 1,
+			})
+			defer func() { pipe.Close(); del.drain() }()
+			ui.ResetImageService()
+			ui.SetImagePipeline(pipe)
+			defer ui.ResetImageService()
+
+			imgs := newFakeImages()
+			h := gifttest.New(t, gifttest.Options{
+				View:    ui.Image(src).Frame(60, 60).Key("pic"),
+				Size:    geom.Sz(80, 80),
+				Density: c.density,
+			})
+			h.App().SetImages(imgs)
+			del.waitFor(t, 1)
+			del.drain()
+			imgs.beginFrame()
+			h.Frame()
+			imgs.beginFrame()
+			h.Frame()
+
+			if imgs.uploads == 0 {
+				t.Fatalf("nothing was uploaded at density %v", c.density)
+			}
+			got := imgs.recs[len(imgs.recs)-1].w
+			if got != c.wantPx {
+				t.Errorf("density %v: the uploaded thumbnail is %d pixels wide, want %d",
+					c.density, got, c.wantPx)
+			}
+		})
+	}
+}
+
+// TestGalleryRungIsChosenInDevicePixels is the same claim for the gallery,
+// which goes through the same pipeline by the requirement of the project plan,
+// section 10, and therefore had to take the same change: the tile rectangle is
+// a document rectangle in logical pixels and the rung is that times the
+// density.
+//
+// It asserts on the width of the texture that reaches the backend rather than
+// on an internal counter, because that is the thing the user sees: a 2x
+// display drawing a 128 pixel thumbnail into a 200 pixel tile is the
+// undersupply section 18 names.
+func TestGalleryRungIsChosenInDevicePixels(t *testing.T) {
+	for _, c := range []struct {
+		density float64
+		wantPx  int
+	}{
+		{1, 128},
+		{2, 256},
+	} {
+		t.Run(fmt.Sprintf("density-%v", c.density), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "big.png")
+			if err := os.WriteFile(path, pngOf(t, 512, 512, color.RGBA{60, 160, 200, 255}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			src := asset.File(path)
+			m := src.Metadata()
+			m.Width, m.Height = 512, 512
+
+			del := newDeliverer()
+			pipe := asset.NewPipeline(asset.Config{
+				Deliver: del.deliver, Sizes: []int{128, 256}, Workers: 1,
+			})
+			defer func() { pipe.Close(); del.drain() }()
+			ui.ResetImageService()
+			ui.SetImagePipeline(pipe)
+			defer ui.ResetImageService()
+
+			g := ui.NewGallery(asset.NewCollection([]asset.Metadata{m}))
+			g.SetSources(func(asset.ID) asset.Source { return src })
+
+			imgs := newFakeImages()
+			h := gifttest.New(t, gifttest.Options{
+				View: ui.ImageGallery(g).
+					Layout(ui.Masonry().MinColumnWidth(100).Gap(4)).
+					Frame(110, 140).Key("gallery"),
+				Size:    geom.Sz(140, 160),
+				Density: c.density,
+			})
+			h.App().SetImages(imgs)
+			del.waitFor(t, 1)
+			del.drain()
+			imgs.beginFrame()
+			h.Frame()
+			imgs.beginFrame()
+			h.Frame()
+
+			if imgs.uploads == 0 {
+				t.Fatalf("the gallery uploaded nothing at density %v", c.density)
+			}
+			got := imgs.recs[len(imgs.recs)-1].w
+			if got != c.wantPx {
+				t.Errorf("density %v: the tile texture is %d pixels wide, want %d",
+					c.density, got, c.wantPx)
+			}
+		})
 	}
 }

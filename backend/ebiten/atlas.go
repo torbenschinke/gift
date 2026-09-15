@@ -31,6 +31,22 @@ type AtlasConfig struct {
 }
 
 // Defaults for [AtlasConfig].
+//
+// # They were re-measured for the device density and left alone
+//
+// Rasterising in device pixels — the project plan, section 18 — multiplies the
+// area of every mask by the square of the density, so the obvious worry is
+// that these numbers stop being enough at 2x. They do not, and
+// TestAtlasBudgetAtTwoX is the measurement rather than the opinion: the whole
+// printable ASCII range at the five sizes a desktop application uses packs
+// into 386 KiB of coverage at 1x, 1.22 MiB at 2x and 2.55 MiB at 3x. Up to and
+// including 2x that is one page of four; 3x is the first density that needs a
+// second one, and four pages still hold it with room to spare.
+//
+// Growing the page for high density displays was considered and rejected. A
+// page is allocated whole, so a larger default would cost every 1x
+// installation — the Raspberry Pi of section 1 — four times the GPU memory in
+// order to spare a 2x machine an allocation it is not making.
 const (
 	// DefaultAtlasPageSize is 1024, which holds roughly four thousand glyphs
 	// at a body text size and is comfortably below every GL ES 3.0 minimum
@@ -47,6 +63,13 @@ const (
 )
 
 // glyphKey identifies one rasterised glyph.
+//
+// The size is in *device* pixels: it is what [GlyphAtlas.Lookup] computed from
+// the glyph's nominal size and the scale of the transform it is drawn under,
+// so the same label on a 1x and on a 2x display occupies two entries with two
+// bitmaps. That is deliberate and is the point of the project plan,
+// section 18; the alternative, one entry stretched by the transform, is the
+// blur this key was changed to remove.
 //
 // The size is a quantised integer and not a float32, for the two reasons the
 // shaping cache gives for the same choice: a NaN key would never equal itself
@@ -224,13 +247,40 @@ const glyphPad = 1
 // Lookup returns the entry index for a glyph, rasterising and packing it if it
 // is not cached yet, and reports whether the glyph could be resolved at all.
 //
+// # The size in the key is a device size
+//
+// scale is how many device pixels one unit of the glyph's coordinate space
+// covers — the device density of the project plan, section 18, composed with
+// whatever transform the text sits under — and the size that enters the key,
+// the rasteriser and the packed bitmap is [render.Glyph.Size] times it. A 16
+// point label therefore occupies a 16 pixel mask on a 1x display and a 32
+// pixel mask on a 2x one, and the two are separate entries under separate
+// keys rather than one entry drawn at two sizes.
+//
+// That is what makes text crisp instead of merely larger, and it is the
+// reason the glyph material may keep [eb.FilterNearest]: the mask is
+// rasterised for the exact number of pixels it is drawn into, so the sampler
+// never interpolates. See [Renderer.appendGlyphs] for the other half, which
+// transforms the glyph origin and leaves the extent alone.
+//
+// A scale of 1 reproduces the previous behaviour exactly, down to the key:
+// Size*1 is Size and [quantize] is the same function on the same number.
+//
 // The hit path is a map lookup on a comparable struct key plus one integer
-// write to the page use stamp, and allocates nothing.
-func (a *GlyphAtlas) Lookup(g render.Glyph) (int32, bool) {
+// write to the page use stamp, and allocates nothing. The multiplication is
+// one float32 multiply per glyph, hoisted out of the loop by the caller for
+// the scale itself.
+func (a *GlyphAtlas) Lookup(g render.Glyph, scale float32) (int32, bool) {
 	if !(g.Size > 0) {
 		return 0, false
 	}
-	k := glyphKey{font: g.Font, size: quantize(g.Size), id: g.ID}
+	if !(scale > 0) || !(scale < math.MaxInt32) {
+		// A singular or non-finite transform. The op will collapse anyway;
+		// rasterising at the nominal size merely keeps the key finite.
+		scale = 1
+	}
+	size := g.Size * scale
+	k := glyphKey{font: g.Font, size: quantize(size), id: g.ID}
 	if i, ok := a.index[k]; ok {
 		a.stats.Hits++
 		e := &a.entries[i]
@@ -254,7 +304,7 @@ func (a *GlyphAtlas) Lookup(g render.Glyph) (int32, bool) {
 		a.stats.Rejected++
 		return 0, false
 	}
-	return a.insert(k, f, g.Size, g.ID)
+	return a.insert(k, f, size, g.ID)
 }
 
 // Entry returns the packed rectangle and bearing of an entry obtained from

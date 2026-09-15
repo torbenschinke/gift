@@ -73,6 +73,19 @@ func (l *LayoutContext) Node() NodeRef { return NodeRef{l.node} }
 // source, and it is deliberately not exposed as either.
 func (l *LayoutContext) Pass() uint64 { return l.app.layoutPass }
 
+// Density returns the device density, that is how many physical pixels one
+// logical pixel covers. It is always an integer of at least one; see
+// [App.SetDensity].
+//
+// A layouter must not use it to measure anything. Layout is in logical
+// pixels at every density, and a size that changed with the display would
+// make the same application two different applications. What it is for is
+// choosing a *resource* whose resolution has to match the screen: the image
+// ladder of the project plan, section 18, asks for a rung in device pixels,
+// and the rung is chosen in layout because that is where the request is
+// scheduled. See ui.ImageView.
+func (l *LayoutContext) Density() float32 { return l.app.density }
+
 // ChildCount returns the number of children of the node being laid out.
 func (l *LayoutContext) ChildCount() int { return len(l.nd.children) }
 

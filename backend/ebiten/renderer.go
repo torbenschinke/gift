@@ -908,11 +908,23 @@ func (r *Renderer) appendGlyphs(l *render.List, op render.Op) {
 	}
 
 	xf := l.Xform(op.Xform)
+	// The raster scale of the run. It is the density of the display at the
+	// root of the display list, times whatever a container above this text
+	// added, and it is the factor the atlas rasterises at; see
+	// [GlyphAtlas.Lookup]. One factor and not two, because a glyph mask has
+	// one resolution: under a non-uniform scale the text is drawn uniformly
+	// at the smaller factor rather than stretched, which is the same choice
+	// and the same reason as the corner radius in [Renderer.appendOp].
+	sx, sy := deviceScale(xf)
+	scale := sx
+	if sy < scale {
+		scale = sy
+	}
 	fast := xf.B == 0 && xf.C == 0 && xf.A > 0 && xf.D > 0
 	drawn := false
 	for i := range gs {
 		g := &gs[i]
-		ei, ok := r.atlas.Lookup(*g)
+		ei, ok := r.atlas.Lookup(*g, scale)
 		if !ok {
 			continue
 		}
@@ -922,14 +934,31 @@ func (r *Renderer) appendGlyphs(l *render.List, op render.Op) {
 			continue
 		}
 		r.material(MaterialGlyph, r.atlas.Page(ei))
-		dst := geom.Rc(
-			g.X+float32(e.left), g.Y+float32(e.top),
-			g.X+float32(e.left+e.w), g.Y+float32(e.top+e.h))
 		src := geom.Rc(float32(e.x), float32(e.y), float32(e.x+e.w), float32(e.y+e.h))
 		var wrote bool
 		if fast {
-			wrote = r.appendTexturedQuad(dst, src, clip, xf, op.Color)
+			// The mask is already in device pixels, so only its *origin* is
+			// transformed and its extent is copied one to one. Mapping the
+			// whole rectangle through xf instead would scale a bitmap that
+			// was rasterised for this scale in the first place, and under a
+			// nearest filter that duplicates rows of coverage rather than
+			// resampling them. At scale one this is the arithmetic it always
+			// was: the origin is a translation and the extent is unchanged.
+			ox := xf.A*g.X + xf.TX
+			oy := xf.D*g.Y + xf.TY
+			dev := geom.Rc(
+				ox+float32(e.left), oy+float32(e.top),
+				ox+float32(e.left+e.w), oy+float32(e.top+e.h))
+			wrote = r.appendDeviceQuad(dev, src, clip, op.Color)
 		} else {
+			// The general path keeps mapping a *local* rectangle, because a
+			// rotation has to rotate the glyph with the text. The extent is
+			// divided by the scale it was rasterised at so that the product
+			// is the mask's own size again. gift produces no such transform;
+			// see [Renderer.appendTexturedQuadTransformed].
+			dst := geom.Rc(
+				g.X+float32(e.left)/scale, g.Y+float32(e.top)/scale,
+				g.X+float32(e.left+e.w)/scale, g.Y+float32(e.top+e.h)/scale)
 			wrote = r.appendTexturedQuadTransformed(dst, src, clip, xf, op.Color)
 		}
 		if wrote {
@@ -957,30 +986,42 @@ func (r *Renderer) appendGlyphs(l *render.List, op render.Op) {
 // rectangle to a source rectangle through a clip is the same arithmetic. See
 // [Renderer.appendImage].
 //
-// # For glyphs, the scale is assumed to be one
+// # Glyphs no longer come through here, and that is the fix of WU-W
 //
-// The destination rectangle is the atlas rectangle mapped through xf, so a
-// scale other than one stretches a bitmap that was rasterised at the glyph's
-// nominal size. Under a nearest filter that is not a smooth resample: it
-// duplicates and drops rows of coverage, and the text comes out the wrong
-// weight. The correct answer is to rasterise at the *effective* size, which
-// means folding the device scale into the atlas key — a change to
-// [glyphKey] and to what internal/text is asked for, not to this function.
+// This function used to serve glyphs too, and its documentation carried a
+// warning: the destination rectangle was the atlas rectangle mapped through
+// xf, so a scale other than one stretched a bitmap rasterised at the glyph's
+// nominal size, and under a nearest filter that duplicates and drops rows of
+// coverage instead of resampling them. The note said the correct answer was
+// to rasterise at the effective size and fold the device scale into the atlas
+// key. That is what the device density of the project plan, section 18, now
+// does — see [GlyphAtlas.Lookup] — and the note has become the behaviour:
+// [Renderer.appendGlyphs] transforms the glyph *origin* and hands the mask's
+// own device extent to [Renderer.appendDeviceQuad].
 //
-// Nothing in gift produces such a transform today. A scroll container pushes a
-// pure translation, which leaves the mapping one to one; see the package
-// documentation, "Clipping and transforms". This is recorded here so that the
-// first thing to push a scale finds the note rather than the artefact.
-//
-// None of that applies to an *image*, which is resampled on purpose: a
-// thumbnail comes off a ladder of a few sizes and is drawn at whatever the
-// tile rectangle happens to be, so the image material uses a linear filter
-// while the glyph material uses a nearest one. That is the only difference
-// between the two and it lives in the draw options, not here.
+// The warning is therefore gone rather than more urgent. What remains true is
+// the assumption *this* function still makes, which is nothing: it maps a
+// rectangle through a transform and interpolates texture coordinates into the
+// clip, at any scale, and an image is resampled on purpose. A thumbnail comes
+// off a ladder of a few sizes and is drawn at whatever the tile rectangle
+// happens to be, so the image material uses a linear filter while the glyph
+// material uses a nearest one. That is the only difference between the two
+// and it lives in the draw options, not here.
 func (r *Renderer) appendTexturedQuad(dst, src, clip geom.Rect, xf geom.Affine2D, col render.Color) bool {
 	dev := geom.Rc(
 		xf.A*dst.Min.X+xf.TX, xf.D*dst.Min.Y+xf.TY,
 		xf.A*dst.Max.X+xf.TX, xf.D*dst.Max.Y+xf.TY)
+	return r.appendDeviceQuad(dev, src, clip, col)
+}
+
+// appendDeviceQuad emits one textured quad whose destination is already in
+// device space, clipped to clip with the texture coordinates interpolated
+// into the visible part.
+//
+// It is the second half of [Renderer.appendTexturedQuad] and the whole of the
+// glyph path, which has a device rectangle to begin with because a glyph mask
+// is rasterised in device pixels.
+func (r *Renderer) appendDeviceQuad(dev, src, clip geom.Rect, col render.Color) bool {
 	vis := dev.Intersect(clip)
 	if vis.IsEmpty() {
 		return false
@@ -1084,6 +1125,15 @@ type shapeParams struct {
 
 // deviceScale returns how many device pixels one local unit covers along the
 // local x and y axis under xf.
+//
+// Until WU-W this answered (1, 1) for every operation gift produced, because
+// the root of the display list was the identity and the only other producer
+// was a scroll container's translation. It is now the device density of the
+// project plan, section 18: on a 2x display every operation arrives under a
+// uniform scale of two, and everything below that is measured in device
+// pixels — the radius, the stroke width, the antialiasing pad, the shadow
+// sigma, and in glass.go the blur radius and the refraction — is finally
+// exercised with a factor other than one.
 //
 // This is the whole trick that lets the shape shader work without dfdx and
 // dfdy, so it is worth being precise about when it is exact.

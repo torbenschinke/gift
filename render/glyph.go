@@ -54,9 +54,18 @@ type Glyph struct {
 	Font FontID
 	// ID is the glyph index inside Font.
 	ID GlyphID
-	// Size is the em size in pixels the glyph was shaped at and must be
-	// rasterised at. It is part of the atlas key: the same glyph at two sizes
-	// is two entries.
+	// Size is the em size the glyph was shaped at, in the same units as X
+	// and Y — that is, before the transform named by [Op.Xform] is applied.
+	// It is part of the atlas key: the same glyph at two sizes is two
+	// entries.
+	//
+	// It is not, on its own, the size the glyph is rasterised at. A backend
+	// multiplies it by the scale of that transform, which on a high density
+	// display is the device density of the project plan, section 18, so that
+	// a 16 point label is a 32 pixel mask on a 2x screen. The display list
+	// stays in one coordinate system and the resolution of the mask is a
+	// property of the output, which is where it belongs: a list is
+	// renderer-neutral and does not know what it will be drawn on.
 	Size float32
 	// X and Y are the glyph origin on the baseline, in the coordinate space
 	// of the owning operation. Both are whole numbers.

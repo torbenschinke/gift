@@ -41,21 +41,98 @@ import (
 //     session. A Pi touchscreen arrives as a mouse through the display
 //     server, which is the honest state of affairs and not a gap in this
 //     file.
+//   - Characters: [eb.AppendInputChars], which appends into a caller supplied
+//     slice and whose documentation names it "the environment's
+//     locale-dependent translation of keyboard input to Unicode characters",
+//     as opposed to a Key, which "represents a physical key of US keyboard
+//     layout". These are two different channels and this file polls both:
+//     see [inputBridge.pollRunes]. Until the project plan, section 19, made
+//     the point, only the key half existed here, which meant that no
+//     printable character reached gift at all.
 //   - Key repeat: there is none. A search of the module for "repeat" finds
-//     nothing outside gamepad code; the closest thing is
-//     inpututil.KeyPressDuration, which counts *ticks* a key has been held.
-//     Anything with an initial delay and a rate has to be built on top of
-//     that tick count, and gift does not build it, because nothing in this
-//     work unit repeats: space and enter activate on the edge, and tab moves
-//     the focus on the edge. A text field would need it; there is no text
-//     field, and section 14 excludes the editor.
+//     nothing outside gamepad code and one GLFW mouse callback that discards
+//     glfw.Repeat; the closest thing is inpututil.KeyPressDuration, which
+//     counts *ticks* a key has been held. gift builds the repeat itself, on
+//     its own clock and above this file — see [gift.KeyRepeatDelay] — so the
+//     bridge stays what it is, an edge detector, and every backend gets the
+//     same delay and rate without writing it again.
+//
+// # The function values
+//
+// Every Ebitengine reading this file takes goes through a field of this struct
+// rather than through the package function directly — [inputBridge.keyPressed]
+// and [inputBridge.appendChars] for the keyboard, [inputBridge.cursor] and
+// [inputBridge.wheel] for the mouse. They are set once, in [newInputBridge],
+// and they exist so that the edge detection, the rune forwarding, the key
+// table and the density conversion can be driven from a test: an Ebitengine
+// global means nothing outside a running game loop, and before this seam
+// existed the bridge's own test had to *reimplement* the diff it was testing.
+// A func value of a package level function is a pointer to a static funcval,
+// so the seam costs one indirect call per reading and allocates nothing.
+//
+// # Coordinates
+//
+// Everything Ebitengine reports is in the coordinate space of the screen
+// image, which after [game.LayoutF] is the *physical* framebuffer: its own
+// documentation of CursorPositionF says the position "is 'logical' position
+// and this considers the scale of the screen", and the screen gift asks for
+// is the device sized one. gift's pointer model, its hit testing and its
+// scroll offsets are in logical pixels, so this is the one boundary where the
+// density is divided out again. See [gift.App.SetDensity] for why the input
+// half is not scaled instead.
 type inputBridge struct {
 	app   *gift.App
 	start time.Time
 
+	// density is the factor physical positions are divided by. It is
+	// refreshed from the App once per poll, because a window dragged to
+	// another monitor changes it between two ticks.
+	density float32
+
+	// keyPressed and appendChars are the keyboard readings; see the type
+	// comment.
+	keyPressed  func(eb.Key) bool
+	appendChars func([]rune) []rune
+
+	// cursor and wheel are the mouse readings, for the same reason and at
+	// the same cost.
+	//
+	// They carry more weight than convenience. The cursor arrives in device
+	// pixels and has to be divided by the density, and the wheel arrives as
+	// a notch count and must *not* be; the difference between the two was
+	// stated only in a comment until WU-AA, and a comment is not a test.
+	// TestPollMouseConvertsThePositionAndNotTheWheel is.
+	cursor func() (float64, float64)
+	wheel  func() (float64, float64)
+
+	// runes is the buffer [eb.AppendInputChars] appends this tick's
+	// characters into. It is reused and never handed out, which is what
+	// keeps the rune path inside the zero allocation contract of the project
+	// plan, section 11: Ebitengine's own documentation promises that "giving
+	// a slice that already has enough capacity works efficiently", and its
+	// implementation is one append of the tick's runes onto the slice it was
+	// given, so the promise is structural and not a hope.
+	//
+	// It is measured rather than believed, in two halves, because neither
+	// half alone is honest. BenchmarkPollRunes drives this function through
+	// the appendChars seam with a stand in that appends exactly the way
+	// Ebitengine's does, and is 0 B/op with characters actually flowing.
+	// BenchmarkAppendInputChars calls the real function, which outside a
+	// running game loop has no characters to report and therefore only
+	// proves that the empty case allocates nothing. A test binary cannot
+	// press a key on the host keyboard, and saying so is better than a
+	// benchmark that looks like it did.
+	//
+	// The capacity is what a human can type between two ticks at 60 Hz plus
+	// a wide margin; a paste does not arrive through this channel at all.
+	// Overflowing it is not an error, it grows once and stays grown.
+	runes []rune
+
 	// keys is the set of keys gift has a name for, together with the
 	// Ebitengine key that produces it. A fixed table rather than a scan of
-	// all 100-odd key codes: gift acts on nine keys and polling nine
+	// all 100-odd key codes: gift names a couple of dozen keys — see
+	// [trackedKeys], which section 19 of the project plan widened by the
+	// editing keys and the five shortcut letters — and polling that many
 	// booleans per tick is free, polling a hundred is not.
 	down [len(trackedKeys)]bool
 
@@ -90,6 +167,24 @@ var trackedKeys = [...]struct {
 	{eb.KeyEnd, gift.KeyEnd},
 	{eb.KeyPageUp, gift.KeyPageUp},
 	{eb.KeyPageDown, gift.KeyPageDown},
+
+	// Editing. Backspace and delete are what a text field cannot do without,
+	// and both are keys rather than characters on every platform: the
+	// character callback never reports them, because they are not printable.
+	{eb.KeyBackspace, gift.KeyBackspace},
+	{eb.KeyDelete, gift.KeyDelete},
+
+	// The five shortcut letters. These entries are the one place in gift
+	// where a physical key really is meant as a letter, and the reason is
+	// that the shortcut is a finger position: a user on an AZERTY keyboard
+	// presses the key labelled Q for select all, exactly as every other
+	// application on that machine expects. Text never comes from here; it
+	// comes from [inputBridge.pollRunes].
+	{eb.KeyA, gift.KeyA},
+	{eb.KeyC, gift.KeyC},
+	{eb.KeyV, gift.KeyV},
+	{eb.KeyX, gift.KeyX},
+	{eb.KeyZ, gift.KeyZ},
 }
 
 var trackedButtons = [...]eb.MouseButton{eb.MouseButtonLeft, eb.MouseButtonRight, eb.MouseButtonMiddle}
@@ -98,6 +193,14 @@ func newInputBridge(app *gift.App) *inputBridge {
 	return &inputBridge{
 		app:     app,
 		start:   time.Now(),
+		density: 1,
+
+		keyPressed:  eb.IsKeyPressed,
+		appendChars: eb.AppendInputChars,
+		cursor:      eb.CursorPositionF,
+		wheel:       eb.Wheel,
+
+		runes:   make([]rune, 0, 16),
 		ids:     make([]eb.TouchID, 0, 8),
 		prevIDs: make([]eb.TouchID, 0, 8),
 		pos:     make([]geom.Point, 0, 8),
@@ -116,16 +219,18 @@ func newInputBridge(app *gift.App) *inputBridge {
 // is a scalar.
 func (b *inputBridge) poll() {
 	b.app.BeginInput(time.Since(b.start))
-	b.app.SetModifiers(modifiers())
+	b.density = b.app.Density()
+	b.app.SetModifiers(b.modifiers())
 	b.pollKeys()
+	b.pollRunes()
 	b.pollMouse()
 	b.pollTouches()
 }
 
 func (b *inputBridge) pollKeys() {
-	mods := modifiers()
+	mods := b.modifiers()
 	for i, k := range trackedKeys {
-		now := eb.IsKeyPressed(k.eb)
+		now := b.keyPressed(k.eb)
 		if now == b.down[i] {
 			continue
 		}
@@ -138,26 +243,65 @@ func (b *inputBridge) pollKeys() {
 	}
 }
 
-func modifiers() gift.Mods {
+// pollRunes forwards the characters the platform produced this tick.
+//
+// This is the locale dependent half of the keyboard and the only way a
+// printable character can reach gift. It is *not* derived from the key table
+// above and must never be: [eb.IsKeyPressed] answers about a physical key of a
+// US keyboard, so deriving characters from it would type 'q' on a French
+// keyboard whose user pressed 'a', and would have no answer at all for an
+// umlaut, an accent or anything behind AltGr.
+//
+// It is also not an IME. Ebitengine has no composition API and the project
+// plan, section 14, keeps CJK candidate windows out of scope. What does pass
+// through here is everything a dead key or a compose sequence resolved to,
+// because by the time the platform reports a character the composition is
+// over — that is ordinary localised typing and not an IME.
+//
+// Two filters are already applied before the buffer is read, both by
+// Ebitengine and neither repeated here: its InputState.appendRune drops
+// everything that is not unicode.IsPrint, and its GLFW character callback
+// "skips the characters that are produced with the modifier combinations the
+// platform treats as shortcuts, like Ctrl+= on X11". So control-V delivers no
+// 'v' to a text field, and gift needs no modifier test of its own.
+func (b *inputBridge) pollRunes() {
+	b.runes = b.appendChars(b.runes[:0])
+	for _, r := range b.runes {
+		b.app.TypeRune(r)
+	}
+}
+
+func (b *inputBridge) modifiers() gift.Mods {
 	var m gift.Mods
-	if eb.IsKeyPressed(eb.KeyShift) {
+	if b.keyPressed(eb.KeyShift) {
 		m |= gift.ModShift
 	}
-	if eb.IsKeyPressed(eb.KeyControl) {
+	if b.keyPressed(eb.KeyControl) {
 		m |= gift.ModControl
 	}
-	if eb.IsKeyPressed(eb.KeyAlt) {
+	if b.keyPressed(eb.KeyAlt) {
 		m |= gift.ModAlt
 	}
-	if eb.IsKeyPressed(eb.KeyMeta) {
+	if b.keyPressed(eb.KeyMeta) {
 		m |= gift.ModMeta
 	}
 	return m
 }
 
+// logical converts a position Ebitengine reported in framebuffer pixels into
+// the logical pixels gift's pointer model works in. At density 1 it is the
+// identity, and the division is by an integer power of the density, so a
+// whole physical coordinate stays whole for the 2x case this exists for.
+func (b *inputBridge) logical(x, y float64) geom.Point {
+	if b.density == 1 || !(b.density > 0) {
+		return geom.Pt(float32(x), float32(y))
+	}
+	return geom.Pt(float32(x)/b.density, float32(y)/b.density)
+}
+
 func (b *inputBridge) pollMouse() {
-	x, y := eb.CursorPositionF()
-	pos := geom.Pt(float32(x), float32(y))
+	x, y := b.cursor()
+	pos := b.logical(x, y)
 	b.app.PointerMove(gift.MousePointer, gift.PointerMouse, pos)
 
 	for i, btn := range trackedButtons {
@@ -179,7 +323,10 @@ func (b *inputBridge) pollMouse() {
 		}
 	}
 
-	if wx, wy := eb.Wheel(); wx != 0 || wy != 0 {
+	if wx, wy := b.wheel(); wx != 0 || wy != 0 {
+		// The wheel is *not* divided. It is a notch count and not a length;
+		// see [gift.ScrollConfig.WheelStep], which turns one notch into a
+		// distance in logical pixels.
 		b.app.PointerWheel(pos, geom.Pt(float32(wx), float32(wy)))
 	}
 }
@@ -199,7 +346,7 @@ func (b *inputBridge) pollTouches() {
 	b.pos = b.pos[:0]
 	for _, id := range b.ids {
 		x, y := eb.TouchPositionF(id)
-		pos := geom.Pt(float32(x), float32(y))
+		pos := b.logical(x, y)
 		b.pos = append(b.pos, pos)
 		if indexOf(b.prevIDs, id) >= 0 {
 			b.app.PointerMove(gift.PointerID(id), gift.PointerTouch, pos)

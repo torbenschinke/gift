@@ -184,3 +184,84 @@ func TestGlyphGolden(t *testing.T) {
 	h.Find(gifttest.ByKey("label")).AssertDrawsGlyphs()
 	h.AssertGolden("glyphs")
 }
+
+// TestGlassFullDoesNotDependOnAllocationHistory pins the repair of a defect
+// that made the committed glass-full golden pass by luck.
+//
+// # The defect
+//
+// The Full composite added its grain from hash21(dstPos.xy). dstPos is a
+// position in the *destination image*, and gift draws a frame that contains a
+// material into a pooled, screen sized scene target rather than onto the
+// screen — Ebitengine refuses the screen as a shader source, which the project
+// plan, section 8, records. When that target lives on an atlas, dstPos carries
+// its atlas origin, and the origin depends on what the process allocated
+// before, not on anything in the display list.
+//
+// So the same scene rendered twice produced two different noise fields. It was
+// measured at 3590 of 9600 pixels differing by up to 5 per channel at density
+// 1 and up to 6 at density 2 — above [gifttest.GoldenTolerance], which is 4,
+// and therefore enough to fail the glass-full golden. It did not fail in
+// practice only because the goldens happened to be taken in the same order the
+// tests run in. It is a defect of section 8 and it was density independent;
+// the density work merely stumbled over it.
+//
+// # The test
+//
+// A 2x frame first, purely to move the allocator along, and then the same 1x
+// scene twice. The two must be *bit* identical — not within the golden
+// tolerance, because the whole failure mode is a difference small enough to
+// argue about. Under the old shader the second render differed from the first
+// over the entire pane.
+//
+// The repair is in glass.kage: the grain is anchored to the position inside
+// the material region. That is also the physically sensible anchor, since
+// grain is frost in the pane and travels with it.
+func TestGlassFullDoesNotDependOnAllocationHistory(t *testing.T) {
+	scene := func(d float64) gifttest.Options {
+		o := gifttest.Options{
+			View: glassScene(ui.Full), Size: geom.Sz(120, 80), Background: panelBG,
+		}
+		o.Density = d
+		return o
+	}
+	// Renders, and skips without giftgpu with the usual explanation, before
+	// anything asks for pixels directly.
+	h := gifttest.New(t, scene(2))
+	h.Find(gifttest.ByKey("panel")).AssertGlassQuality(ui.Full)
+	// The corner of the backdrop plate. Any pixel assertion would do: what is
+	// wanted here is a check that needs real pixels, so that a build without
+	// giftgpu skips with the usual explanation instead of failing inside
+	// Image, and one that writes no file — see
+	// TestDensityOneIsBitIdenticalToTheCommittedGoldens for why that matters.
+	h.AssertPixel(geom.Pt(0, 0), ui.RGB(20, 24, 34))
+
+	one := gifttest.New(t, scene(1)).Image()
+	two := gifttest.New(t, scene(1)).Image()
+	if one == nil || two == nil {
+		t.Fatal("no framebuffer")
+	}
+	if one.Bounds() != two.Bounds() {
+		t.Fatalf("the two frames are %v and %v", one.Bounds(), two.Bounds())
+	}
+	b := one.Bounds()
+	diff, worst := 0, 0
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			ar, ag, ab, aa := one.At(x, y).RGBA()
+			br, bg, bb, ba := two.At(x, y).RGBA()
+			d := max(chanDiff(ar, br), chanDiff(ag, bg), chanDiff(ab, bb), chanDiff(aa, ba))
+			if d != 0 {
+				diff++
+				worst = max(worst, d)
+			}
+		}
+	}
+	if diff != 0 {
+		t.Errorf("two renderings of the same Full glass scene differ in %d of %d pixels, "+
+			"worst channel difference %d. A display list must produce the same frame "+
+			"whatever the process allocated before it; if this is the grain again, it is "+
+			"reading a position that carries a render target's atlas origin.",
+			diff, b.Dx()*b.Dy(), worst)
+	}
+}

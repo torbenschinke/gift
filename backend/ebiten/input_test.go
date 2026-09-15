@@ -7,11 +7,15 @@ import (
 	"github.com/torbenschinke/gift"
 )
 
-// The bridge itself cannot be driven headless: every reading it takes comes
-// from an Ebitengine global that only means anything inside a running game
-// loop. What can be checked without a window is the table it is built on, and
-// that is worth checking, because a wrong entry there is a key that silently
-// never arrives.
+// The mouse and touch readings cannot be driven headless: they come from
+// Ebitengine globals that only mean anything inside a running game loop. The
+// keyboard is different — it goes through the two function values described on
+// [inputBridge], and keyboard_test.go in this package drives the real bridge
+// through them.
+//
+// What is left here is the table the key half is built on, and it is worth
+// checking on its own, because a wrong entry there is a key that silently
+// never arrives, plus the touch diff, which no desktop ever executes.
 
 func TestTrackedKeysAreDistinctAndComplete(t *testing.T) {
 	seen := map[eb.Key]bool{}
@@ -29,6 +33,12 @@ func TestTrackedKeysAreDistinctAndComplete(t *testing.T) {
 		gift.KeyTab, gift.KeySpace, gift.KeyEnter, gift.KeyEscape,
 		gift.KeyLeft, gift.KeyRight, gift.KeyUp, gift.KeyDown,
 		gift.KeyHome, gift.KeyEnd, gift.KeyPageUp, gift.KeyPageDown,
+		// Added by the project plan, section 19: the editing keys and the
+		// operands of the five shortcuts. They are here for the same reason
+		// as the rest — an entry missing from the table is a key that never
+		// arrives, and for backspace that is a text field that cannot delete.
+		gift.KeyBackspace, gift.KeyDelete,
+		gift.KeyA, gift.KeyC, gift.KeyV, gift.KeyX, gift.KeyZ,
 	}
 	for _, w := range want {
 		found := false

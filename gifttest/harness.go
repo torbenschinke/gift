@@ -3,6 +3,7 @@ package gifttest
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/torbenschinke/gift"
@@ -45,6 +46,24 @@ type Options struct {
 	// MaxFrames bounds [Harness.Settle]. Zero means [DefaultMaxFrames].
 	MaxFrames int
 
+	// Density is the device density the application under test runs at, as a
+	// raw platform factor. Zero means 1, which is what every test that does
+	// not care wants and is bit-identical to a harness that never heard of
+	// densities.
+	//
+	// It is the raw factor and not the rounded one on purpose: the rounding
+	// of the project plan, section 18, is [gift.RoundDensity] and it happens
+	// in [gift.App.SetDensity], so a test that passes 1.5 exercises the same
+	// rounding a 1.5x monitor would get rather than a second implementation
+	// of it. [Harness.Density] reports what came out.
+	//
+	// The viewport, every bound a selector reports and every coordinate an
+	// action uses stay in logical pixels at any density. What changes is the
+	// size of the image [Harness.AssertGolden] compares — it is the viewport
+	// times the density, in physical pixels — and the resolution of the
+	// glyph masks and thumbnails inside it.
+	Density float64
+
 	// Background is the colour a golden image is rendered onto, behind
 	// everything the application draws. The zero value means opaque white.
 	//
@@ -70,6 +89,7 @@ type Harness struct {
 	app *gift.App
 
 	size      geom.Size
+	density   float32
 	now       time.Duration
 	maxFrames int
 	bg        render.Color
@@ -132,6 +152,11 @@ func New(t TB, opts Options) *Harness {
 		maxFrames: maxFrames,
 		bg:        bg,
 	}
+	// Before the first Settle, so that the first build and the first layout
+	// already see the density and no test has to settle twice to get the
+	// thumbnail rung it asked for. A zero Density is 1, and setting 1 on an
+	// App that is already at 1 changes nothing and invalidates nothing.
+	h.density = h.app.SetDensity(densityOr1(opts.Density))
 	h.Settle()
 	return h
 }
@@ -140,6 +165,26 @@ func New(t TB, opts Options) *Harness {
 // verb for. Using it is not cheating; it is the escape hatch that keeps the
 // harness from having to wrap everything gift will ever grow.
 func (h *Harness) App() *gift.App { return h.app }
+
+// densityOr1 maps the zero value of [Options.Density] onto 1.
+func densityOr1(f float64) float64 {
+	if f == 0 {
+		return 1
+	}
+	return f
+}
+
+// Density returns the device density in force, after the rounding of
+// [gift.RoundDensity]. A harness built with Density 1.5 reports 2.
+func (h *Harness) Density() float32 { return h.density }
+
+// deviceSize is the viewport in physical pixels, which is the size of the
+// image a golden compares. It rounds up, like Ebitengine does when it turns
+// the float screen size of LayoutF into an image.
+func (h *Harness) deviceSize() (int, int) {
+	return int(math.Ceil(float64(h.size.W) * float64(h.density))),
+		int(math.Ceil(float64(h.size.H) * float64(h.density)))
+}
 
 // Size returns the current viewport.
 func (h *Harness) Size() geom.Size { return h.size }

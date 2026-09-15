@@ -3,6 +3,7 @@ package gifttest
 import (
 	"fmt"
 	"time"
+	"unicode"
 
 	"github.com/torbenschinke/gift"
 	"github.com/torbenschinke/gift/geom"
@@ -693,39 +694,73 @@ func (h *Harness) Focused() (Node, bool) {
 	return Node{h: h, ref: r}, true
 }
 
-// TypeText is not implemented, and this is where that is said out loud.
+// TypeText types the string, one character at a time, as a keyboard with the
+// user's layout would deliver it.
 //
-// # Why
+// It is the counterpart of [Harness.Key] and the two are different channels,
+// not two spellings of one: Key presses a *physical* key and TypeText produces
+// *characters*. Typing " " is not pressing space, and a test that means "the
+// user pressed the space bar on this button" must say [Harness.Key]. See
+// [gift.App.TypeRune].
 //
-// Typing needs two things gift does not have. There is no text input view —
-// the project plan, section 14, excludes a text editor and an IME from the
-// MVP — so there is nothing on screen that could receive characters. And there
-// is no character event: [gift.Key] is a dozen named keys for navigation and
-// activation, deliberately not a keyboard map, and [gift.App] has no
-// equivalent of a "text input" or "rune typed" entry point at all. gift also
-// has no key repeat; the project plan, section 7, checked that in the pinned
-// Ebitengine source and recorded it.
+// Every character goes to whatever holds the keyboard focus, bubbling to the
+// ancestors like a key event; nothing is typed into a node this method picks
+// out on its own. Focus something first — Node.Focus, a click, or Tab.
 //
-// Faking it here would mean inventing an event the runtime does not deliver,
-// and a harness that can drive an input path no real keyboard can reach is
-// worse than one that cannot: the test would pass and the application would
-// not work.
+// The clock does not move. Typing is a sequence of discrete events and gift's
+// time based behaviour, key repeat included, is driven by [Harness.Advance]
+// and [Harness.AdvanceTicks]; a TypeText that silently advanced time would
+// make a repeat test depend on how many characters the string happened to
+// have.
 //
-// # What it would take
+// # Non printable runes fail rather than being typed
 //
-// A rune bearing event on [gift.App] (`App.TypeRune(r rune)` or a text
-// composition entry point), delivered to the focused node like a key event;
-// a view that consumes it; and, for a real editor, the key repeat that has to
-// be built on inpututil.KeyPressDuration. When that exists this method becomes
-// four lines and its signature does not change.
-func (h *Harness) TypeText(string) {
+// [gift.Event] documents Rune as always printable, because Ebitengine's
+// character callback filters everything else out before gift sees it — a
+// backspace is a [gift.KeyBackspace] and never a '\b'. A harness that let a
+// test type "a\bb" would let that test drive an input path no keyboard can
+// produce, and the text model it exercised would then meet real input it never
+// handles. So a non printable rune is a test failure that names the character
+// and points at [Harness.Key].
+func (h *Harness) TypeText(s string) {
 	h.t.Helper()
-	h.t.Fatalf("gifttest: TypeText is not implemented because gift cannot receive text yet.\n" +
-		"There is no text input view (excluded from the MVP by the project plan, section 14) and " +
-		"no character event on gift.App: gift.Key is a small set of navigation and activation keys, " +
-		"not a keyboard map.\n" +
-		"Use Harness.Key for the keys that do exist — space, enter, tab, the arrows — and drive a " +
-		"text model directly until gift grows a text field.")
+	for _, r := range s {
+		h.TypeRune(r)
+	}
+}
+
+// TypeRune types a single character. See [Harness.TypeText], which is this in
+// a loop and is what a test normally wants.
+func (h *Harness) TypeRune(r rune) {
+	h.t.Helper()
+	if !unicode.IsPrint(r) {
+		h.t.Fatalf("gifttest: TypeRune(%q): gift only ever receives printable characters.\n"+
+			"Ebitengine's character callback drops everything else before gift sees it, and "+
+			"gift.Event documents Rune as printable, so a keyboard cannot produce this.\n"+
+			"Backspace, delete, enter, tab and the arrows are keys: use Harness.Key(gift.KeyBackspace) "+
+			"and the rest of gift.Key for them.", r)
+		return
+	}
+	h.beginInput()
+	h.app.TypeRune(r)
+	h.Settle()
+}
+
+// AdvanceTicks moves the injected clock forward n times by step, opening an
+// input phase and settling at each stop.
+//
+// It is [Harness.Advance] at a cadence instead of in one jump, and it exists
+// for the behaviour that is defined per tick rather than per elapsed duration.
+// Key repeat is the case: [gift.App] delivers at most a bounded number of
+// synthetic presses per tick on purpose — see gift's maxRepeatsPerTick — so a
+// single Advance of one second yields the bound and not thirty presses. A test
+// that wants the rate a user would see steps at the frame interval, which is
+// what a backend does.
+func (h *Harness) AdvanceTicks(n int, step time.Duration) {
+	h.t.Helper()
+	for range n {
+		h.Advance(step)
+	}
 }
 
 func combine(mods []gift.Mods) gift.Mods {

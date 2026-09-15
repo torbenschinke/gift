@@ -1,6 +1,7 @@
 package gift
 
 import (
+	"runtime"
 	"time"
 
 	"github.com/torbenschinke/gift/geom"
@@ -92,6 +93,31 @@ const (
 	EventKeyDown
 	// EventKeyUp is a key release, delivered the same way.
 	EventKeyUp
+	// EventRune is one character the user typed, delivered to the focused
+	// node and bubbled like a key event. [Event.Rune] carries it.
+	//
+	// It is a different channel from [EventKeyDown] on purpose, and the
+	// difference is the whole reason this event exists. A [Key] is a
+	// *physical* key identified by its position on a US keyboard —
+	// Ebitengine says so of its own Key type, "KeyQ represents Q key on US
+	// keyboards and ' (quote) key on Dvorak keyboards" — while a rune is
+	// what the platform's keyboard layout, its dead keys and its AltGr
+	// combinations produced from that key press. On a German layout the key
+	// in the position of the US semicolon yields 'ö', and no mapping of key
+	// codes to characters inside gift could know that.
+	//
+	// So: a view that edits text listens to EventRune for the text and to
+	// EventKeyDown for the commands — backspace, the arrows, the shortcuts.
+	// A view that never listens to EventRune sees no characters at all,
+	// which is the correct behaviour for a button.
+	//
+	// There is no guaranteed one to one relation with key events in either
+	// direction. One key press can produce no rune (a dead key waiting for
+	// the next one), one rune (the normal case), or a rune that arrives on a
+	// later key press (the dead key resolving). Holding a key produces
+	// further runes at whatever rate the platform repeats at, which is not
+	// gift's [KeyRepeatInterval]; see [App.TypeRune].
+	EventRune
 
 	// EventFocusGained and EventFocusLost bracket the time a node holds the
 	// keyboard focus.
@@ -100,14 +126,35 @@ const (
 	EventFocusLost
 )
 
-// Key is a physical key, in the small set gift's own navigation and
-// activation need.
+// Key is a physical key, in the small set gift's own navigation, activation
+// and text editing need.
 //
-// It is deliberately not a full keyboard map. The project plan, section 7,
-// scopes keyboard input to focus order, disabled, activation with space and
-// enter and arrow navigation; a text editor and an IME are excluded by
-// section 14. A backend that sees a key gift has no constant for reports
-// [KeyOther], which nothing in gift acts on but an application may.
+// # It is still not a keyboard map, and the boundary moved once
+//
+// A Key names the *position* of a key on a US keyboard, not the character it
+// produces; that is Ebitengine's definition and gift inherits it rather than
+// inventing a second one. Characters travel on their own channel,
+// [EventRune], because only the platform knows what a layout makes of a key
+// press. See [App.TypeRune].
+//
+// The original boundary was "what focus order and activation need": tab,
+// space, enter, escape, the arrows, home, end and the two page keys. The
+// project plan, section 19, widened it, and the new boundary is:
+//
+//   - the keys that move a cursor or delete text, because a text field cannot
+//     be written without them and because they are the keys gift itself
+//     repeats; see [KeyRepeatDelay].
+//   - the letters that appear in the five editing shortcuts every platform
+//     agrees on — select all, copy, cut, paste, undo — and nothing else. They
+//     are here as the operand of a modifier, never as a source of text: a
+//     handler that reads [KeyA] to insert an 'a' is wrong on every keyboard
+//     outside the United States, and that is why the alphabet is not here in
+//     full.
+//
+// Everything else a backend sees is reported as [KeyOther], which nothing in
+// gift acts on but an application may. The cost of widening the enum is a
+// larger table in every backend and one more poll per tick per entry, so it
+// is widened for a named need and not for completeness.
 type Key uint8
 
 const (
@@ -125,6 +172,28 @@ const (
 	KeyEnd
 	KeyPageUp
 	KeyPageDown
+
+	// KeyBackspace deletes backwards, KeyDelete forwards. Both repeat; see
+	// [KeyRepeatDelay].
+	KeyBackspace
+	KeyDelete
+
+	// KeyA, KeyC, KeyV, KeyX and KeyZ are the operands of select all, copy,
+	// paste, cut and undo. They are physical key positions, so on a Dvorak or
+	// an AZERTY keyboard they sit wherever that keyboard's US-QWERTY
+	// equivalent sits — which is deliberately what every toolkit does with
+	// these five shortcuts, because the user learned the finger position and
+	// not the letter.
+	//
+	// Redo has no sixth letter here: the combination that redoes is shift
+	// plus the undo one on macOS and on GTK, and KeyY would only be needed
+	// for the Windows convention, which section 1 of the project plan does
+	// not list as a target.
+	KeyA
+	KeyC
+	KeyV
+	KeyX
+	KeyZ
 )
 
 // Mods is the set of modifier keys held while an event happened.
@@ -143,6 +212,58 @@ const (
 
 // Has reports whether every modifier in m is set in s.
 func (s Mods) Has(m Mods) bool { return s&m == m }
+
+// ShortcutModifier is the modifier that turns a letter into an editing
+// command: command on macOS, control everywhere else.
+//
+// # Why this is one variable and not a rule each view invents
+//
+// Copy is command-C on a Mac and control-C on Linux. Both modifiers already
+// exist in [Mods], so every view *could* decide for itself — and then every
+// view would decide slightly differently, and a kiosk with a Mac keyboard
+// attached to a Raspberry Pi would work in half of them. The decision is made
+// once, here.
+//
+// The default follows [runtime.GOOS], because that is the only evidence gift
+// has: Ebitengine reports the physical modifier keys and says nothing about
+// what the desktop means by them. An application whose hardware disagrees —
+// the Mac keyboard on the Pi above — assigns to this variable before the
+// first frame.
+//
+// # Why a package variable and not a field of Options
+//
+// Not for the reason [ScrollIndicatorLinger] is one. That argument is about
+// the dispatch path, and it does not transfer, because gift never reads this
+// value at all: it is read by *views*, in their own event handlers, and a
+// handler has an [Event] and no application handle. A field of [Options]
+// would therefore have to be copied onto every event or reached through a
+// context that gift's [Interactor] contract does not pass, and both of those
+// are real costs paid so that a value which is a property of the keyboard
+// could pretend to be a property of a window.
+//
+// The keyboard is the right scope. A machine has one convention for what
+// "the shortcut key" is, and two windows of one process disagreeing about it
+// would be a defect, not a feature. Section 1 of the project plan has one
+// window anyway.
+//
+// # It is convention, not enforcement
+//
+// gift dispatches shortcuts nowhere. The five letters in
+// backend/ebiten's key table reach a view as ordinary key presses with
+// modifiers, and what copy means is the view's business. This variable is the
+// shared answer to "which modifier", so that two views in one program cannot
+// answer differently.
+//
+// A view uses it as e.Mods.Has(gift.ShortcutModifier), which reads the same on
+// both platforms and is right on both.
+var ShortcutModifier = defaultShortcutModifier()
+
+func defaultShortcutModifier() Mods {
+	if runtime.GOOS == "darwin" {
+		return ModMeta
+	}
+	return ModControl
+}
 
 // Event is one input event as an [Interactor] sees it.
 //
@@ -193,6 +314,25 @@ type Event struct {
 	// events too, so that a modified click can be told apart.
 	Key  Key
 	Mods Mods
+
+	// Rune is the character of an [EventRune] and is meaningless otherwise.
+	//
+	// It is always a printable rune: the platform filters control characters
+	// out before gift ever sees them, because backspace and enter are keys
+	// and arrive as such, and a text model that had to reject '\b' as well as
+	// handle [KeyBackspace] would have two code paths for one user action.
+	Rune rune
+
+	// Repeat is set on an [EventKeyDown] that gift synthesised because the
+	// key is being held; see [KeyRepeatDelay].
+	//
+	// A handler that moves a cursor ignores it — that is the point of the
+	// repeat. A handler that *activates* something must not: holding enter on
+	// a button would otherwise submit a form thirty times a second. The flag
+	// is what lets both be written, and it is on the event rather than
+	// suppressed inside the runtime because gift cannot know which of the two
+	// a given interactor is.
+	Repeat bool
 
 	// Time is the timestamp the backend supplied in [App.BeginInput], as a
 	// duration since an arbitrary but fixed origin. Differences are
@@ -506,6 +646,106 @@ type inputState struct {
 	// focusScan is the reusable stack of the focus traversal; see
 	// [App.focusNeighbour].
 	focusScan []scene.Handle
+
+	// repeat is the key gift is currently repeating, if any; see
+	// [KeyRepeatDelay].
+	repeat keyRepeat
+}
+
+// keyRepeat is the state of the one key gift repeats.
+//
+// One, not a set: every desktop keyboard driver repeats the most recently
+// pressed key and forgets the earlier ones, because a user who presses a
+// second key while holding the first means the second. Tracking a set would be
+// more code and would produce behaviour no keyboard has.
+type keyRepeat struct {
+	key    Key
+	mods   Mods
+	active bool
+	// nextAt is the timestamp of the next synthetic press, in the clock
+	// [App.BeginInput] is given.
+	nextAt time.Duration
+}
+
+// Key repeat constants.
+//
+// # Why gift has to do this at all
+//
+// Ebitengine has no key repeat. A search of the pinned module for "repeat"
+// finds nothing outside gamepad code and one GLFW mouse callback that discards
+// glfw.Repeat; the closest thing on offer is inpututil.KeyPressDuration, which
+// counts the ticks a key has been held and leaves the delay and the rate to
+// the caller. The backend bridge declines inpututil for allocation reasons, so
+// that tick count is not available there either — and the backend would be the
+// wrong place anyway, because the repeat is a property of gift's event model
+// and every backend would otherwise reinvent it. It therefore lives here,
+// driven by the same injected clock as the long press, which is what makes it
+// testable without a sleep.
+//
+// # Only keys, never characters
+//
+// gift repeats [KeyBackspace], [KeyDelete], the four arrows and the two page
+// keys, and nothing else; see [repeatsWhenHeld] for the exclusions. The
+// important one is that gift never synthesises a repeated *character*. It
+// could not do it correctly: it does not know what layout, dead key or compose
+// sequence produced the last rune, and re-emitting that rune would type the
+// wrong thing after every dead key. Where the platform repeats characters —
+// GLFW's character callback fires again for an operating system auto repeat —
+// they arrive through the ordinary rune channel and gift passes them on
+// without noticing that they are repeats.
+const (
+	// KeyRepeatDelay is how long a key must be held before the first
+	// synthetic press.
+	//
+	// 400 ms sits between the two conventions it has to live with: X11's
+	// default auto repeat delay is 500 ms and macOS's slider ranges from
+	// roughly 250 to 900 ms. Shorter than about 300 ms and a deliberate
+	// single press of an arrow key occasionally moves two cells; longer than
+	// about 500 ms and holding a key feels broken before it starts.
+	KeyRepeatDelay = 400 * time.Millisecond
+
+	// KeyRepeatInterval is the period between synthetic presses once the
+	// delay has passed, that is thirty per second.
+	//
+	// It is deliberately below the frame rate: at 60 Hz every second tick
+	// produces one repeat, so the rate is stable under the tick loop rather
+	// than being whatever the tick rate happens to be. A rate at or above the
+	// frame rate would make the speed of a held arrow key depend on how busy
+	// the machine is.
+	KeyRepeatInterval = time.Second / 30
+
+	// maxRepeatsPerTick bounds the catch up after a tick that took a long
+	// time — a stalled frame, a debugger breakpoint, or a backend that
+	// dropped to Config.IdleTPS in spite of the repaint request in
+	// [App.tickKeyRepeat]. Without it, one second of stall would deliver
+	// thirty presses in a single tick and a held backspace would eat a
+	// paragraph.
+	maxRepeatsPerTick = 4
+)
+
+// repeatsWhenHeld reports whether holding k produces synthetic presses.
+//
+// The set is exactly the keys whose action is meaningfully repeatable:
+// deleting a character, and moving a cursor or a viewport by one step.
+// Deliberately absent:
+//
+//   - space, enter and escape, because they *activate*. Repeating them would
+//     submit a form or dismiss a dialog many times per second, and the one
+//     case in which a user holds them — leaning on the key — is precisely the
+//     case in which they mean it once.
+//   - tab, because focus movement is a navigation the user counts out. A
+//     repeating tab overshoots the field being aimed at.
+//   - home and end, because a second one does nothing. Repeating an idempotent
+//     action costs events and changes no pixel.
+//   - the five shortcut letters, because they are only ever pressed with a
+//     modifier and none of the five operations wants to happen thirty times a
+//     second.
+func repeatsWhenHeld(k Key) bool {
+	switch k {
+	case KeyLeft, KeyRight, KeyUp, KeyDown, KeyPageUp, KeyPageDown, KeyBackspace, KeyDelete:
+		return true
+	}
+	return false
 }
 
 // BeginInput opens the input phase of one tick and advances the clock to now.
@@ -528,6 +768,7 @@ func (a *App) BeginInput(now time.Duration) {
 	a.in.now = now
 	a.tickScrolls(now)
 	a.tickIndicators(now)
+	a.tickKeyRepeat(now)
 	for i := range a.in.pointers {
 		p := &a.in.pointers[i]
 		if !p.active || !p.down || p.longFired || p.dragged {
@@ -766,10 +1007,25 @@ func (a *App) PointerWheel(pos geom.Point, delta geom.Point) {
 // The event goes to the focused node and bubbles to its ancestors. Tab and
 // shift-tab move the focus when nothing consumed them, which is why a focused
 // node that wants to handle tab itself simply returns true for it.
+//
+// A key in the repeat set arms the repeat; see [KeyRepeatDelay]. The backend
+// calls this once per physical press, not once per tick the key is held: the
+// repeat is gift's and edge detection stays the backend's.
 func (a *App) KeyDown(k Key, mods Mods) {
 	a.assertInputPhase("KeyDown")
 	a.in.mods = mods
-	e := Event{Kind: EventKeyDown, Key: k, Mods: mods, Time: a.in.now, Pointer: MousePointer}
+	a.armKeyRepeat(k, mods)
+	a.dispatchKeyDown(k, mods, false)
+}
+
+// dispatchKeyDown delivers one press, real or synthesised.
+//
+// The split exists so that a repeat does not re-arm the timer it was fired
+// from — that would make the rate a function of how long dispatch took — and
+// so that everything else about a repeat, bubbling and the tab fallback
+// included, is provably the same code as a real press.
+func (a *App) dispatchKeyDown(k Key, mods Mods, repeat bool) {
+	e := Event{Kind: EventKeyDown, Key: k, Mods: mods, Repeat: repeat, Time: a.in.now, Pointer: MousePointer}
 	if a.deliverKey(e) {
 		return
 	}
@@ -779,11 +1035,115 @@ func (a *App) KeyDown(k Key, mods Mods) {
 }
 
 // KeyUp reports a key release, delivered like [App.KeyDown] but never acted
-// on by gift itself.
+// on by gift itself beyond ending a repeat.
 func (a *App) KeyUp(k Key, mods Mods) {
 	a.assertInputPhase("KeyUp")
 	a.in.mods = mods
+	if a.in.repeat.active && a.in.repeat.key == k {
+		a.in.repeat.active = false
+	}
 	a.deliverKey(Event{Kind: EventKeyUp, Key: k, Mods: mods, Time: a.in.now, Pointer: MousePointer})
+}
+
+// TypeRune reports one character the user typed, as the platform's keyboard
+// layout produced it.
+//
+// It is the counterpart of [App.KeyDown] and deliberately not a variant of it.
+// A key press says *which key*; this says *which character*, and on every
+// keyboard outside the United States the two are different questions. The
+// backend gets the answer from the platform — Ebitengine's AppendInputChars,
+// whose own documentation calls it "the environment's locale-dependent
+// translation of keyboard input to Unicode characters" — and hands it here
+// one rune at a time. The event is [EventRune]; it goes to the focused node
+// and bubbles exactly like a key event.
+//
+// # No modifier parameter, on purpose
+//
+// [App.KeyDown] takes the modifiers because a key press without them is
+// ambiguous. A rune is the *result* of the modifiers: shift-a is already 'A',
+// and AltGr-q is already '@'. Passing them again would invite a handler to
+// apply them a second time. The modifiers of the current tick are still on the
+// event, from [App.SetModifiers], for the one honest use — telling a typed
+// character from the tail of a shortcut — and gift itself does not filter on
+// them, because the platform already does: Ebitengine's character callback
+// "skips the characters that are produced with the modifier combinations the
+// platform treats as shortcuts".
+//
+// # What this is not
+//
+// It is not an IME entry point. There is no composition, no preedit string and
+// no candidate window; the project plan, section 14, excludes CJK composition
+// and this does not sneak it in. What it does cover is everything a Latin
+// keyboard needs and the previous design dropped on the floor: umlauts,
+// accents, AltGr and dead keys are not an IME, they are the ordinary
+// translation of key presses to characters, and they arrive here fully
+// resolved — a dead key produces no rune of its own and the following key
+// produces the composed one.
+func (a *App) TypeRune(r rune) {
+	a.assertInputPhase("TypeRune")
+	a.diag.RunesTyped++
+	a.deliverKey(Event{Kind: EventRune, Rune: r, Mods: a.in.mods, Time: a.in.now, Pointer: MousePointer})
+}
+
+// armKeyRepeat starts the repeat clock for k, if k repeats at all.
+//
+// It refuses to arm without a focused node. A repeat exists to deliver events,
+// and [App.deliverKey] drops everything when nothing is focused; arming
+// anyway would keep the backend at its busy tick rate for as long as somebody
+// leans on an arrow key in an application that has no focus. See
+// [App.tickKeyRepeat] for the repaint request that costs.
+func (a *App) armKeyRepeat(k Key, mods Mods) {
+	r := &a.in.repeat
+	if !repeatsWhenHeld(k) || !a.store.Valid(a.in.focus) {
+		r.active = false
+		return
+	}
+	r.key, r.mods, r.active = k, mods, true
+	r.nextAt = a.in.now + KeyRepeatDelay
+}
+
+// cancelKeyRepeat stops the repeat. It is called when the focus moves, because
+// the node the held key was typing into is no longer the node that would
+// receive the next synthetic press — and a backspace that continues into a
+// different text field is the worst version of this feature.
+func (a *App) cancelKeyRepeat() { a.in.repeat.active = false }
+
+// tickKeyRepeat delivers the synthetic presses that are due, and keeps the
+// application awake while a key is held.
+//
+// The repaint request is the same device [App.tickIndicators] uses for the
+// scroll indicator linger, and for the same reason: it is [App.NeedsPaint]
+// that the backend's idle policy reads, and a backend at Config.IdleTPS would
+// sample this function ten times a second and deliver the repeats in visible
+// bursts of three. Unlike the indicator linger the cost is not bounded by a
+// timer but by the user letting go of the key, which is the one form of "keep
+// ticking" a user can see themselves causing.
+//
+// It allocates nothing: the state is a struct inside the App and the events
+// are values.
+func (a *App) tickKeyRepeat(now time.Duration) {
+	r := &a.in.repeat
+	if !r.active {
+		return
+	}
+	if !a.store.Valid(a.in.focus) {
+		// The focused node was unmounted under the held key. There is
+		// nowhere to deliver and nothing to repaint.
+		r.active = false
+		return
+	}
+	a.markNeedsPaint(a.in.focus)
+	for n := 0; r.active && now >= r.nextAt; n++ {
+		if n >= maxRepeatsPerTick {
+			// Drop the backlog rather than work through it; see
+			// [maxRepeatsPerTick].
+			r.nextAt = now + KeyRepeatInterval
+			return
+		}
+		r.nextAt += KeyRepeatInterval
+		a.diag.KeyRepeats++
+		a.dispatchKeyDown(r.key, r.mods, true)
+	}
 }
 
 // --- internals --------------------------------------------------------------

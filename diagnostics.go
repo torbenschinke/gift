@@ -64,6 +64,20 @@ type Diagnostics struct {
 	// from "it was never seen".
 	DiscardedTouches uint64
 
+	// RunesTyped counts the characters that entered through [App.TypeRune],
+	// whether or not anything was focused to receive them.
+	//
+	// It is the counter that answers the question the rune channel exists
+	// for: "does the keyboard reach the framework at all". Before that
+	// channel the answer was no and nothing said so. A zero here while the
+	// user types means the backend is at fault; a non zero here with nothing
+	// happening on screen means the view is.
+	RunesTyped uint64
+	// KeyRepeats counts the synthetic key presses gift produced from a held
+	// key; see [KeyRepeatDelay]. [Event.Repeat] is set on each of them, so
+	// this counter is how a test tells a repeat from a second real press.
+	KeyRepeats uint64
+
 	// OverflowExtent is the sum over those nodes of their horizontal plus
 	// vertical overflow, in logical pixels.
 	//
@@ -102,7 +116,7 @@ type diagPublisher struct {
 	snap Diagnostics
 }
 
-// publish copies the UI executor's counters into the shared snapshot. It
+// publishDiagnostics copies the UI executor's counters into the shared snapshot. It
 // allocates nothing: the destination is a plain struct field.
 func (a *App) publishDiagnostics() {
 	a.diag.LiveNodes = uint64(a.store.Len())

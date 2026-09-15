@@ -53,6 +53,9 @@ func (a *App) setFocus(h scene.Handle) {
 	}
 	prev := a.in.focus
 	a.in.focus = h
+	// A key held down was being repeated into the node that is losing the
+	// focus; see [App.cancelKeyRepeat].
+	a.cancelKeyRepeat()
 	// Notification is suppressed during a build. The one path that gets here
 	// mid build is a node that just declared itself disabled while holding the
 	// focus, and running an application event handler in the middle of

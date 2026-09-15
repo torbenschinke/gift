@@ -76,15 +76,15 @@ func TestAtlasCachesAndSeparatesSizes(t *testing.T) {
 		t.Fatalf("the two sizes shaped to different glyph ids, the fixture is wrong")
 	}
 
-	i1, ok := a.Lookup(small[0])
+	i1, ok := a.Lookup(small[0], 1)
 	if !ok {
 		t.Fatal("first lookup failed")
 	}
-	i2, ok := a.Lookup(small[0])
+	i2, ok := a.Lookup(small[0], 1)
 	if !ok || i1 != i2 {
 		t.Fatalf("the second lookup of the same glyph produced entry %d, want %d", i2, i1)
 	}
-	i3, ok := a.Lookup(large[0])
+	i3, ok := a.Lookup(large[0], 1)
 	if !ok {
 		t.Fatal("large lookup failed")
 	}
@@ -115,7 +115,7 @@ func TestAtlasBlankGlyphIsCachedNotRasterised(t *testing.T) {
 	gs := shapeGlyphs(t, "a b", 16)
 	for range 5 {
 		for _, g := range gs {
-			if _, ok := a.Lookup(g); !ok {
+			if _, ok := a.Lookup(g, 1); !ok {
 				t.Fatalf("lookup of %+v failed", g)
 			}
 		}
@@ -143,7 +143,7 @@ func TestAtlasEvictsDeallocatesAndReRasterises(t *testing.T) {
 	a.onDeallocate = func(img *eb.Image) { deallocated = append(deallocated, img) }
 
 	probe := shapeGlyphs(t, "A", 20)[0]
-	i0, ok := a.Lookup(probe)
+	i0, ok := a.Lookup(probe, 1)
 	if !ok {
 		t.Fatal("the probe glyph did not fit an empty page")
 	}
@@ -157,7 +157,7 @@ func TestAtlasEvictsDeallocatesAndReRasterises(t *testing.T) {
 	for size := 20; a.Stats().PageEvictions == 0 && size < 40; size += 2 {
 		a.Tick()
 		for _, g := range shapeGlyphs(t, alphabet, float32(size)) {
-			a.Lookup(g)
+			a.Lookup(g, 1)
 			if a.Stats().PageEvictions > 0 {
 				break
 			}
@@ -186,7 +186,7 @@ func TestAtlasEvictsDeallocatesAndReRasterises(t *testing.T) {
 	// The probe is gone. Asking again re-rasterises it, and the result must be
 	// the same bitmap in a possibly different place.
 	a.Tick()
-	i1, ok := a.Lookup(probe)
+	i1, ok := a.Lookup(probe, 1)
 	if !ok {
 		t.Fatal("the probe glyph could not be re-added after eviction")
 	}
@@ -208,7 +208,7 @@ func TestAtlasAgeEviction(t *testing.T) {
 	a.onDeallocate = func(*eb.Image) { deallocs++ }
 
 	for _, g := range shapeGlyphs(t, "age", 16) {
-		a.Lookup(g)
+		a.Lookup(g, 1)
 	}
 	if a.Stats().Pages == 0 {
 		t.Fatal("no page was created")
@@ -236,7 +236,7 @@ func TestAtlasHitPathIsAllocationFree(t *testing.T) {
 	}
 	warm := func() {
 		for i := range gs {
-			if _, ok := a.Lookup(gs[i]); !ok {
+			if _, ok := a.Lookup(gs[i], 1); !ok {
 				t.Fatalf("lookup of glyph %d failed", i)
 			}
 		}
@@ -264,7 +264,7 @@ func countDistinct(gs []render.Glyph) int {
 func TestAtlasRejectsAGlyphLargerThanAPage(t *testing.T) {
 	a := NewGlyphAtlas(AtlasConfig{PageSize: 16, MaxPages: 2})
 	g := shapeGlyphs(t, "M", 200)[0]
-	if _, ok := a.Lookup(g); ok {
+	if _, ok := a.Lookup(g, 1); ok {
 		t.Fatal("a 200 px glyph was packed into a 16 px page")
 	}
 	if a.Stats().Rejected == 0 {
@@ -279,10 +279,10 @@ func TestAtlasRejectsAGlyphLargerThanAPage(t *testing.T) {
 func TestAtlasKeyHasNoSubpixelPhase(t *testing.T) {
 	a := NewGlyphAtlas(AtlasConfig{})
 	g := shapeGlyphs(t, "x", 17)[0]
-	i0, _ := a.Lookup(g)
+	i0, _ := a.Lookup(g, 1)
 	g.X += 0.5
 	g.Y -= 0.25
-	i1, _ := a.Lookup(g)
+	i1, _ := a.Lookup(g, 1)
 	if i0 != i1 {
 		t.Fatalf("moving a glyph by half a pixel produced a second atlas entry (%d vs %d)", i0, i1)
 	}
@@ -306,7 +306,7 @@ func TestAtlasCachesARejection(t *testing.T) {
 
 	frame := func() {
 		for i := range gs {
-			a.Lookup(gs[i])
+			a.Lookup(gs[i], 1)
 		}
 		a.Tick()
 	}
@@ -354,7 +354,7 @@ func TestAtlasRejectionIsRetriedAfterAnEviction(t *testing.T) {
 	// refused and the refusals are cached.
 	var refused render.Glyph
 	for i := range gs {
-		if _, ok := a.Lookup(gs[i]); !ok {
+		if _, ok := a.Lookup(gs[i], 1); !ok {
 			refused = gs[i]
 		}
 	}
@@ -369,7 +369,7 @@ func TestAtlasRejectionIsRetriedAfterAnEviction(t *testing.T) {
 	if got := a.Stats().Pages; got != 0 {
 		t.Fatalf("the page did not age out: %d left", got)
 	}
-	if _, ok := a.Lookup(refused); !ok {
+	if _, ok := a.Lookup(refused, 1); !ok {
 		t.Fatal("the glyph was still refused after every page had been evicted; " +
 			"a cached rejection became permanent and that text would never draw again")
 	}
@@ -382,7 +382,7 @@ func TestAtlasRejectionIsRetriedAfterAnEviction(t *testing.T) {
 func TestAtlasOccupancyDoesNotDrift(t *testing.T) {
 	a := NewGlyphAtlas(AtlasConfig{MaxAge: 2})
 	for _, g := range shapeGlyphs(t, "a b c d e f g", 16) {
-		a.Lookup(g)
+		a.Lookup(g, 1)
 	}
 	if a.Stats().Blanks == 0 {
 		t.Fatal("the fixture produced no blank glyphs")
@@ -408,7 +408,7 @@ func TestAtlasOccupancyDoesNotDrift(t *testing.T) {
 // did not exist. Cosmetic, and still a row of every page.
 func TestAtlasUsesTheFirstRow(t *testing.T) {
 	a := NewGlyphAtlas(AtlasConfig{})
-	i, ok := a.Lookup(shapeGlyphs(t, "H", 16)[0])
+	i, ok := a.Lookup(shapeGlyphs(t, "H", 16)[0], 1)
 	if !ok {
 		t.Fatal("the first glyph of an empty atlas did not fit")
 	}

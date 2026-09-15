@@ -67,7 +67,12 @@ func (h *Harness) Image() image.Image {
 	if r == nil {
 		return nil
 	}
-	w, hgt := int(h.size.W), int(h.size.H)
+	// Physical pixels: the viewport times the density, which is what
+	// [game.LayoutF] asks Ebitengine for in a real window. A golden at
+	// density 2 is therefore four times the area of the same golden at
+	// density 1, and comparing the two is a comparison of two different
+	// images by design — see [Options.Density].
+	w, hgt := h.deviceSize()
 	if w <= 0 || hgt <= 0 {
 		h.t.Fatalf("gifttest: the viewport is %gx%g; a golden image needs a positive size", h.size.W, h.size.H)
 		return nil
@@ -116,7 +121,7 @@ func (h *Harness) Warm() {
 	if r == nil {
 		return
 	}
-	w, hgt := int(h.size.W), int(h.size.H)
+	w, hgt := h.deviceSize()
 	if w <= 0 || hgt <= 0 {
 		return
 	}

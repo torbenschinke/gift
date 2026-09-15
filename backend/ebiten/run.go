@@ -315,15 +315,124 @@ type game struct {
 
 	w, h     int
 	lastDraw time.Time
+
+	// scale reads the device scale factor of the monitor. It is a field for
+	// the same reason [inputBridge.keyPressed] and [inputBridge.appendChars]
+	// are: the platform reading is the one thing a test cannot perform, and
+	// with it behind a function value everything around it becomes ordinary
+	// arithmetic that a test binary can check.
+	//
+	// It is not merely a convenience here. Calling [eb.Monitor] from a test
+	// binary on darwin does not return nil, as [monitorScale] assumed for a
+	// while: it traps inside GLFW's platform initialisation, because the
+	// pinned documentation says Monitor "must be called on the main thread
+	// before ebiten.RunGame" and a test binary is neither. So without the
+	// seam, [game.LayoutF] would have no test at all rather than a skipped
+	// one.
+	//
+	// [Run] leaves it nil and [game.monitorScale] falls back to the real
+	// reading, so the production path has no indirection to pay for.
+	scale func() float64
+}
+
+// monitorScale is the density reading LayoutF uses: the seam if a test
+// installed one, the real monitor otherwise.
+func (g *game) monitorScale() float64 {
+	if g.scale != nil {
+		return g.scale()
+	}
+	return monitorScale()
 }
 
 // Layout reports the logical screen size. Ebitengine calls it before the first
 // Update, which is what makes the viewport known to the first build.
+//
+// It exists only to satisfy [eb.Game]. Ebitengine never calls it, because this
+// type also implements [eb.LayoutFer] and the pinned documentation of
+// Game.Layout says so itself: "If the game implements the interface LayoutFer,
+// Layout is never called and LayoutF is called instead." Deleting it is not an
+// option — the interface requires it — so it answers the same thing LayoutF
+// does, in whole numbers, rather than being a second and divergent policy.
 func (g *game) Layout(outsideWidth, outsideHeight int) (int, int) {
+	w, h := g.LayoutF(float64(outsideWidth), float64(outsideHeight))
+	return int(w), int(h)
+}
+
+// LayoutF reports the size of the offscreen gift draws into, in physical
+// pixels.
+//
+// # What Ebitengine means by these numbers
+//
+// Quoted from the pinned module, ebiten/v2@v2.10.1, run.go:
+//
+//	LayoutF accepts a native outside size in device-independent pixels and
+//	returns the game's logical screen size in pixels. The logical size is
+//	used for 1) the screen size given at Draw and 2) calculation of the
+//	scale from the screen to the final screen size. For 1), the actual
+//	screen size is the logical size rounded up.
+//
+// Two things follow, and they are the whole of the project plan, section 18,
+// on this side. The outside size is in *device-independent* units, so it is
+// gift's logical viewport and is handed to [gift.App.Update] unchanged. The
+// returned size is what the screen image at Draw is, and the ratio between
+// the two is the scale Ebitengine applies on the way to the framebuffer.
+// Returning the outside size unchanged — which is what this did until WU-W —
+// therefore asks Ebitengine to take a 1x picture and filter it up to a 2x
+// panel, which is the blur this work unit is about. Returning the outside
+// size times the density makes that scale exactly one, and every pixel gift
+// writes is a pixel of the display.
+//
+// # The density
+//
+// It comes from ebiten.Monitor().DeviceScaleFactor() and is rounded to an
+// integer by [gift.App.SetDensity], which is the single rounding point of the
+// project plan, section 18. It is read here, on every call, rather than once
+// at start-up, because Ebitengine documents that Layout "is called almost
+// every frame" and because a window dragged from a Retina panel to an
+// external one changes the factor without any other notification. The cost is
+// one method call and a float compare per frame.
+//
+// # What a fractional factor produces
+//
+// A monitor reporting 1.5 is rounded to 2, so this returns twice the outside
+// size while Ebitengine's final screen is 1.5 times it. Ebitengine then
+// *downsamples* by three quarters instead of upsampling by one half. That is
+// supersampling: sharper than the 1x frame it replaces, softer than a true
+// 1.5 would be, and it costs the fragments of a 2x frame. The plan excludes
+// fractional scaling; this is what "round it and document the result" looks
+// like in pixels.
+func (g *game) LayoutF(outsideWidth, outsideHeight float64) (float64, float64) {
 	if outsideWidth > 0 && outsideHeight > 0 {
-		g.w, g.h = outsideWidth, outsideHeight
+		g.w, g.h = int(outsideWidth), int(outsideHeight)
 	}
-	return g.w, g.h
+	d := float64(g.app.SetDensity(g.monitorScale()))
+	return float64(g.w) * d, float64(g.h) * d
+}
+
+// monitorScale is the raw device scale factor of the monitor the window is
+// on, or 1 when there is no monitor.
+//
+// # When it may be called
+//
+// The pinned documentation, ebiten/v2@v2.10.1 monitor.go, is explicit on two
+// points and both matter here: [eb.Monitor] "returns nil before the main loop
+// starts", and it "must be called on the main thread before
+// ebiten.RunGame". This function is only ever reached from [game.LayoutF],
+// which Ebitengine calls from inside its own loop on its own main thread, so
+// production use satisfies both.
+//
+// The nil check is therefore for the window between process start and the
+// first frame, not, as this comment claimed until WU-AA, for "the headless
+// case a test binary runs in". A test binary does not get nil: on darwin the
+// call traps inside glfw.platformInit, which is the documented rule being
+// enforced rather than a bug. Nothing in a test may call this, and nothing
+// does — [game.scale] is the seam that makes that possible.
+func monitorScale() float64 {
+	m := eb.Monitor()
+	if m == nil {
+		return 1
+	}
+	return m.DeviceScaleFactor()
 }
 
 // Update runs the application tick and gift's build and layout.
@@ -457,6 +566,10 @@ func (g *game) Draw(screen *eb.Image) {
 	}
 
 	b := screen.Bounds()
+	// Physical pixels, because [game.LayoutF] asked for a device sized
+	// screen. That is the space the renderer works in — clips, the glass
+	// region and the scene target are all measured against it — and it is
+	// the density times the viewport [game.Update] hands to gift.
 	size := geom.Sz(float32(b.Dx()), float32(b.Dy()))
 
 	g.r.SetTarget(screen)

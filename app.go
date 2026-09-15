@@ -62,7 +62,10 @@ type App struct {
 	// installed one. See [App.SetImages].
 	images render.Images
 
-	viewport    geom.Size
+	viewport geom.Size
+	// density is the integer device density; see [App.SetDensity]. It is 1
+	// until a backend says otherwise, and 1 is the identity everywhere.
+	density     float32
 	needsLayout bool
 	needsPaint  bool
 	layoutDepth int
@@ -103,8 +106,9 @@ func New(opts Options) *App {
 		panic("gift: Options.Root must not be nil")
 	}
 	a := &App{
-		log:   opts.Logger,
-		store: scene.NewStore[nodeData](256),
+		log:     opts.Logger,
+		store:   scene.NewStore[nodeData](256),
+		density: 1,
 	}
 	a.ui.capture()
 	a.bctx = BuildContext{app: a}
@@ -286,6 +290,15 @@ func (a *App) Paint() *render.List {
 
 	a.list.Reset()
 	a.paintDepth = 0
+	// The density transform of the project plan, section 18, and the only
+	// place it enters the display list. At density 1 nothing is pushed and
+	// the root transform stays index 0, the identity, so a 1x frame is the
+	// list it always was — not a list with a scale of one in it. See
+	// [App.SetDensity].
+	a.pctx.xform = 0
+	if a.density != 1 {
+		a.pctx.xform = a.list.PushXform(a.densityXform())
+	}
 	if a.store.Valid(a.root.node) {
 		a.paintNode(a.root.node)
 	}

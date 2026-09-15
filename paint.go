@@ -300,8 +300,18 @@ func (a *App) paintNode(h scene.Handle) {
 
 	// The transform of a node applies to the node and its whole subtree, in
 	// both halves of the frame: this pushes it into the display list and
-	// [App.hitNode] composes the very same matrix. One declaration, two
-	// readers, no second traversal to drift from the first.
+	// [App.hitNode] composes the same node transforms in the same order. One
+	// declaration, two readers, no second traversal to drift from the first.
+	//
+	// The two chains are not the same *matrix*, and that difference is
+	// deliberate rather than an oversight. Paint starts from the density
+	// transform pushed by [App.Paint], so the display list is in physical
+	// pixels; [App.hitTest] starts from [geom.Identity], so hit testing is in
+	// logical ones. Everything below the root is identical. See
+	// [App.SetDensity] for why the input side is not scaled: pointer
+	// positions are divided by the density once, at the backend boundary, so
+	// that one unit system carries drag slop, fling velocity and scroll
+	// offsets.
 	prevXform := a.pctx.xform
 	if nd.xform != nil {
 		a.pctx.xform = a.list.PushXform(nd.xform.Mul(a.list.Xform(prevXform)))

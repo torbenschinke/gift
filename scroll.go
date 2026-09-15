@@ -770,9 +770,16 @@ func (a *App) stepFling(h scene.Handle, s *scrollState, now time.Duration) bool 
 	moved := a.setScroll(h, s, s.off+dist)
 	if !moved || absf(s.vel) < s.cfg.StopVelocity {
 		// Either the bound was reached or the curve has run out. A fling that
-		// hits the end stops there rather than bouncing; overscroll bounce is
-		// an animation curve and the project plan, section 14, excludes those
-		// from the MVP.
+		// hits the end stops there rather than bouncing.
+		//
+		// Overscroll bounce is an animation curve, and the project plan,
+		// section 14, no longer excludes those: its "Aufgehobene
+		// Ausschluesse" lifted the exclusion for the second delivery. So this
+		// is now a "not built yet" and not a "ruled out". It stays out of
+		// this work unit because a bounce is a visible behaviour change to a
+		// gesture that has goldens and tests pinned to it, and belongs with
+		// whichever unit builds the animation primitives rather than being
+		// invented here alongside them.
 		s.flinging, s.vel = false, 0
 		return false
 	}
@@ -972,11 +979,14 @@ func (p *PaintContext) ScrollIndicator() (ScrollIndicatorState, bool) {
 // changes every frame, so every caller — including every test — would have to
 // pump frames until it settled before asserting anything, and the natural
 // mistake is to assert too early and get a flaky test. And gift has no
-// animation curves at all; the project plan, section 14, excludes them from
-// the MVP, so the only honest curve available is the fling this package
-// already implements for a gesture. An application that wants an animated jump
-// today drives [App.ScrollTo] from its own tick and owns the curve, which is
-// one loop and no new concept.
+// animation curves yet: the project plan, section 14, used to exclude them and
+// its "Aufgehobene Ausschluesse" has since lifted that, but nothing has been
+// built, so the only curve available today is the fling this package already
+// implements for a gesture. An application that wants an animated jump drives
+// [App.ScrollTo] from its own tick and owns the curve, which is one loop and
+// no new concept. When the animation primitives arrive, the first reason above
+// still stands and this is expected to stay a jump, with an animated variant
+// next to it rather than in place of it.
 //
 // Any running fling is cancelled: a programmatic jump and a fling disagreeing
 // about where the content should be is the one thing worse than either.

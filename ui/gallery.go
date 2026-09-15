@@ -334,6 +334,12 @@ type Gallery struct {
 	viewport     float64
 	desiredSlots int
 
+	// density is the device density of the last layout pass. It exists for
+	// one purpose, choosing the thumbnail rung in device pixels; see
+	// [Gallery.requestImage]. Everything else about a gallery — the document
+	// rectangle, the columns, the scroll offset — is and stays logical.
+	density float32
+
 	// rebuildBudget is the per pass chunk size; see
 	// [DefaultGalleryRebuildBudget].
 	rebuildBudget int
@@ -596,11 +602,15 @@ func (g *Gallery) requestImage(slot int, prio asset.Priority) {
 	if pipe == nil {
 		return
 	}
-	// The size the tile will be drawn at, which is what the ladder is chosen
-	// from. The document rectangle is in logical pixels and is the honest
-	// number; a tile in a 240 pixel masonry column asks for 240 and gets the
-	// 256 rung.
-	size := int(max(s.rect.W, s.rect.H))
+	// The size the tile will be drawn at *in device pixels*, which is what
+	// the ladder is chosen from. The document rectangle is in logical pixels;
+	// a tile in a 240 pixel masonry column asks for 240 on a 1x display and
+	// gets the 256 rung, and asks for 480 on a 2x one and gets 512. Choosing
+	// the rung from the logical number would hand a 2x display a texture at
+	// half its resolution and magnify it, which is the defect the project
+	// plan, section 18, names for exactly this line. See
+	// [ui.ImageView.Size], which took the same change.
+	size := int(math.Ceil(float64(max(s.rect.W, s.rect.H)) * float64(g.densityOr1())))
 	if size <= 0 {
 		return
 	}
@@ -640,6 +650,20 @@ func (g *Gallery) requestImage(slot int, prio asset.Priority) {
 		Generation: gen,
 		OnResult:   func(res asset.Result) { g.onImage(slot, gen, res) },
 	})
+}
+
+// densityOr1 is the density of the last layout pass, or 1 before there has
+// been one.
+//
+// A request can only be issued from inside a pass, so the fallback is
+// unreachable; it is here because a zero density would silently ask for a
+// thumbnail of size zero, and that failure would look like a broken picture
+// rather than like a missing field.
+func (g *Gallery) densityOr1() float32 {
+	if g.density > 0 {
+		return g.density
+	}
+	return 1
 }
 
 // dropImage forgets everything a slot knew about its picture and cancels a
@@ -1406,6 +1430,7 @@ func (n *galleryNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.S
 	g := n.g
 	g.checkSingleMount(ctx)
 	g.pass = ctx.Pass()
+	g.density = ctx.Density()
 	g.invalidate = ctx.Invalidator()
 	cc := n.fr.apply(c)
 

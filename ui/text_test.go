@@ -457,3 +457,65 @@ func BenchmarkTextFrame(b *testing.B) {
 		a.Paint()
 	}
 }
+
+// BenchmarkTextFrameAtTwoX is the same warm frame at density 2, and it is here
+// for one reason: the zero allocation contract of the project plan,
+// section 11, is a contract about the frame path and not about the display it
+// happens to be on. The density adds one transform at the root of the display
+// list, which is one entry in a slice that is reused across frames, and it
+// changes no other arithmetic in Update or Paint.
+//
+// If this number ever differs from BenchmarkTextFrame's, something in the
+// density path is allocating per frame.
+func BenchmarkTextFrameAtTwoX(b *testing.B) {
+	f := loadTestFont(b)
+	a := gift.New(gift.Options{Root: func(*gift.Context) gift.View {
+		rows := make([]gift.View, 0, 12)
+		for i := range 12 {
+			rows = append(rows, ui.HStack(
+				ui.Box().Frame(16, 16).Background(ui.RGB(30, 30, 30)),
+				ui.Text(labels[i%len(labels)]).Font(f).FontSize(14).Foreground(ui.RGB(240, 240, 240)),
+				ui.Spacer(),
+				ui.Text(values[i%len(values)]).Font(f).FontSize(12).Foreground(ui.RGB(180, 180, 180)),
+			).Gap(8).Padding(4).Background(ui.RGB(40, 44, 56)))
+		}
+		return ui.VStack(rows...).Gap(6).Padding(12).Background(ui.RGB(18, 20, 26))
+	}})
+	a.SetDensity(2)
+	for range 8 {
+		_ = a.Update(geom.Sz(800, 600))
+		a.Paint()
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = a.Update(geom.Sz(800, 600))
+		a.Paint()
+	}
+}
+
+// TestFramePathAllocatesNothingAtAnyDensity states the same thing as an
+// assertion rather than as a reported number, at the three densities gift
+// promises. A density is a scale at the root of the display list and nothing
+// else in the frame path; the project plan, section 11, does not exempt it.
+func TestFramePathAllocatesNothingAtAnyDensity(t *testing.T) {
+	f := loadTestFont(t)
+	for _, density := range []float64{1, 2, 3} {
+		a := gift.New(gift.Options{Root: func(*gift.Context) gift.View {
+			return ui.VStack(
+				ui.Text("Density").Font(f).FontSize(16).Foreground(ui.RGB(240, 240, 240)),
+				ui.Text("contract").Font(f).FontSize(12).Foreground(ui.RGB(180, 180, 180)),
+			).Gap(6).Padding(12).Background(ui.RGB(18, 20, 26))
+		}})
+		a.SetDensity(density)
+		step := func() {
+			_ = a.Update(geom.Sz(400, 300))
+			a.Paint()
+		}
+		for range 16 {
+			step()
+		}
+		if got := testing.AllocsPerRun(200, step); got != 0 {
+			t.Errorf("density %v: the warm frame path allocated %v times per run, want 0", density, got)
+		}
+	}
+}

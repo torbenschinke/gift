@@ -31,10 +31,18 @@ type ButtonStyle struct {
 	CornerRadius float32
 }
 
-// Default button appearance. gift has no theme — the project plan, section 14,
-// excludes one from the MVP — so these are the values that make an unstyled
-// button look like a button instead of like nothing, and nothing more. Any
-// application with a design overrides them.
+// Default button appearance. gift has no theme yet, so these are the values
+// that make an unstyled button look like a button instead of like nothing, and
+// nothing more. Any application with a design overrides them.
+//
+// "Yet" and not "never", which is the correction WU-AA owes this comment. The
+// project plan, section 14, did exclude a theming system and its "Aufgehobene
+// Ausschluesse" has since half lifted that: section 20 introduces semantic
+// colours and a light/dark switch, while a *system* of inherited environment
+// values is still ruled out on the grounds section 4 gives. So these constants
+// are expected to become semantic colours rather than to stay literals, and
+// that is the theming unit's work, not this one's — changing them here would
+// be a look change with no semantic layer under it to justify it.
 var (
 	defaultButtonStyle = ButtonStyle{
 		Background:   RGB(232, 234, 238),
@@ -220,9 +228,12 @@ type buttonNode struct {
 	//
 	// [ButtonStyle] deliberately does not carry one. A shadow that changed
 	// with hover would make the button jump under the pointer, which is an
-	// animation and not a state style, and the project plan, section 14,
-	// excludes animation curves from the MVP. A caller who wants a pressed
-	// button to sit lower writes two views, or waits for animation.
+	// animation and not a state style. The project plan, section 14, used to
+	// exclude animation curves and no longer does, but an *uninterpolated*
+	// jump between two shadows is not the thing that exclusion was about: it
+	// would be a flicker whether or not gift can animate. A caller who wants
+	// a pressed button to sit lower writes two views, or waits for the
+	// animation primitives.
 	shadow Shadow
 
 	action   func()

@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"math"
+
 	"github.com/torbenschinke/gift"
 	"github.com/torbenschinke/gift/asset"
 	"github.com/torbenschinke/gift/geom"
@@ -476,9 +478,18 @@ func (v ImageView) Build(*gift.BuildContext) gift.Element {
 // Fit selects how the picture is mapped onto the view; see [ImageFit].
 func (v ImageView) Fit(f ImageFit) ImageView { v.fit = f; return v }
 
-// Size asks the pipeline for a thumbnail of this many pixels on the longest
-// edge. Zero, the default, derives it from the measured size of the view,
-// which is what a layout driven picture wants.
+// Size asks the pipeline for a thumbnail of this many *device* pixels on the
+// longest edge. Zero, the default, derives it from the measured size of the
+// view times the device density, which is what a layout driven picture wants.
+//
+// Device pixels and not logical ones, and the distinction is the whole of the
+// project plan, section 18, on this side. A rung is a number of real pixels
+// in a real texture; asking for 256 for a tile that covers 512 pixels of a 2x
+// display is asking for a picture at half the resolution of the screen it is
+// drawn on. The name of the parameter was always "px" and the doc always said
+// pixels — it was the *caller*, the derivation below, that fed it logical
+// units, and a fixed Size given by an application was already device pixels
+// by this reading. What changes for such a caller is nothing.
 //
 // The pipeline snaps the number to a rung of [asset.Config.Sizes] with
 // hysteresis, so a view that is resized by a few pixels does not re-decode
@@ -594,7 +605,17 @@ func (n *imageNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Siz
 
 	want := n.want
 	if want <= 0 {
-		want = int(max(out.W, out.H))
+		// Device pixels. out is the logical rectangle the picture will
+		// occupy, and on a 2x display it covers twice that many real pixels
+		// along each axis; picking the rung from the logical number asks the
+		// pipeline for a thumbnail at half the resolution of the screen and
+		// then magnifies it, which is the second half of the blur the
+		// project plan, section 18, describes and is independent of the
+		// framebuffer. Rounding up rather than down, because the rung
+		// hysteresis in asset already decides how far a request may reach
+		// downwards and a truncation here would spend that budget before it
+		// is asked for.
+		want = int(math.Ceil(float64(max(out.W, out.H) * ctx.Density())))
 		if want <= 0 {
 			want = 1
 		}

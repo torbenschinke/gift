@@ -91,6 +91,9 @@ func roundBoxNormal(p vec2, b vec2, r float) vec2 {
 // usual sin-fract hash; it is not a good random number generator and does not
 // have to be, because the eye is looking at whether the surface has texture
 // and not at whether the texture is uncorrelated.
+//
+// It must be fed a position that means the same thing in every frame. See the
+// grain block in Fragment for what happens when it is not.
 func hash21(p vec2) float {
 	return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453)
 }
@@ -170,7 +173,27 @@ func Fragment(dstPos vec4, src0Pos vec2, color vec4, custom vec4) vec4 {
 		// Signed noise, so grain darkens as well as lightens and the mean
 		// brightness of the pane does not move. Scaled by the alpha so the
 		// result stays premultiplied.
-		g := (hash21(dstPos.xy) - 0.5) * grain * 0.25 * out.a
+		//
+		// The noise is anchored to `local`, the position inside the material
+		// region, and deliberately *not* to dstPos. Two reasons, and the
+		// first one is a defect this shader had until WU-AA:
+		//
+		//  1. dstPos is a position in the destination *image*, and when the
+		//     destination is an Ebitengine render target that lives on an
+		//     atlas, it carries that target's atlas origin. The origin of the
+		//     pooled scene target depends on the allocation history of the
+		//     process, not on the frame, so the same display list drawn twice
+		//     produced two different noise patterns — measured at up to six
+		//     units per channel over the whole pane, which is above
+		//     gifttest.GoldenTolerance and made the committed glass-full
+		//     golden depend on the order the test binary happened to run in.
+		//     TestGlassFullDoesNotDependOnAllocationHistory pins the cure.
+		//  2. It is also the better answer. Grain is frost *in* the pane, so
+		//     it belongs to the pane's own coordinates: it now travels with a
+		//     panel that moves instead of the panel sliding across a fixed
+		//     screen-space noise field, which is the artefact that reads as a
+		//     dirty monitor rather than as a material.
+		g := (hash21(local) - 0.5) * grain * 0.25 * out.a
 		out += vec4(g, g, g, 0)
 	}
 

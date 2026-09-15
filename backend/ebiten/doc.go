@@ -117,20 +117,24 @@
 // Transforms are resolved through [render.List.Xform]. Since WU-L a scroll
 // container pushes one: a pure translation, which takes the axis aligned fast
 // path in [Renderer.appendAxisAligned] and in [Renderer.appendTexturedQuad] and
-// is exercised end to end against a GPU by gifttest's scroll pixel test. The
-// general polygon path still has no producer in gift and is covered by unit
-// tests only.
+// is exercised end to end against a GPU by gifttest's scroll pixel test. Since
+// WU-W there is a second producer and it is at the root: gift pushes the
+// device density of the project plan, section 18, so on a 2x display every
+// operation arrives under a uniform scale of two. The general polygon path
+// still has no producer in gift and is covered by unit tests only.
 //
-// One consequence is worth stating rather than implying. Shapes are shaded
-// from a distance field that this package rescales into device pixels, so a
-// scaling transform is correct for them. *Glyphs* are not: the atlas holds a
-// bitmap rasterised at the glyph's nominal size, and a scale would stretch it
-// under a nearest filter, giving text the wrong weight. The mapping from atlas
-// pixel to screen pixel is one to one only because every transform gift emits
-// is a translation — it is not one to one by construction. Making it so under a
-// scale means putting the effective size in the atlas key and asking
-// internal/text to rasterise at that size; see [Renderer.appendTexturedQuad],
-// where the note sits next to the code that would have to change.
+// One consequence is worth stating rather than implying, and it is what WU-W
+// changed. Shapes are shaded from a distance field that this package rescales
+// into device pixels, so a scaling transform was always correct for them.
+// *Glyphs* were not: the atlas held a bitmap rasterised at the glyph's nominal
+// size, and a scale would have stretched it under a nearest filter, giving
+// text the wrong weight. The answer was never to abandon the nearest filter —
+// it is to make the mapping from atlas pixel to screen pixel one to one by
+// *construction* rather than by the accident that every transform happened to
+// be a translation. So the scale of the transform enters the atlas key and the
+// rasteriser, [Renderer.appendGlyphs] transforms only the glyph origin, and
+// the mask is drawn at its own size in device pixels at any density. See
+// [GlyphAtlas.Lookup].
 //
 // # Glass, and the one place Ebitengine forced a departure from the plan
 //

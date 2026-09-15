@@ -102,9 +102,15 @@
 //
 // # What it cannot do yet
 //
-//   - Type text. There is no text input view and no character event in gift;
-//     [Harness.TypeText] says so at the call site, with what it would take,
-//     rather than faking an event the runtime never delivers.
+//   - Test a text *field*. [Harness.TypeText] delivers characters and
+//     [Harness.Key] delivers the editing keys, so the input foundation is
+//     drivable; what does not exist yet is a view that consumes them. A test
+//     has to supply its own interactor until gift grows one.
+//   - Compose CJK. There is no IME, no preedit string and no candidate
+//     window, and the project plan, section 14, keeps it that way. Umlauts,
+//     accents, AltGr and dead keys are not that and do work: by the time the
+//     platform reports a character the composition is over, and
+//     [Harness.TypeText] delivers exactly what it reported.
 //   - Assert on anything the backend does with the display list, short of a
 //     golden image: batching, atlas pressure and draw call counts live in
 //     backend/ebiten's own stats.
