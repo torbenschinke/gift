@@ -17,10 +17,13 @@ import (
 //
 //	import _ "github.com/torbenschinke/gift/clipboard"
 //
-// That package does not exist yet. This one does, so that the text field is
-// complete, testable and useful today with the in-process default below, and
-// so that the platform unit is a single call to [SetClipboard] rather than a
-// change to a widget.
+// That package exists since WU-AE. This one stays what it was, so that the
+// text field is complete, testable and useful with the in-process default
+// below on a machine with no display, and so that the platform unit is a
+// single call to [SetClipboard] rather than a change to a widget. The cap the
+// next section asks for is clipboard.MaxBytes, 256 KiB, and the truncation
+// past it is silent to a caller of [Clipboard.SetText] and visible only as a
+// log line — exactly as this documentation predicted it would have to be.
 //
 // # The contract
 //
