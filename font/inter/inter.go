@@ -17,17 +17,19 @@
 //
 // # What it costs
 //
-// Importing this package adds the two embedded files, about 832 KiB, to the
-// binary, and parses both of them during init. A binary that does not import
-// it pays nothing at all: gift's own packages embed no typeface, which is the
-// entire reason this is a separate package rather than a default inside ui.
+// Importing this package adds the two embedded files to the binary — 411 640
+// and 420 428 bytes, so 832 068 bytes or about 813 KiB — and parses both of
+// them during init. A binary that does not import it pays nothing at all:
+// gift's own packages embed no typeface, which is the entire reason this is a
+// separate package rather than a default inside ui.
 //
 // # Why these two weights
 //
 // Regular and Bold, upright only. Inter's static instances are a little over
-// 400 KiB each because each one carries the full Latin, Greek and Cyrillic
-// coverage plus hinting, so every additional face is a real cost paid by every
-// application that imports this package for the one face it actually uses.
+// 400 KiB each — 402 and 411 KiB — because each one carries the full Latin,
+// Greek and Cyrillic coverage plus hinting, so every additional face is a real
+// cost paid by every application that imports this package for the one face it
+// actually uses.
 // Regular and Bold are the pair an interface cannot do without: body text and
 // emphasis. Medium and SemiBold are a refinement, and [ui.ResolveFont]
 // approximates them from the nearest registered weight rather than refusing.
@@ -40,9 +42,9 @@
 //
 // # Why the static instances and not the variable font
 //
-// InterVariable.ttf is 880 KiB and covers every weight from 100 to 900, which
-// next to 832 KiB for two static faces looks like the obvious choice. It was
-// measured rather than assumed, and it is not.
+// InterVariable.ttf is about 880 KiB and covers every weight from 100 to 900,
+// which next to 813 KiB for two static faces looks like the obvious choice. It
+// was measured rather than assumed, and it is not.
 //
 // Instancing does work: setting the wght axis through the parser of
 // github.com/go-text/typesetting v0.3.5 changes both the advances and the
@@ -72,6 +74,13 @@
 // 2026-09-15. They are licensed under the SIL Open Font License 1.1; the full
 // text is in LICENSE.txt next to them, and it travels with any binary that
 // links this package.
+//
+// The bytes carry their own version, so the claim above is checkable rather
+// than remembered. Both files say "Version 4.001;git-9221beed3" in name ID 5
+// of their name table, which is what upstream v4.1 ships. Their SHA-256 are
+//
+//	40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82  Inter-Regular.ttf
+//	288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f  Inter-Bold.ttf
 package inter
 
 import (

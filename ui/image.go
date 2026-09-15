@@ -460,9 +460,9 @@ func (v ImageView) Build(*gift.BuildContext) gift.Element {
 		tint = OpaqueWhite
 	}
 	n := &imageNode{
-		fr: v.frame, st: v.style, pad: v.pad,
+		fr: v.frame, st: v.style.resolved(), pad: v.pad,
 		src: v.src, id: v.src.Metadata().ID,
-		fit: v.fit, placeholder: v.placeholder, tint: tint,
+		fit: v.fit, placeholder: ResolveColor(v.placeholder), tint: ResolveColor(tint),
 		want: v.size,
 	}
 	return gift.Element{

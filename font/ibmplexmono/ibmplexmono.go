@@ -47,10 +47,36 @@
 // IBM Plex Mono is by IBM, designed by Mike Abbink and Bold Monday. The four
 // embedded files are IBMPlexMono-Regular, -Bold, -Italic and -BoldItalic in
 // WOFF form, taken unmodified on 2026-09-15 from the vendored web font set of
-// the Nago project (web/vuejs/src/assets/fonts/ibm-plex-mono/complete/woff),
-// which is the upstream IBM Plex release as published for the web. They are
-// licensed under the SIL Open Font License 1.1; the full text is in LICENSE.txt
-// next to them and travels with any binary that links this package.
+// the Nago project (web/vuejs/src/assets/fonts/ibm-plex-mono/complete/woff).
+// They are licensed under the SIL Open Font License 1.1; the full text is in
+// LICENSE.txt next to them and travels with any binary that links this package.
+//
+// # The version, and what is still unknown about it
+//
+// A vendored copy is a weaker provenance than a named release, and this one
+// came with no release metadata at all — no tag, no changelog, nothing saying
+// which IBM Plex version the directory was cut from. That would have left the
+// only honest statement being "whatever was in that tree on that day", which
+// is not a thing a later reader can verify or reproduce.
+//
+// The fonts answer the question themselves. All four carry "Version 2.004" in
+// name ID 5 of their name table, and the unique identifier, name ID 3, reads
+// "2.004;IBM ;IBMPlexMono-Regular" and so on. IBM Plex 2.004 is therefore the
+// version pin, read out of the bytes rather than taken on trust.
+//
+// What that still does not establish is that these are the *unmodified* 2.004
+// web fonts, because a vendoring step could in principle have subset or
+// recompressed them without touching the name table. Nothing observed suggests
+// it did — the package's own tests shape all four faces and find four distinct
+// metric profiles — but it is not proven, and a future update should take the
+// files from IBM's own release rather than from a third party's tree. The
+// exact bytes in use are pinned by their SHA-256 so that such an update is a
+// visible change:
+//
+//	1d5732f53287cbe58936deabda52a60d810b84ac4a3fbdefa8e7632a2c38c39d  IBMPlexMono-Regular.woff
+//	6c12a8dde26400afd0a17bbc0e4a3525e0cc23f8e655f1e0359956cd7461a374  IBMPlexMono-Bold.woff
+//	031cf3d2bc01ea66b040e93166e5b6077f0d8cd1406bda34bd1dfb6a912be16a  IBMPlexMono-Italic.woff
+//	2e0a6200fbe8a0d81777c43adcfca268ceb30d18ea5f231446dd6299c96c1e7d  IBMPlexMono-BoldItalic.woff
 package ibmplexmono
 
 import (

@@ -80,6 +80,12 @@
 //
 //	import _ "github.com/torbenschinke/gift/font/inter"
 //
+// The TestMain below is not optional for a golden: without it AssertGolden
+// panics from inside Ebitengine, because pixels can only be read back on the
+// main loop. See [Main].
+//
+//	func TestMain(m *testing.M) { gifttest.Main(m) }
+//
 //	h := gifttest.New(t, gifttest.Options{
 //		View: view,
 //		Font: ui.MustFont(ui.FontQuery{Family: inter.Family}),

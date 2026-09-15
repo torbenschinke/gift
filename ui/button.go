@@ -12,61 +12,154 @@ var buttonType = gift.RegisterType("ui.Button")
 // state. It is the [Border] and [Color] set a [BoxView] would take, named as
 // one value so that a state can be described in one place.
 //
-// # Replacement, not merging
+// # A state style replaces, but the theme still shows through
 //
-// A state style, when set, replaces the whole box style for that state. It is
-// not merged field by field with the normal style, and the reason is that
-// merging needs a "was this field set" bit per field: the zero [Color] is
-// transparent and the zero [Border] is invisible, so an unset field and a
-// deliberately cleared one look identical. A caller who wants a pressed
-// background and the normal border writes both, which is three fields, once.
-// The alternative is a struct of pointers or a parallel set of has-flags, for
-// a struct this small.
+// A state style, when set, replaces the whole box style for that state: it is
+// not merged field by field with the normal style. That part is unchanged and
+// the reason section 8 of the project plan gives for it still holds — merging
+// two *caller supplied* styles would need a "was this field set" bit per
+// field, and an exported struct a caller fills with a composite literal has no
+// bit a literal could set.
+//
+// What did change, in the work unit that implemented section 20, is what an
+// unset colour means. The zero [Color] in this struct is not "transparent", it
+// is **"the theme decides"**:
+//
+//	ui.Button(label, act).PressedStyle(ui.ButtonStyle{CornerRadius: 10})
+//
+// gets the themed pressed face and no border, rather than an invisible
+// button. A caller who genuinely wants nothing drawn writes [ColorClear],
+// which is transparency by name. The same rule already applied to the numbers
+// of [ScrollBar], where a zero Width means "the default" and not "no bar".
+//
+// [ButtonStyle.Border] follows it one level down: a Border with a width and an
+// unset colour is stroked in [ColorSeparator], while a Border with no width is
+// no border at all. Geometry is the call site's, the hue is the theme's. Note
+// that this rule is local to ButtonStyle — [ButtonView.Border] and every other
+// .Border modifier leave a colourless border invisible, because there the
+// value is the caller's and not a field with a default under it.
+//
+// # The struct is read in two places, and they differ in one way
+//
+// [ButtonView.HoverStyle], [ButtonView.PressedStyle] and
+// [ButtonView.DisabledStyle] take a *replacement*: every field of the value
+// counts, an unset Border means no border, and an unset CornerRadius means a
+// square corner. That is the whole-style replacement of section 8 and the
+// reason the paragraph above exists.
+//
+// [ButtonView.Style] does not replace anything — it feeds the ordinary field
+// by field style of the view, the same one [ButtonView.Background] and friends
+// feed, which has a "was this set" bit per field. There an unset field means
+// "the caller did not write it", so Style{CornerRadius: 11} keeps the themed
+// face, the themed hairline *and* the themed hover and pressed faces, exactly
+// like .CornerRadius(11) does. The two spellings used to disagree; see
+// [ButtonView.Style].
 type ButtonStyle struct {
-	// Background fills the button's bounds.
+	// Background fills the button's bounds. The zero value means the themed
+	// face of the state this style belongs to; use [ColorClear] for none.
 	Background Color
-	// Border strokes the inside of the bounds.
+	// Border strokes the inside of the bounds. A width without a colour is
+	// stroked in [ColorSeparator].
 	Border Border
-	// CornerRadius rounds both.
+	// CornerRadius rounds both. The zero value is a square corner and not a
+	// themed default: a radius is a shape, not a colour, and section 20 is
+	// about colours.
 	CornerRadius float32
 }
 
-// Default button appearance. gift has no theme yet, so these are the values
-// that make an unstyled button look like a button instead of like nothing, and
-// nothing more. Any application with a design overrides them.
+// withThemedDefaults applies the unset rule of [ButtonStyle]: an unset
+// background becomes the semantic face of the state this style belongs to, and
+// an unset border colour becomes [ColorSeparator]. The result still carries
+// semantic colours.
+func (s ButtonStyle) withThemedDefaults(face Color) ButtonStyle {
+	if s.Background == (Color{}) {
+		s.Background = face
+	}
+	if s.Border.Width > 0 && s.Border.Color == (Color{}) {
+		s.Border.Color = ColorSeparator
+	}
+	return s
+}
+
+// resolved applies the unset rule and then turns every colour into a literal
+// one. It runs in [ButtonView.Build] and nowhere else, so a button node holds
+// plain colours and the frame path never consults a theme.
+func (s ButtonStyle) resolved(face Color) ButtonStyle {
+	s = s.withThemedDefaults(face)
+	s.Background = ResolveColor(s.Background)
+	s.Border = resolveBorder(s.Border)
+	return s
+}
+
+// Default button appearance, in the semantic colours of the project plan,
+// section 20.
 //
-// "Yet" and not "never", which is the correction WU-AA owes this comment. The
-// project plan, section 14, did exclude a theming system and its "Aufgehobene
-// Ausschluesse" has since half lifted that: section 20 introduces semantic
-// colours and a light/dark switch, while a *system* of inherited environment
-// values is still ruled out on the grounds section 4 gives. So these constants
-// are expected to become semantic colours rather than to stay literals, and
-// that is the theming unit's work, not this one's — changing them here would
-// be a look change with no semantic layer under it to justify it.
+// These are package variables holding *unresolved* colours, which is what
+// makes them follow a later [SetTheme] rather than freezing whichever theme
+// was installed when this package was initialised. They are resolved once per
+// build, in [ButtonView.Build].
+//
+// They are unexported, and they stay unexported now that a theme exists. An
+// exported defaultButtonStyle would be a second process wide lever next to
+// [SetTheme] — one that covers one widget, does not know about light and dark,
+// and would silently win over the theme for anybody who assigned to it. The
+// way to restyle every button in an application is a theme:
+//
+//	ui.SetTheme(app, ui.LightTheme().With(ui.ColorControl, ui.RGB(226, 232, 240)))
+//
+// The radius and the padding are not themed. They are metrics, and section 20
+// introduces semantic *colours*; a metric scale is a separate decision that
+// would want the density work of section 18 next to it.
 var (
-	defaultButtonStyle = ButtonStyle{
-		Background:   RGB(232, 234, 238),
-		Border:       Border{Width: 1, Color: RGBA(0, 0, 0, 40)},
-		CornerRadius: 6,
-	}
-	defaultButtonHover = ButtonStyle{
-		Background:   RGB(244, 246, 250),
-		Border:       Border{Width: 1, Color: RGBA(0, 0, 0, 60)},
-		CornerRadius: 6,
-	}
-	defaultButtonPressed = ButtonStyle{
-		Background:   RGB(200, 204, 212),
-		Border:       Border{Width: 1, Color: RGBA(0, 0, 0, 80)},
-		CornerRadius: 6,
-	}
-	defaultButtonDisabled = ButtonStyle{
-		Background:   RGBA(0, 0, 0, 20),
-		Border:       Border{Width: 1, Color: RGBA(0, 0, 0, 20)},
-		CornerRadius: 6,
-	}
-	defaultButtonFocusRing = Border{Width: 2, Color: RGB(64, 128, 240)}
+	defaultButtonBorder    = Border{Width: 1, Color: ColorSeparator}
+	defaultButtonFocusRing = Border{Width: 2, Color: ColorAccent}
+	defaultButtonRadius    = float32(6)
 	defaultButtonPadding   = geom.Insets{Top: 6, Right: 12, Bottom: 6, Left: 12}
 )
+
+// defaultStyle is the themed look of one interaction state. face is the
+// semantic colour of that state: [ColorControl], [ColorControlHover],
+// [ColorControlPressed] or [ColorControlDisabled].
+//
+// # One separator for hover and pressed, a weaker one for disabled
+//
+// The old literals had a per state alpha ladder — 40, 60, 80 and 20 — and
+// three quarters of it is deliberately gone. A hairline stepping by twenty
+// units of alpha is below the threshold at which anybody reads it as feedback,
+// while the face, which steps by twelve to thirty two units of colour, is what
+// actually says "hovered". One separator is also the only version of that
+// which can be themed without three more tokens.
+//
+// Disabled is the exception, and collapsing it into the same separator was a
+// mistake worth naming: it took the hairline from alpha 20 to alpha 40, which
+// made a disabled button's outline *twice as strong* as before and exactly as
+// strong as an enabled one. The argument above does not cover this case,
+// because it is about feedback and disabled is not feedback — it is an
+// affordance, and the affordance is that there is less of the control. The
+// face alone cannot carry it: [ColorControlDisabled] is a twenty-alpha wash in
+// both themes, so a crisp full strength outline around a nearly absent face
+// reads as an enabled button someone forgot to fill in.
+//
+// So the disabled hairline is [ColorSeparator] at half, which is the alpha 20
+// it had before this work unit, expressed as a derivation of the one token
+// instead of as a fourth one. That is what [Fade] is for and it costs no new
+// role; see [disabledHairlineFade].
+func defaultStyle(face Color) ButtonStyle {
+	return ButtonStyle{
+		Background:   face,
+		Border:       defaultButtonBorder,
+		CornerRadius: defaultButtonRadius,
+	}
+}
+
+// disabledHairlineFade is how much of [ColorSeparator] the library's own
+// hairline keeps around a disabled button. See [defaultStyle].
+//
+// It applies only when the library supplied the hairline. A caller who wrote a
+// border, with .Border or through a declared [ButtonView.DisabledStyle], gets
+// theirs at full strength: it is a value they passed in, and the unset rule of
+// [ButtonStyle] does not reach into a value somebody named.
+const disabledHairlineFade = 0.5
 
 // ButtonView is a pressable control around an arbitrary label view. It is
 // created by [Button]; the zero value is not useful.
@@ -114,7 +207,6 @@ type ButtonView struct {
 	hasFocusRing                           bool
 	disabled                               bool
 	hasPadding                             bool
-	hasStyle                               bool
 }
 
 // Button returns a button showing label and calling action when it is
@@ -153,37 +245,34 @@ func (b ButtonView) Build(*gift.BuildContext) gift.Element {
 	if b.hasPadding {
 		n.pad = b.pad
 	}
-	n.normal = defaultButtonStyle
-	if b.hasStyle {
-		n.normal = ButtonStyle{
-			Background:   b.style.background,
-			Border:       b.style.border,
-			CornerRadius: b.style.radius,
-		}
+	// The normal state, field by field. This is what [styleSpec.set] is for:
+	// a caller who set only a corner radius keeps the themed face and the
+	// themed hairline and gets their radius, instead of the transparent
+	// background and invisible border the zero style used to hand them.
+	st := b.style.resolved()
+	n.normal = defaultStyle(ColorControl).resolved(ColorControl)
+	if b.style.isSet(bitBackground) {
+		n.normal.Background = st.background
 	}
-	n.hover, n.pressed, n.disabledStyle = n.normal, n.normal, n.normal
-	switch {
-	case b.hasHover:
-		n.hover = b.hover
-	case !b.hasStyle:
-		n.hover = defaultButtonHover
+	if b.style.isSet(bitBorder) {
+		n.normal.Border = st.border
 	}
-	switch {
-	case b.hasPressed:
-		n.pressed = b.pressed
-	case !b.hasStyle:
-		n.pressed = defaultButtonPressed
+	if b.style.isSet(bitRadius) {
+		n.normal.CornerRadius = st.radius
 	}
-	switch {
-	case b.hasDisabledStyle:
-		n.disabledStyle = b.disabledStyle
-	case !b.hasStyle:
-		n.disabledStyle = defaultButtonDisabled
+	n.hover = b.stateStyle(b.hasHover, b.hover, ColorControlHover, n.normal)
+	n.pressed = b.stateStyle(b.hasPressed, b.pressed, ColorControlPressed, n.normal)
+	n.disabledStyle = b.stateStyle(b.hasDisabledStyle, b.disabledStyle, ColorControlDisabled, n.normal)
+	if !b.hasDisabledStyle && !b.style.isSet(bitBorder) {
+		// The library's own hairline, weakened for the one state where less
+		// of the control *is* the affordance; see [defaultStyle]. Only when
+		// the library supplied it — a border the caller named is theirs.
+		n.disabledStyle.Border.Color = ResolveColor(Fade(ColorSeparator, disabledHairlineFade))
 	}
-	n.shadow = b.style.shadow
-	n.focusRing = defaultButtonFocusRing
+	n.shadow = st.shadow
+	n.focusRing = resolveBorder(defaultButtonFocusRing)
 	if b.hasFocusRing {
-		n.focusRing = b.focusRing
+		n.focusRing = resolveBorder(b.focusRing)
 	}
 	n.kids[0] = b.label
 
@@ -208,6 +297,31 @@ func (b ButtonView) Build(*gift.BuildContext) gift.Element {
 		Disabled:   b.disabled,
 		Clip:       b.style.clip,
 	}
+}
+
+// stateStyle picks the look of one non normal interaction state.
+//
+// Three cases, and the middle one is the rule the old code expressed with a
+// single hasStyle flag:
+//
+//   - The caller declared the state. It is used as written; it was already
+//     resolved by the modifier that took it.
+//   - The caller gave the button a background of its own. The state then
+//     keeps that background, because a control painted in an application's
+//     own colour must not light up in gift's stock hover grey when the
+//     pointer crosses it.
+//   - Otherwise the state takes the themed face for it, on top of whatever
+//     border and radius the normal state ended up with. This is the part that
+//     is new: a caller who set only a radius, or only a border, used to lose
+//     hover, press and disabled feedback entirely.
+func (b ButtonView) stateStyle(declared bool, s ButtonStyle, face Color, normal ButtonStyle) ButtonStyle {
+	if declared {
+		return s.resolved(face)
+	}
+	if !b.style.isSet(bitBackground) {
+		normal.Background = ResolveColor(face)
+	}
+	return normal
 }
 
 // buttonNode is the retained half of a [ButtonView]: layouter, painter and
@@ -371,20 +485,51 @@ func (n *buttonNode) activate() {
 
 // --- modifiers -------------------------------------------------------------
 
-// Style replaces the normal state box style in one call. It is the same thing
-// as Background, Border and CornerRadius together and exists so that the four
-// states can be written symmetrically.
+// Style sets the normal state box style in one call. It exists so that the
+// four states can be written symmetrically.
+//
+// It sets exactly the fields the caller wrote and leaves the others alone,
+// which is what makes it the same thing as [ButtonView.Background],
+// [ButtonView.Border] and [ButtonView.CornerRadius] together — the sentence
+// this method's documentation has always claimed. It did not hold: the old
+// implementation synthesised a themed background and then recorded it as
+// though the caller had named one, so
+//
+//	ui.Button(l, a).Style(ui.ButtonStyle{CornerRadius: 11})
+//
+// lost its hover and pressed faces while the spelling three characters away,
+// .CornerRadius(11), kept them. See [ButtonView.stateStyle] for why that bit
+// decides the question.
+//
+// The one thing the aggregate spelling cannot say is "no corner radius at
+// all", because a zero CornerRadius here is indistinguishable from an unset
+// one. Write .CornerRadius(0) for that. That is the price of a struct without
+// per field presence, and it is the same price [ButtonStyle] pays everywhere
+// else; see its documentation.
 func (b ButtonView) Style(v ButtonStyle) ButtonView {
-	b.setBackground(v.Background)
-	b.setBorder(v.Border)
-	b.setCornerRadius(v.CornerRadius)
-	b.hasStyle = true
+	if v.Background != (Color{}) {
+		b.setBackground(v.Background)
+	}
+	if v.Border.Width > 0 {
+		// The border half of the unset rule: geometry is the call site's,
+		// the hue is the theme's. See [ButtonStyle].
+		if v.Border.Color == (Color{}) {
+			v.Border.Color = ColorSeparator
+		}
+		b.setBorder(v.Border)
+	}
+	if v.CornerRadius != 0 {
+		b.setCornerRadius(v.CornerRadius)
+	}
 	return b
 }
 
 // HoverStyle sets the look while a mouse is over the button. A touch never
 // triggers it; see [gift.PointerKind].
-func (b ButtonView) HoverStyle(v ButtonStyle) ButtonView { b.hover, b.hasHover = v, true; return b }
+func (b ButtonView) HoverStyle(v ButtonStyle) ButtonView {
+	b.hover, b.hasHover = v, true
+	return b
+}
 
 // PressedStyle sets the look while a pointer this button captured is down and
 // inside it.
@@ -406,7 +551,10 @@ func (b ButtonView) DisabledStyle(v ButtonStyle) ButtonView {
 // because focus is orthogonal to hover and press: a focused, hovered button is
 // hovered *and* focused, and folding the ring into the state styles would make
 // that combination impossible to express without writing the ring four times.
-func (b ButtonView) FocusRing(v Border) ButtonView { b.focusRing, b.hasFocusRing = v, true; return b }
+func (b ButtonView) FocusRing(v Border) ButtonView {
+	b.focusRing, b.hasFocusRing = v, true
+	return b
+}
 
 // Label sets the accessible name of the button, the string a person would use
 // to refer to the command.
@@ -462,12 +610,11 @@ func (b ButtonView) MaxHeight(v float32) ButtonView { b.setMaxHeight(v); return 
 // and friends for the other states.
 func (b ButtonView) Background(v Background) ButtonView {
 	b.setBackgroundSpec(v)
-	b.hasStyle = true
 	return b
 }
 
 // Border strokes the inside of the bounds in the normal state.
-func (b ButtonView) Border(v Border) ButtonView { b.setBorder(v); b.hasStyle = true; return b }
+func (b ButtonView) Border(v Border) ButtonView { b.setBorder(v); return b }
 
 // Shadow draws a blurred copy of the button's box behind it.
 //
@@ -480,7 +627,6 @@ func (b ButtonView) Shadow(v Shadow) ButtonView { b.setShadow(v); return b }
 // not override it.
 func (b ButtonView) CornerRadius(v float32) ButtonView {
 	b.setCornerRadius(v)
-	b.hasStyle = true
 	return b
 }
 

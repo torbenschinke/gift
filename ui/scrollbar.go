@@ -73,7 +73,35 @@ type ScrollBar struct {
 
 	// Track is the colour of the groove the thumb runs in, and Thumb the
 	// colour of the thumb. Both are drawn at the current opacity of the bar.
-	// A transparent value takes the default.
+	//
+	// Either may be a semantic colour; it is resolved during build, like
+	// every other colour in this package. A transparent value takes the
+	// default from [DefaultScrollBar].
+	//
+	// # ColorClear does not work here, and that is deliberate
+	//
+	// The fallback runs *after* resolution — it has to, because a semantic
+	// colour is transparent until it is resolved and testing first would
+	// throw every named colour away — so [ColorClear], which resolves to
+	// transparency, lands in the fallback and comes back as the default. A
+	// scroll bar with an invisible track is therefore not expressible.
+	//
+	// This is inconsistent with [ButtonStyle], where ColorClear is the
+	// documented way to say "nothing", and the inconsistency is kept rather
+	// than removed. The reason is that the two fields do not have the same
+	// job. A button face is content: a borderless, fill-less button is a
+	// perfectly ordinary design and the library must not stand in its way. A
+	// scroll bar is a control whose entire purpose is to be findable by eye
+	// while the content moves, and "half of it invisible" is a look with no
+	// use that a zero value would hand out by accident. A caller who really
+	// wants no groove has the better tool already: [ScrollBar.Width] and the
+	// indicator timings shape the bar, and a viewport that wants no bar at
+	// all says so with [ScrollView.ScrollBar] rather than by painting one in
+	// nothing.
+	//
+	// Fixing it the other way — an explicit "was this set" bit — would mean
+	// the same exported-struct problem [ButtonStyle] documents, and it would
+	// buy a look nobody has asked for.
 	Track Color
 	Thumb Color
 
@@ -96,9 +124,17 @@ type ScrollBar struct {
 
 // DefaultScrollBar is the style a viewport uses when none was set.
 //
-// Neutral dark on a light design, thin enough not to cover content and thick
-// enough to be a target: eight logical pixels is above the smallest comfortable
-// pointer target for a one dimensional drag, which is what the thumb is.
+// The two colours are the label colour at eight and fifty one percent, and
+// they are written as a [Fade] of [ColorLabel] rather than as literals for a
+// reason that only shows up in the dark theme: a bar that is always black is
+// invisible on a dark background, which is the one place a scroll bar has to
+// be found by eye. Under the light theme the fade produces exactly the
+// RGBA(0, 0, 0, 20) and RGBA(0, 0, 0, 130) this variable used to hold, so the
+// committed goldens do not move.
+//
+// Thin enough not to cover content and thick enough to be a target: eight
+// logical pixels is above the smallest comfortable pointer target for a one
+// dimensional drag, which is what the thumb is.
 //
 // Hold plus Fade has to finish inside [gift.ScrollIndicatorLinger], or the
 // last part of the fade is drawn at the idle tick rate and the bar snaps away
@@ -109,8 +145,8 @@ var DefaultScrollBar = ScrollBar{
 	Width:    8,
 	MinThumb: 28,
 	Margin:   0,
-	Track:    RGBA(0, 0, 0, 20),
-	Thumb:    RGBA(0, 0, 0, 130),
+	Track:    Fade(ColorLabel, 20.0/255),
+	Thumb:    Fade(ColorLabel, 130.0/255),
 	Hold:     500 * time.Millisecond,
 	Fade:     250 * time.Millisecond,
 }
@@ -134,11 +170,16 @@ func (b ScrollBar) withDefaults() ScrollBar {
 	if b.MinThumb == 0 {
 		b.MinThumb = DefaultScrollBar.MinThumb
 	}
+	// Resolution before the fallback, and in that order: a semantic colour
+	// has an alpha of zero until it is resolved, so asking IsTransparent
+	// first would throw away every named colour a caller passed in.
+	b.Track = ResolveColor(b.Track)
+	b.Thumb = ResolveColor(b.Thumb)
 	if b.Track.IsTransparent() {
-		b.Track = DefaultScrollBar.Track
+		b.Track = ResolveColor(DefaultScrollBar.Track)
 	}
 	if b.Thumb.IsTransparent() {
-		b.Thumb = DefaultScrollBar.Thumb
+		b.Thumb = ResolveColor(DefaultScrollBar.Thumb)
 	}
 	if b.Hold == 0 {
 		b.Hold = DefaultScrollBar.Hold

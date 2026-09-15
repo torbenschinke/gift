@@ -30,7 +30,10 @@
 // dependent modifier semantics of SwiftUI; see the project plan, section 8,
 // which says so explicitly.
 //
-// Shadow is part of step 2 and is not implemented here.
+// Shadow, background, border, corner radius, clipping and the glass material
+// are all implemented. [BoxView.Shadow] and its equivalents on every other
+// styled view take a [Shadow]; it extends the paint bounds and neither the
+// layout size nor the hit area, and a parent clip cuts it like anything else.
 //
 // # Text
 //
@@ -51,6 +54,64 @@
 // [ResolveFont] picks a registered face by family, weight and style. It is not
 // a fallback chain: a glyph the chosen face lacks is not looked for in a
 // second one, and the project plan, section 14, keeps it that way.
+//
+// # Colour
+//
+// Colours are either literal — [RGB] and [RGBA] — or semantic. A semantic
+// colour names the *role* a colour plays: [ColorLabel], [ColorSurface],
+// [ColorAccent] and the rest resolve against the process wide theme, and
+// [SetTheme] switches the whole application between [LightTheme] and
+// [DarkTheme] at runtime. The project plan, section 20, fixes both the feature
+// and its limits.
+//
+// The resolution happens in Build, once per view. A retained node holds the
+// literal colour it was built with, which is what keeps theme lookups out of
+// the frame path and the frame path at zero allocations — and it is also why a
+// theme change has to rebuild, which is what [SetTheme] does through
+// [gift.App.Invalidate].
+//
+// There is deliberately no environment and no inherited scope. Section 20 rules
+// that out by name, on the grounds section 4 gives for styling in general: a
+// style is a property of the concrete construction site, not something applied
+// to an arbitrary [gift.View]. A semantic colour is therefore an ordinary value
+// a call site writes down; what is global is the table it is looked up in, not
+// a value handed down the tree.
+//
+// In the style structs of this package — [ButtonStyle] today — the zero
+// [Color] means "not set, let the theme decide" rather than "transparent", so
+// that a theme can sit underneath a partially specified style. A caller who
+// wants nothing drawn writes [ColorClear].
+//
+// # An unresolved semantic colour is invisible, not wrong
+//
+// This is the one property of the encoding worth knowing before writing a
+// widget of your own. A semantic colour is a [Color] whose red channel is -1
+// and whose *alpha is zero* — see [IsSemantic] — so a colour that never
+// reached [ResolveColor] is fully transparent. Every painter worth the name
+// skips fully transparent work, so the operation is not emitted at all: the
+// widget lays out, measures and hit tests exactly as it should, and draws
+// nothing. There is no wrong pixel to notice and, in a release build, no
+// diagnosis.
+//
+// Consequences, in order of how likely you are to need them:
+//
+//   - Resolve during Build and store the literal colour in your node, which is
+//     what every view here does and what keeps theme lookups out of the frame
+//     path.
+//   - If you check [IsSemantic] yourself, check it where you decide whether to
+//     draw, not where you append the operation. By the latter point the
+//     mistake has already become an absence.
+//   - Under the giftdebug tag this package asserts in front of each of its own
+//     visibility gates, and [render.List.Add] and [render.List.AddMaterial]
+//     reject any impossible premultiplied colour as a backstop.
+//
+// # Removed
+//
+// DefaultForeground, a package variable that set the colour of every [Text]
+// without one, is gone. It was process wide, mutable and able to recolour
+// exactly one thing. The replacement is [ColorLabel] and [SetTheme], which
+// move the text and the controls together and do so for both appearances; see
+// [TextView] for the longer version.
 //
 // # Input
 //

@@ -75,7 +75,36 @@ type Options struct {
 	// untouched pixel and render dark text invisible. White is the choice
 	// that makes a default styled application legible; an application with a
 	// dark design sets this to its own colour.
+	//
+	// A semantic colour is accepted and is resolved against [Options.Theme],
+	// so the obvious thing to write next to a dark theme works:
+	//
+	//	gifttest.Options{Theme: ui.DarkTheme(), Background: ui.ColorBackground}
+	//
+	// It is resolved rather than documented as "must be literal", because this
+	// field sits three lines below Theme and an unresolved colour would not
+	// have produced an error — it would have produced a golden cleared to
+	// transparent cyan, which is what {0, 255, 255, 0} is and what this field
+	// used to hand to Ebitengine's Fill.
+	//
+	// [ui.ColorClear] resolves to fully transparent, which is a legal thing to
+	// ask for here and means "compare the alpha channel too".
 	Background render.Color
+
+	// Theme is the colour theme the views under test resolve their semantic
+	// colours against, for the duration of the test.
+	//
+	// It exists for exactly the reason [Options.Font] does. The theme is
+	// process wide — see [ui.SetTheme] and the project plan, section 20 — so
+	// a golden image of an application that uses [ui.ColorSurface] depends on
+	// which theme some other test in the process happened to leave installed.
+	// Setting it here makes that dependency a line in the test rather than an
+	// ordering accident.
+	//
+	// The zero Theme means "leave the installed theme alone", so an existing
+	// test keeps behaving exactly as it did. A test that wants the default
+	// explicitly writes ui.LightTheme().
+	Theme ui.Theme
 
 	// Font is the font every [ui.Text] under test is measured and drawn with,
 	// unless a view names its own with ui.TextView.Font.
@@ -92,6 +121,11 @@ type Options struct {
 	// its own typeface, or by importing one of the bundled ones:
 	//
 	//	import _ "github.com/torbenschinke/gift/font/inter"
+	//
+	// The TestMain is not optional for a golden: without it
+	// AssertGolden panics from inside Ebitengine, because pixels
+	// can only be read back on the main loop. See [Main].
+	//	func TestMain(m *testing.M) { gifttest.Main(m) }
 	//
 	//	h := gifttest.New(t, gifttest.Options{
 	//		View: view,
@@ -188,12 +222,22 @@ func New(t TB, opts Options) *Harness {
 		bg = render.RGB(255, 255, 255)
 	}
 	// Before the App exists, because the first Settle below already builds and
-	// therefore already resolves fonts. See [Options.Font].
+	// therefore already resolves both. See [Options.Theme] and [Options.Font].
+	if opts.Theme != (ui.Theme{}) {
+		prev := ui.CurrentTheme()
+		ui.SetTheme(nil, opts.Theme)
+		t.Cleanup(func() { ui.SetTheme(nil, prev) })
+	}
 	if !opts.Font.IsZero() {
 		prev := ui.DefaultFont()
 		ui.SetDefaultFont(opts.Font)
 		t.Cleanup(func() { ui.SetDefaultFont(prev) })
 	}
+	// After the theme is installed, and resolved rather than required to be
+	// literal; see [Options.Background]. The zero test above is safe in front
+	// of it because no semantic colour is the zero Color — the encoding puts a
+	// -1 in the red channel.
+	bg = ui.ResolveColor(bg)
 	h := &Harness{
 		t:         t,
 		app:       gift.New(gift.Options{Root: root, Logger: opts.Logger}),

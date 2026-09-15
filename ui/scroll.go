@@ -112,11 +112,11 @@ func (s ScrollView) Build(*gift.BuildContext) gift.Element {
 			CrossAlign: s.cross,
 		},
 		fr: s.frame,
-		st: s.style,
+		st: s.style.resolved(),
 	}
 	n.bar.style = s.bar.withDefaults()
 	var p gift.Painter
-	if s.style.needsPainter() || !n.bar.style.Hidden {
+	if n.st.needsPainter() || !n.bar.style.Hidden {
 		p = n
 	}
 	axis := gift.ScrollVertical

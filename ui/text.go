@@ -34,15 +34,6 @@ const (
 // was not called.
 const DefaultFontSize = 14
 
-// DefaultForeground is the colour a [TextView] uses when
-// [TextView.Foreground] was not called: opaque black, the convention every
-// other toolkit uses.
-//
-// It is stated here rather than left implicit because the zero [Color] is
-// fully transparent, and defaulting to that would make an unstyled label
-// invisible — the exact failure this package works to avoid elsewhere.
-var DefaultForeground = RGB(0, 0, 0)
-
 // TextView is a run of text. It is created by [Text]; the zero value is not
 // useful.
 //
@@ -62,6 +53,16 @@ var DefaultForeground = RGB(0, 0, 0)
 // [gift.Diagnostics] like every other overflow. That is the text form of the
 // overflow model of the project plan, section 7.
 //
+// # Colour
+//
+// A TextView that was not given a [TextView.Foreground] draws in [ColorLabel],
+// the semantic colour of primary text, resolved against the theme in force
+// when the view is built. There used to be an exported DefaultForeground
+// variable here, and it was the one accidental global lever this package had:
+// process wide, mutable, and able to recolour exactly one thing. It is gone.
+// The lever is [SetTheme], which moves the text and the controls together and
+// does so for both appearances; see the project plan, section 20.
+//
 // # Font
 //
 // gift links no font unless the application asks for one. A TextView uses
@@ -80,7 +81,7 @@ type TextView struct {
 	maxLines int
 }
 
-// Text returns a text view for s at [DefaultFontSize] in [DefaultForeground].
+// Text returns a text view for s at [DefaultFontSize] in [ColorLabel].
 //
 // The string is kept by value and is immutable, so unlike a children slice it
 // carries no ownership transfer; see the project plan, section 4.
@@ -98,13 +99,18 @@ func (t TextView) Build(*gift.BuildContext) gift.Element {
 	if size <= 0 {
 		size = DefaultFontSize
 	}
-	fg := t.fg
+	st := t.style.resolved()
+	fg := ResolveColor(t.fg)
 	if !t.hasFG {
-		fg = DefaultForeground
+		// The themed default. It is resolved here rather than stored in the
+		// zero value of TextView, because the zero value is constructed by
+		// [Text] and a theme installed after that — but before the build —
+		// would otherwise be ignored for one frame.
+		fg = ResolveColor(ColorLabel)
 	}
 	n := &textNode{
 		fr:       t.frame,
-		st:       t.style,
+		st:       st,
 		pad:      t.pad,
 		fg:       fg,
 		align:    t.align,
@@ -120,7 +126,7 @@ func (t TextView) Build(*gift.BuildContext) gift.Element {
 		Flex:     t.flex,
 		Layouter: n,
 		Painter:  n,
-		Clip:     t.style.clip,
+		Clip:     st.clip,
 		// The semantic half of a label: the very string the glyphs below
 		// spell. It costs one string header per build and is read by nothing
 		// in the frame path; see [gift.Element.Label].
@@ -232,6 +238,11 @@ func (n *textNode) Paint(ctx *gift.PaintContext) {
 // a fractional node bounds could otherwise have leaked a subpixel phase into
 // the atlas.
 func (n *textNode) paintGlyphs(ctx *gift.PaintContext, b geom.Rect) {
+	// Before the transparency test, not after it. An unresolved semantic
+	// foreground has an alpha of zero, so the run would be skipped as
+	// invisible and the label would simply not be there; see [assertResolved].
+	assertResolved(n.fg, "the foreground of a TextView")
+
 	if n.fg.IsTransparent() || n.req.Text == "" {
 		return
 	}
@@ -337,6 +348,8 @@ func (t TextView) FontSize(v float32) TextView {
 // Foreground sets the colour the glyphs are drawn in. The glyph atlas holds
 // coverage only, so a colour costs nothing: the same glyph in ten colours is
 // one atlas entry.
+// A semantic colour such as [ColorSecondaryLabel] is accepted and is resolved
+// in Build, against the theme in force when the view is built.
 func (t TextView) Foreground(v Color) TextView { t.fg, t.hasFG = v, true; return t }
 
 // Align sets the horizontal alignment of the lines inside the node's width.

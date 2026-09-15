@@ -54,6 +54,49 @@ type styleSpec struct {
 	shadow   Shadow
 	radius   float32
 	clip     bool
+	// set records which of the fields above a caller actually assigned.
+	//
+	// This is the "was this field set" bit the project plan, section 20,
+	// names as the precondition for putting a theme *underneath* a partially
+	// specified style, and section 8 names as the reason state styles replace
+	// rather than merge. Without it, a view that was given a corner radius
+	// and nothing else is indistinguishable from one that was given a
+	// transparent background and an invisible border on purpose, so a themed
+	// default could only be applied by overwriting a deliberate choice.
+	//
+	// It is one byte for five fields rather than five bools, because it lives
+	// in every styled view value and is read as a mask.
+	set styleBits
+}
+
+// styleBits is the set of assigned fields of a [styleSpec].
+type styleBits uint8
+
+const (
+	bitBackground styleBits = 1 << iota
+	bitBorder
+	bitShadow
+	bitRadius
+	bitClip
+)
+
+// isSet reports whether every field in b was assigned.
+func (s styleSpec) isSet(b styleBits) bool { return s.set&b == b }
+
+// resolved returns the style with every semantic colour replaced by the
+// literal one of the theme in force; see [ResolveColor].
+//
+// Every view type calls this exactly once, in Build, and stores the result in
+// its node. That is what keeps the frame path free of theme lookups: a painter
+// emits the colour it was built with, [needsPainter] asks
+// [Color.IsTransparent] of a real colour rather than of a role, and nothing
+// below ui ever sees a semantic value.
+func (s styleSpec) resolved() styleSpec {
+	s.background = ResolveColor(s.background)
+	s.material = resolveMaterial(s.material)
+	s.border = resolveBorder(s.border)
+	s.shadow = resolveShadow(s.shadow)
+	return s
 }
 
 // needsPainter reports whether the node has anything to draw or clip.
@@ -254,7 +297,23 @@ func checkFlex(v float32) float32 {
 	}
 	return v
 }
-func (b *base) setBackground(v Color) { b.style.background, b.style.material = v, render.Material{} }
+
+// The setters keep the colour they were given, semantic or literal, and every
+// view type resolves its whole [styleSpec] once in Build; see
+// [styleSpec.resolved].
+//
+// Resolving in the setter instead was tried and is wrong. A view is an
+// ordinary value, and a value may be built before the theme it is drawn under
+// is installed — a package level `var panel = ui.Box().Background(ui.ColorSurface)`
+// is legal, and so is a test that constructs a view and then switches themes.
+// Resolving in the setter freezes whichever theme happened to be installed at
+// construction, and the symptom is a view that ignores a switch every other
+// view obeys. Build is the moment gift asks for the appearance, so it is the
+// moment the theme is read.
+func (b *base) setBackground(v Color) {
+	b.style.background, b.style.material = v, render.Material{}
+	b.style.set |= bitBackground
+}
 
 // setBackgroundSpec accepts either of the two things a background can be.
 //
@@ -265,10 +324,12 @@ func (b *base) setBackgroundSpec(v Background) {
 	switch t := v.(type) {
 	case nil:
 		b.style.background, b.style.material = Color{}, render.Material{}
+		b.style.set |= bitBackground
 	case Color:
 		b.setBackground(t)
 	case GlassMaterial:
 		b.style.background, b.style.material = Color{}, t.Material()
+		b.style.set |= bitBackground
 	default:
 		// Unreachable: render.Background has an unexported method and
 		// exactly two implementations. The panic is here so that adding a
@@ -277,10 +338,25 @@ func (b *base) setBackgroundSpec(v Background) {
 	}
 }
 
-func (b *base) setBorder(v Border)        { b.style.border = v }
-func (b *base) setShadow(v Shadow)        { b.style.shadow = checkShadow(v) }
-func (b *base) setCornerRadius(v float32) { b.style.radius = v }
-func (b *base) setClip(v bool)            { b.style.clip = v }
+func (b *base) setBorder(v Border) {
+	b.style.border = v
+	b.style.set |= bitBorder
+}
+
+func (b *base) setShadow(v Shadow) {
+	b.style.shadow = checkShadow(v)
+	b.style.set |= bitShadow
+}
+
+func (b *base) setCornerRadius(v float32) {
+	b.style.radius = v
+	b.style.set |= bitRadius
+}
+
+func (b *base) setClip(v bool) {
+	b.style.clip = v
+	b.style.set |= bitClip
+}
 
 // setFrame makes both axes tight. An axis given as [geom.Unbounded] is left
 // free, which is how a caller fixes one axis only.
@@ -339,6 +415,13 @@ func paintStyle(ctx *gift.PaintContext, st styleSpec) {
 // backend has to grow its geometry by the falloff and would otherwise have to
 // reverse that arithmetic. See [render.OpShadow].
 func paintBackground(ctx *gift.PaintContext, st styleSpec, b geom.Rect) {
+	// Before the visibility gates below and not after them; see
+	// [assertResolved]. An unresolved colour is transparent, so every one of
+	// those gates would swallow it silently.
+	assertResolvedShadow(st.shadow, "the shadow colour of a node")
+	assertResolved(st.background, "the background of a node")
+	assertResolved(st.material.Glass.Tint, "the glass tint of a node")
+
 	if sh := st.shadow; sh.IsVisible() {
 		ctx.Add(render.Op{
 			Kind:         render.OpShadow,
@@ -392,6 +475,10 @@ func paintBackground(ctx *gift.PaintContext, st styleSpec, b geom.Rect) {
 // backend concern; until the backend offers it, a clipped child may cover the
 // inside of a rounded corner.
 func paintBorder(ctx *gift.PaintContext, st styleSpec, b geom.Rect) {
+	// Before IsVisible, which is false for an unresolved colour; see
+	// [assertResolved].
+	assertResolvedBorder(st.border, "the border colour of a node")
+
 	if st.border.IsVisible() {
 		ctx.Add(render.Op{
 			Kind:         render.OpStrokeRoundRect,

@@ -239,6 +239,8 @@ func mainExtent(ax layout.Axis, s geom.Size) float32 {
 
 // element builds the gift.Element of a container view.
 func element(b base, kind nodeKind, gap float32, axis layout.Axis, cross layout.CrossAlign, children []gift.View) gift.Element {
+	// The one place a container reads the theme; see [styleSpec.resolved].
+	b.style = b.style.resolved()
 	n := &node{
 		kind: kind,
 		spec: layout.StackSpec{Axis: axis, Gap: gap, Padding: b.pad, Alignment: b.align, CrossAlign: cross},

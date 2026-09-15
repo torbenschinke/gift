@@ -112,6 +112,10 @@ func (l *List) PushXform(m geom.Affine2D) uint32 {
 // Add appends op to the list. The caller is responsible for setting the Clip
 // and Xform indices; see [List.CurrentClip].
 func (l *List) Add(op Op) {
+	// Debug builds only; see assertResolvedColor. This is the one choke point
+	// every drawn colour passes through, which is why the check lives here
+	// rather than in each of the dozen places ui emits an operation.
+	assertResolvedColor(op.Color, "operation colour")
 	l.ops = append(l.ops, op)
 }
 
@@ -149,6 +153,12 @@ func (l *List) Xform(i uint32) geom.Affine2D {
 // painter may call this unconditionally.
 func (l *List) AddMaterial(m Material) uint32 {
 	l.ensure()
+	// The same debug build check [List.Add] performs, for the colour that
+	// does not travel on an Op. A material goes into a side table, so it
+	// reaches the backend without passing Add at all, and a glass pane tinted
+	// with an unresolved gift/ui semantic colour got all the way to the GPU
+	// and painted saturated cyan before this line existed.
+	assertResolvedColor(m.Glass.Tint, "material tint")
 	if !m.IsVisible() {
 		return 0
 	}

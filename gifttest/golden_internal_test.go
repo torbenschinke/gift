@@ -6,6 +6,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/torbenschinke/gift/geom"
+	"github.com/torbenschinke/gift/ui"
 )
 
 // These tests are about the comparison rule, not about rendering, so they run
@@ -235,5 +238,46 @@ func TestMismatchWritesTheEvidence(t *testing.T) {
 	}
 	if _, err := os.Stat(gotPath); err == nil {
 		t.Errorf("%s survived a passing run", gotPath)
+	}
+}
+
+// TestTheGoldenBackgroundIsResolved pins [Options.Background] against the
+// mistake the field's own neighbourhood invites.
+//
+// [Options.Theme] sits three lines above it, so the obvious thing to write for
+// an application with a dark design is Theme plus Background: ui.ColorBackground
+// — and until this test existed that produced color.RGBA{0, 255, 255, 0},
+// because clearFor scaled the raw semantic encoding {-1, role, fade, 0} into
+// eight bit channels. Transparent cyan. Nothing failed; the golden was simply
+// taken over the wrong clear colour, and a golden never says "this is wrong".
+//
+// The check is on h.bg rather than on a rendered image so that it holds in
+// every build, which is the same argument the tests above this one make about
+// the comparison rule.
+func TestTheGoldenBackgroundIsResolved(t *testing.T) {
+	prev := ui.CurrentTheme()
+	defer ui.SetTheme(nil, prev)
+
+	h := New(t, Options{
+		View:       ui.Box().Frame(10, 10),
+		Size:       geom.Sz(40, 40),
+		Theme:      ui.DarkTheme(),
+		Background: ui.ColorBackground,
+	})
+	want := ui.DarkTheme().Color(ui.ColorBackground)
+	if h.bg != want {
+		t.Fatalf("the clear colour is %v, want the dark background %v", h.bg, want)
+	}
+	if ui.IsSemantic(h.bg) {
+		t.Fatal("the clear colour is still a semantic colour; clearFor would scale it into nonsense")
+	}
+	if got, want := clearFor(h.bg), (color.RGBA{18, 20, 26, 255}); got != want {
+		t.Errorf("the eight bit clear colour is %v, want %v", got, want)
+	}
+
+	// The default is untouched: an unset Background is still opaque white.
+	plain := New(t, Options{View: ui.Box().Frame(10, 10), Size: geom.Sz(40, 40)})
+	if got, want := clearFor(plain.bg), (color.RGBA{255, 255, 255, 255}); got != want {
+		t.Errorf("the default clear colour is %v, want opaque white %v", got, want)
 	}
 }

@@ -135,6 +135,14 @@ type TileStyle struct {
 	// Tile-Recycling".
 	//
 	// An empty palette uses one neutral grey.
+	//
+	// Unlike the other colours here, a palette entry is not passed through
+	// [ResolveColor]: the slice belongs to the caller — see the ownership
+	// rule of the project plan, section 4 — and resolving it would mean
+	// either writing into it or copying it every build. Palette entries are
+	// stand-ins for photographs rather than interface chrome, so a semantic
+	// colour has little to say about them; one written here is a defect that
+	// the giftdebug build reports from render.
 	Palette []Color
 
 	// Provisional fills a tile whose real dimensions have not arrived yet, so
@@ -1071,12 +1079,12 @@ func (v GalleryView) Build(*gift.BuildContext) gift.Element {
 	g.spec = v.spec
 	g.style = defaultTileStyle
 	if v.hasTile {
-		g.style = v.tile
+		g.style = v.tile.resolved()
 	}
 	g.overscan = float64(v.overscan)
 	g.onSelect, g.onActivate = v.onSelect, v.onActivate
 
-	n := &galleryNode{g: g, fr: v.frame, st: v.style, pad: v.pad}
+	n := &galleryNode{g: g, fr: v.frame, st: v.style.resolved(), pad: v.pad}
 	n.bar.style = v.bar.withDefaults()
 	kids := g.resizePool(g.desiredSlots)
 
@@ -1152,6 +1160,17 @@ func (v GalleryView) Layout(l GalleryLayout) GalleryView { v.spec = l; return v 
 
 // Tile sets the appearance of the placeholders. See [TileStyle].
 func (v GalleryView) Tile(s TileStyle) GalleryView { v.tile, v.hasTile = s, true; return v }
+
+// resolved turns the semantic colours of a tile style into literal ones, in
+// the modifier and therefore at build time, so that the paint path of a tile
+// never consults a theme. Palette is excluded; see [TileStyle.Palette].
+func (s TileStyle) resolved() TileStyle {
+	s.Provisional = ResolveColor(s.Provisional)
+	s.Error = ResolveColor(s.Error)
+	s.Selected = resolveBorder(s.Selected)
+	s.Cursor = resolveBorder(s.Cursor)
+	return s
+}
 
 // Overscan keeps tiles mounted for this many logical pixels above and below
 // the viewport.
@@ -1344,6 +1363,11 @@ func (t *tileNode) Paint(ctx *gift.PaintContext) {
 	}
 
 	fill := placeholderColor(s.id, st)
+	// Before the transparency tests below, which would silently fall through
+	// to the palette for an unresolved colour rather than diagnose it; see
+	// [assertResolved].
+	assertResolved(st.Error, "TileStyle.Error")
+	assertResolved(st.Provisional, "TileStyle.Provisional")
 	switch {
 	case s.failed && !st.Error.IsTransparent():
 		// A visible error state, which the project plan, section 15,
@@ -1366,6 +1390,12 @@ func (t *tileNode) Paint(ctx *gift.PaintContext) {
 // because it is a property of the tile and not of the picture; see
 // [TileStyle].
 func (t *tileNode) paintTileState(ctx *gift.PaintContext, s *tileSlot, st TileStyle, b geom.Rect) {
+	// Before IsVisible, which is false for an unresolved colour; see
+	// [assertResolved]. These two are resolved by [TileStyle.resolved], so
+	// reaching the panic means a path was added that skipped it.
+	assertResolvedBorder(st.Selected, "TileStyle.Selected")
+	assertResolvedBorder(st.Cursor, "TileStyle.Cursor")
+
 	sel := t.g.sel
 	if sel.Contains(s.id) && st.Selected.IsVisible() {
 		paintBorder(ctx, styleSpec{border: st.Selected, radius: st.CornerRadius}, b)
@@ -1384,6 +1414,13 @@ func (t *tileNode) paintTileState(ctx *gift.PaintContext, s *tileSlot, st TileSt
 //
 // FNV-1a over the ID bytes, open coded so that paint does not call into
 // hash/fnv and does not allocate.
+//
+// The result is asserted rather than resolved, which is the whole content of
+// [TileStyle.Palette]'s "one written here is a defect": the slice belongs to
+// the caller and resolving it would mean writing into it or copying it every
+// build. The assertion is here, on the way out, and not at the emission site,
+// because an unresolved entry is transparent and the fill would simply be
+// dropped; see [assertResolved].
 func placeholderColor(id asset.ID, st TileStyle) Color {
 	if len(st.Palette) == 0 {
 		return RGB(110, 114, 124)
@@ -1393,7 +1430,9 @@ func placeholderColor(id asset.ID, st TileStyle) Color {
 		h ^= uint32(id[i])
 		h *= 16777619
 	}
-	return st.Palette[int(h%uint32(len(st.Palette)))]
+	c := st.Palette[int(h%uint32(len(st.Palette)))]
+	assertResolved(c, "a TileStyle.Palette entry")
+	return c
 }
 
 // --- the gallery node --------------------------------------------------------

@@ -316,7 +316,20 @@ func (a *App) endPaint() {
 // Invalidate forces a rebuild of the root component in the next update. It is
 // the blunt instrument for tests, for a resize and for external changes that
 // gift cannot observe.
+//
+// Like every other entry point that touches tree state, it asserts under the
+// giftdebug tag that it was called from the UI goroutine; see
+// [App.assertUIGoroutine]. It is worth naming why a *core invalidation* entry
+// point carries that cost, because the check parses the goroutine header and
+// costs roughly a microsecond. Invalidate is not in the frame path: it is
+// called once per external change, and the release build has no check at all.
+// Against that, it is the natural thing for a goroutine watching the desktop
+// appearance or a file to call, it is the second half of [ui.SetTheme], and
+// the two flag writes it performs are exactly the racy state the guard exists
+// for. A -race run only reports it when another goroutine happens to touch
+// the same flags at the same moment; this reports it the first time.
 func (a *App) Invalidate() {
+	a.assertUIGoroutine("Invalidate")
 	a.markNeedsBuild(a.root)
 	a.markNeedsLayout(a.root.node)
 }

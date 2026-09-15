@@ -5,6 +5,7 @@ import (
 
 	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/gifttest"
+	"github.com/torbenschinke/gift/ui"
 )
 
 // TestCounterGolden is the same counter, compared as pixels.
@@ -20,8 +21,19 @@ import (
 //
 // The viewport is fixed and small, because a golden of an 800x600 window is
 // mostly background and takes longer to diff by eye than to regenerate.
+//
+// The theme is pinned for the same reason [Options.Font] is pinned everywhere
+// else in this package: these two goldens now contain colours resolved from a
+// process wide theme, so without the line below they would record whichever
+// theme the last test in the binary happened to leave installed and would
+// change with the file order. [ui.LightTheme] is the default, so pinning it
+// changes no pixel — it only makes the dependency visible.
 func TestCounterGolden(t *testing.T) {
-	h := gifttest.New(t, gifttest.Options{Root: counter, Size: geom.Sz(240, 200)})
+	h := gifttest.New(t, gifttest.Options{
+		Root:  counter,
+		Size:  geom.Sz(240, 200),
+		Theme: ui.LightTheme(),
+	})
 
 	// The structural assertions come first and stand on their own. A golden
 	// says "this changed", never "this is wrong"; the assertions below say
