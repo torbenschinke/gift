@@ -12,7 +12,12 @@ import (
 
 // The atlas tests shape real text with the Roboto that internal/text keeps in
 // its testdata, because a glyph id without the font it came from is not a test
-// of anything. gift ships no font; see ui.SetDefaultFont.
+// of anything.
+//
+// It stays Roboto and stays a relative path now that font/inter exists,
+// because these tests pin numbers — mask sizes, atlas occupancy, budgets —
+// that are properties of the typeface. Switching the fixture would move every
+// one of them at once and prove nothing about the atlas.
 const atlasFontPath = "../../internal/text/testdata/Roboto-Regular.ttf"
 
 var (

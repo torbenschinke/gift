@@ -56,7 +56,7 @@
 // default font in another one.
 //
 // So two parallel tests that both lay out text share a mutable cache and race,
-// and two that both call ui.SetDefaultFont race on the font. `go test -race`
+// and two that both set a default font race on the font. `go test -race`
 // reports it, which is the right tool for it and the one the project plan,
 // section 15, names; nothing here guards it, because a mutex on the
 // measurement path would cost every single window application something to
@@ -65,6 +65,25 @@
 // The practical rule: do not call t.Parallel in a test that uses this package.
 // Tests in different packages are separate processes and are unaffected, so
 // `go test ./...` parallelises at the level that matters anyway.
+//
+// # Pin the font
+//
+// A test whose result depends on glyph shapes — any golden image, any
+// assertion on a measured width — has to say which font it means, with
+// [Options.Font]. Otherwise it inherits whatever the process last installed,
+// and it passes or fails according to which other file in the package ran
+// first. The harness installs the font for the test and puts the previous one
+// back afterwards, so the test itself sets no global.
+//
+// gift links no typeface into an application that does not ask for one, so a
+// consumer supplies its own or imports one of the bundled packages:
+//
+//	import _ "github.com/torbenschinke/gift/font/inter"
+//
+//	h := gifttest.New(t, gifttest.Options{
+//		View: view,
+//		Font: ui.MustFont(ui.FontQuery{Family: inter.Family}),
+//	})
 //
 // # Time
 //

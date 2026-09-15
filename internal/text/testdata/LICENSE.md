@@ -22,4 +22,5 @@ The file is byte identical to the copy shipped in the test data of
 it was taken from. It is used because it carries the OpenType layout tables the
 tests need: a GPOS kerning feature and the standard `liga` feature, neither of
 which the Go fonts in `golang.org/x/image/font/gofont` contain. Nothing outside
-the test binary depends on it; gift ships no font.
+the test binary depends on it, and gift links no font into an application
+that has not asked for one.

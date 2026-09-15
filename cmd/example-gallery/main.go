@@ -38,6 +38,7 @@ import (
 	"github.com/torbenschinke/gift/asset"
 	backend "github.com/torbenschinke/gift/backend/ebiten"
 	"github.com/torbenschinke/gift/geom"
+	"github.com/torbenschinke/gift/internal/example"
 	"github.com/torbenschinke/gift/ui"
 )
 
@@ -55,7 +56,7 @@ func main() {
 }
 
 func run() error {
-	if err := loadFont(); err != nil {
+	if err := example.LoadFont(); err != nil {
 		return err
 	}
 	srcDir := *dir

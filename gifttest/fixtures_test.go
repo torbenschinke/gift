@@ -23,8 +23,14 @@ func TestMain(m *testing.M) {
 }
 
 // The tests share the Roboto that internal/text keeps in its testdata, for the
-// same reason ui's tests do: gift ships no font and a second copy in the tree
-// would be the first step towards one.
+// same reason ui's tests do: the golden images in this package's testdata were
+// rendered with it, and a different typeface would move every glyph in them.
+//
+// Installing it globally here is the old way, kept deliberately so that the
+// harness keeps working for a test that says nothing about fonts. The new way
+// is [gifttest.Options.Font], and font_test.go exercises it from the position
+// a consumer of this module is in — no global, no relative path out of the
+// package.
 const testFontPath = "../internal/text/testdata/Roboto-Regular.ttf"
 
 var fontOnce sync.Once
@@ -80,10 +86,11 @@ type fatal struct{ msg string }
 
 // recorder records failures instead of reporting them.
 type recorder struct {
-	errors []string
-	fatals []string
-	skips  []string
-	logs   []string
+	errors   []string
+	fatals   []string
+	skips    []string
+	logs     []string
+	cleanups []func()
 }
 
 func (r *recorder) Helper() {}
@@ -107,6 +114,14 @@ func (r *recorder) Log(args ...any) {
 	r.logs = append(r.logs, fmt.Sprint(args...))
 }
 
+// Cleanup records a cleanup, which [capture] runs in reverse order once the
+// function under test has returned — the order testing itself uses, so that a
+// harness which restores process wide state restores it even when the body
+// ended in a Fatalf.
+func (r *recorder) Cleanup(fn func()) {
+	r.cleanups = append(r.cleanups, fn)
+}
+
 // all is every message the recorder saw, for a substring assertion.
 func (r *recorder) all() string {
 	return strings.Join(append(append(append([]string{}, r.errors...), r.fatals...), r.skips...), "\n")
@@ -118,6 +133,9 @@ func capture(fn func(t gifttest.TB)) *recorder {
 	r := &recorder{}
 	func() {
 		defer func() {
+			for i := len(r.cleanups) - 1; i >= 0; i-- {
+				r.cleanups[i]()
+			}
 			if v := recover(); v != nil {
 				if _, ok := v.(fatal); !ok {
 					panic(v)

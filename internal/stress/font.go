@@ -20,11 +20,17 @@ import (
 // the layout, the glyph count and the atlas occupancy.
 //
 // It is also why this does not contradict [ui.SetDefaultFont], which says gift
-// ships no font and will not. gift does not: the library packages embed
-// nothing, and the only binary that carries these 168 kilobytes is
-// cmd/gift-stress, which exists to be measured and not to be shipped. The
-// package is internal precisely so that nothing outside this module can link
-// it by accident.
+// links no font unless the application asks for one. It still does not: gift's
+// own packages embed nothing, the typefaces of font/inter and font/ibmplexmono
+// are paid for only by a binary that imports them, and the only binary that
+// carries these 168 kilobytes is cmd/gift-stress, which exists to be measured
+// and not to be shipped. The package is internal precisely so that nothing
+// outside this module can link it by accident.
+//
+// It stays Roboto rather than moving to font/inter for the reason the fixture
+// exists at all: the numbers of an old measurement and a new one have to be
+// comparable, and changing the typeface would change every advance width, the
+// glyph count and the atlas occupancy in one step.
 //
 // It is the same Roboto internal/text uses in its own testdata, under the same
 // Apache 2.0 licence, copied rather than reached across a package boundary

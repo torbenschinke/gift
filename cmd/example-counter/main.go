@@ -5,8 +5,9 @@
 //	go run ./cmd/example-counter
 //	GIFT_METRICS=1 go run -tags giftmetrics ./cmd/example-counter
 //
-// Click the buttons, or tab to one and press space or enter. gift ships no
-// font, so loadFont finds one; GIFT_FONT overrides the search.
+// Click the buttons, or tab to one and press space or enter. The text is set
+// in Inter, which the example pulls in from gift's opt-in font package; set
+// GIFT_FONT to a font file to see the layout under another typeface.
 package main
 
 import (
@@ -17,11 +18,12 @@ import (
 	"github.com/torbenschinke/gift"
 	backend "github.com/torbenschinke/gift/backend/ebiten"
 	"github.com/torbenschinke/gift/geom"
+	"github.com/torbenschinke/gift/internal/example"
 	"github.com/torbenschinke/gift/ui"
 )
 
 func main() {
-	if err := loadFont(); err != nil {
+	if err := example.LoadFont(); err != nil {
 		fmt.Fprintln(os.Stderr, "example-counter:", err)
 		os.Exit(1)
 	}

@@ -6,6 +6,19 @@ import (
 	"github.com/torbenschinke/gift/internal/text"
 )
 
+// ErrBadFont is what [LoadFont] wraps when the bytes are not a font this
+// toolkit can use: truncated data, an image, an empty slice, a font collection
+// or a file that makes the parser itself panic. Test for it with errors.Is.
+//
+// It is re-exported here rather than left inside internal/text because the
+// distinction it draws is one a caller acts on. "The file is not there" is a
+// packaging or configuration problem and the application can look elsewhere;
+// "the file is there and is not a font" is a corrupt asset and looking
+// elsewhere will not help. Without a sentinel the only available test is
+// err != nil, which cannot tell those apart — the rule the project plan,
+// section 15, states for errors two packages must agree about.
+var ErrBadFont = text.ErrBadFont
+
 // Font is a loaded font, ready to shape and to rasterise with.
 //
 // It is a handle. Copy it freely; the parsed tables behind it are shared and
@@ -26,7 +39,7 @@ func (f Font) IsZero() bool { return f.f == nil }
 // An error is a plain value, not a panic: a font file is outside world input
 // under the project plan, section 15, and a corrupt one must not take the
 // process down. Even a file that makes the parser itself panic comes back as
-// an error here.
+// an error here. Every such error wraps [ErrBadFont].
 func LoadFont(data []byte) (Font, error) {
 	f, err := text.ParseFont(data)
 	if err != nil {
@@ -47,19 +60,33 @@ var defaultFont Font
 // SetDefaultFont installs the font every [Text] uses unless it names another
 // one with [TextView.Font]. Passing the zero Font removes the default.
 //
-// # gift ships no font
+// It is the one slot for the one default, and it is the *application* that
+// fills it — never a library, and never a font package. A font package
+// registers its faces with [RegisterFont] and leaves the choice alone, because
+// two packages writing this slot from init would overwrite each other in an
+// order the language does not fix. Together the two calls read:
 //
-// There is no built-in fallback and there will not be one. Embedding a
-// typeface would add somewhere between a hundred kilobytes and several
-// megabytes to every binary that links gift, would bind the project to that
-// typeface's licence, and would mean the first thing most applications do is
-// pay for a font they then replace. The only Roboto in this module sits in the
-// testdata of internal/text and internal/stress — a test fixture and a
-// measurement fixture, neither of them linked into anything an application
-// builds — which is exactly the line this function keeps.
+//	import _ "github.com/torbenschinke/gift/font/inter"
+//	...
+//	ui.SetDefaultFont(ui.MustFont(ui.FontQuery{Family: inter.Family}))
 //
-// So font provision is the application's job, and the diagnosis when it is not
-// done is loud: see [Text].
+// # gift links no font unless you ask for one
+//
+// The library packages embed nothing. A binary that imports gift and no font
+// package carries no typeface, pays no kilobytes for one and is bound by no
+// font licence — which is what this sentence used to protect by shipping no
+// font at all.
+//
+// Not linking a font is not the same as not offering one. There are two
+// opt-in packages, font/inter and font/ibmplexmono, each of which embeds its
+// typeface and registers it from init. They cost exactly nothing to a binary
+// that does not import them, and an application that wants its own typeface
+// still loads it with [LoadFont] and ignores both.
+//
+// What has not changed is the other half: there is no built-in fallback and
+// there will not be one. The register picks a face by family, weight and style;
+// it never consults a second face for a glyph the chosen one lacks. See
+// [RegisterFont] and the project plan, section 14.
 func SetDefaultFont(f Font) { defaultFont = f }
 
 // DefaultFont returns the font installed by [SetDefaultFont], or the zero
@@ -93,8 +120,14 @@ func resolveFont(f Font) *text.Font {
 	}
 	panic(fmt.Sprintf(
 		"gift/ui: ui.Text needs a font and none is installed.\n" +
-			"gift ships no font binary on purpose; the application supplies one.\n" +
-			"Load it once at startup and install it as the default:\n" +
+			"gift links no font unless the application asks for one.\n" +
+			"The quickest way is one of the bundled typefaces:\n" +
+			"\n" +
+			"\timport _ \"github.com/torbenschinke/gift/font/inter\"\n" +
+			"\t...\n" +
+			"\tui.SetDefaultFont(ui.MustFont(ui.FontQuery{Family: inter.Family}))\n" +
+			"\n" +
+			"or load your own once at startup:\n" +
 			"\n" +
 			"\tdata, err := os.ReadFile(\"MyFont.ttf\")   // or go:embed\n" +
 			"\tf, err := ui.LoadFont(data)\n" +

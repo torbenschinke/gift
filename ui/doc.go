@@ -40,11 +40,17 @@
 // glyphs the size was computed from, so a label cannot be measured differently
 // from how it is drawn.
 //
-// gift ships no font, and there is no built-in fallback. An application loads
-// one with [LoadFont] and installs it with [SetDefaultFont], or names one per
-// view with [TextView.Font]. Building a [Text] with neither panics with an
-// explanation, because the alternative — measuring it as empty — is a blank
-// area with no diagnosis.
+// gift links no font unless the application asks for one, and there is no
+// built-in fallback. An application either imports one of the opt-in packages
+// font/inter and font/ibmplexmono, which register their faces with
+// [RegisterFont], or loads its own with [LoadFont]; either way it installs one
+// with [SetDefaultFont] or names one per view with [TextView.Font]. Building a
+// [Text] with neither panics with an explanation, because the alternative —
+// measuring it as empty — is a blank area with no diagnosis.
+//
+// [ResolveFont] picks a registered face by family, weight and style. It is not
+// a fallback chain: a glyph the chosen face lacks is not looked for in a
+// second one, and the project plan, section 14, keeps it that way.
 //
 // # Input
 //

@@ -9,6 +9,7 @@ import (
 	"github.com/torbenschinke/gift"
 	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/render"
+	"github.com/torbenschinke/gift/ui"
 )
 
 // DefaultSize is the viewport a [Harness] uses when [Options.Size] is zero.
@@ -75,6 +76,47 @@ type Options struct {
 	// that makes a default styled application legible; an application with a
 	// dark design sets this to its own colour.
 	Background render.Color
+
+	// Font is the font every [ui.Text] under test is measured and drawn with,
+	// unless a view names its own with ui.TextView.Font.
+	//
+	// Set it in any test whose result depends on glyph shapes: every golden
+	// image, every assertion on a width, every layout that wraps. Without it
+	// the harness uses whatever [ui.SetDefaultFont] was last given anywhere in
+	// the process — which is to say, a golden that passes today because
+	// another file in the same package happened to install Roboto first, and
+	// fails the day that file is deleted or reordered. That hazard is the
+	// reason this field exists.
+	//
+	// A consumer outside this module gets a deterministic golden by embedding
+	// its own typeface, or by importing one of the bundled ones:
+	//
+	//	import _ "github.com/torbenschinke/gift/font/inter"
+	//
+	//	h := gifttest.New(t, gifttest.Options{
+	//		View: view,
+	//		Font: ui.MustFont(ui.FontQuery{Family: inter.Family}),
+	//	})
+	//
+	// The zero Font means "leave the process default alone", so an existing
+	// test keeps behaving exactly as it did.
+	//
+	// # What it does under the hood, and why that is stated here
+	//
+	// gift's default font is process wide — the project plan, section 13,
+	// explains why it is not per App — so the harness installs Font as that
+	// default for the duration of the test and restores the previous value
+	// through TB.Cleanup. The *test* touches no global state and that is the
+	// point; the process still has exactly one, and the rule against t.Parallel
+	// in the package documentation applies to this field with particular
+	// force. Two parallel tests with two different fonts would take turns
+	// clobbering one variable.
+	//
+	// A test that also changes the default font itself has to do so with
+	// t.Cleanup and not with defer. Go runs every deferred function before the
+	// first cleanup, so a defer would restore its font before the harness
+	// restores the one it found, and the harness would have the last word.
+	Font ui.Font
 }
 
 // Harness is one application under test: the [gift.App], the injected clock
@@ -144,6 +186,13 @@ func New(t TB, opts Options) *Harness {
 	bg := opts.Background
 	if bg == (render.Color{}) {
 		bg = render.RGB(255, 255, 255)
+	}
+	// Before the App exists, because the first Settle below already builds and
+	// therefore already resolves fonts. See [Options.Font].
+	if !opts.Font.IsZero() {
+		prev := ui.DefaultFont()
+		ui.SetDefaultFont(opts.Font)
+		t.Cleanup(func() { ui.SetDefaultFont(prev) })
 	}
 	h := &Harness{
 		t:         t,

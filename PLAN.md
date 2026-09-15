@@ -63,11 +63,15 @@ gift/                       Modulwurzel, Package gift
     ebiten/                 Fenster, Eingabe, Text und GPU-Ausgabe
   metrics/                  Messung und Bericht, hinter Build-Tag giftmetrics
   gifttest/                 Testharness fuer Anwendungen, siehe Abschnitt 13
+  font/
+    inter/                  Eingebettete Schrift, optional, siehe Abschnitt 17
+    ibmplexmono/            Eingebettete Schrift, optional, siehe Abschnitt 17
   internal/
     scene/                  Indexierte retained Nodes und Handles
     layout/                 Layoutalgorithmen, Masonry-/Zeilenindex
     text/                   Shaping, Messung, Zeilenumbruch, Glyphenschluessel
     stress/                 Parametrisierte Lastszene als Fixture
+    example/                Gemeinsame Hilfen der Beispiele
   cmd/
     example-counter/
     example-gallery/
@@ -75,9 +79,17 @@ gift/                       Modulwurzel, Package gift
     gift-stress/
 ```
 
-Stand nach Review-Gate 6. `metrics`, `gifttest` und `internal/stress` sind
+Stand nach Review-Gate 8. `metrics`, `gifttest` und `internal/stress` sind
 nach dem urspruenglichen Entwurf dazugekommen und standen bisher nicht im
 Baum. `cmd/example-layout` ist entfallen; siehe Abschnitt 12 Schritt 2.
+
+`font/*` ist mit Abschnitt 17 dazugekommen. Diese Pakete enthalten Bytes und
+eine Registrierung, sonst nichts: keine Views, kein Layout, keine
+Ein-/Ausgabe. Sie importieren `ui`, weil der Typ, den sie registrieren, dort
+liegt; sie stehen damit **oberhalb** von `ui`, in derselben Stellung wie
+`cmd/`. Kein Paket innerhalb von gift nennt sie, sie sind ausschliesslich
+ueber einen Side-Effect-Import einer Anwendung erreichbar. Die Richtung der
+Abhaengigkeiten aus diesem Abschnitt bleibt dadurch unveraendert.
 
 Die Modulwurzel wird als `github.com/torbenschinke/gift` importiert. Kein
 weiteres Verzeichnis gift innerhalb des Moduls und kein generischer

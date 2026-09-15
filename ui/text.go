@@ -64,10 +64,11 @@ var DefaultForeground = RGB(0, 0, 0)
 //
 // # Font
 //
-// gift ships no font. A TextView uses [TextView.Font] if it was given one and
-// the application wide [SetDefaultFont] otherwise; with neither, building it
-// panics with an explanation rather than rendering nothing. See
-// [SetDefaultFont].
+// gift links no font unless the application asks for one. A TextView uses
+// [TextView.Font] if it was given one and the application wide
+// [SetDefaultFont] otherwise; with neither, building it panics with an
+// explanation rather than rendering nothing. See [SetDefaultFont] and
+// [RegisterFont].
 type TextView struct {
 	base
 	s        string

@@ -12,10 +12,14 @@ import (
 	"github.com/torbenschinke/gift/ui"
 )
 
-// The tests share the Roboto that internal/text keeps in its testdata. It is
-// read from there rather than copied here on purpose: gift ships no font, and
-// a second 164 KiB binary in the tree would be the first step towards one.
-// See ui.SetDefaultFont.
+// The tests share the Roboto that internal/text keeps in its testdata.
+//
+// It is read from there rather than taken from font/inter on purpose. These
+// tests assert measured widths, line breaks and baselines, and every one of
+// those numbers belongs to the typeface; internal/text's own tests pin Roboto
+// down to its file size and hand-derived metrics, so the two suites have to
+// agree on one fixture. A ui test that used Inter would be testing a second
+// font for no gain and would have to be re-derived the day Inter is updated.
 const testFontPath = "../internal/text/testdata/Roboto-Regular.ttf"
 
 var (
@@ -335,7 +339,7 @@ func TestTextWithoutAFontPanicsWithAnExplanation(t *testing.T) {
 			t.Fatal("building a Text without a font did not panic")
 		}
 		msg, _ := r.(string)
-		for _, want := range []string{"needs a font", "SetDefaultFont", "LoadFont"} {
+		for _, want := range []string{"needs a font", "SetDefaultFont", "LoadFont", "font/inter", "MustFont"} {
 			if !strings.Contains(msg, want) {
 				t.Errorf("the diagnosis does not mention %q:\n%s", want, msg)
 			}

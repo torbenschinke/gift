@@ -33,4 +33,8 @@ type TB interface {
 	Log(args ...any)
 	// Name is the name of the running test, used in messages.
 	Name() string
+	// Cleanup registers a function to run when the test finishes, exactly as
+	// testing.TB.Cleanup. The harness uses it to undo the process wide state
+	// it sets up, [Options.Font] above all.
+	Cleanup(func())
 }
