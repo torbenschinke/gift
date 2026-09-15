@@ -1087,13 +1087,47 @@ Benchmark.
 
 Damit der Umfang nicht unbemerkt waechst, ausdruecklich ausgeschlossen:
 
-Bidi/RTL, vertikale Schrift, Font-Fallback-Ketten, Texteditor, IME, Subpixel-
-Positioning, Multiwindow, native Accessibility-Bridges, Pinch-Zoom und Rotation,
-RAW- und Videoformate, Theming/Dark-Mode-System, Fraktionale DPI-Skalierung,
-Internationalisierung der Beispiele, On-Demand-Rendering, eigene Atlas-Engine,
-Signal-/Effect-Graph, Animationskurven jenseits einfacher Interpolation.
+Bidi/RTL, vertikale Schrift, Font-Fallback-Ketten, IME im Sinne der
+CJK-Komposition, Subpixel-Positioning, Multiwindow, native
+Accessibility-Bridges, Pinch-Zoom und Rotation, RAW- und Videoformate,
+Fraktionale DPI-Skalierung, Internationalisierung der Beispiele,
+On-Demand-Rendering, eigene Atlas-Engine, Signal-/Effect-Graph.
 
 Fehler-/Logging-Strategie und API-Stabilitaet sind in Abschnitt 15 geregelt.
+
+### Aufgehobene Ausschluesse
+
+Der erste Aufschlag ist abgeschlossen. Der Auftraggeber hat danach fuenf
+Punkte angefordert, die hier ausgeschlossen waren. Diese Liste beginnt mit
+dem Satz, dass der Umfang nicht unbemerkt wachsen soll; also wird das
+Wachstum hier bemerkt und begruendet, statt im Code zu passieren.
+
+- `Texteditor` faellt. Begruendung: Abschnitt 19. Was bleibt, ist `IME` im
+  engeren Sinn, also Kandidatenfenster und Komposition fuer CJK. Umlaute,
+  AltGr und Dead Keys sind kein IME, sondern die normale Uebersetzung von
+  Tastendruecken in Zeichen, die jede Tastatur ausserhalb der USA braucht.
+  Der bisherige Text hat beides in einen Topf geworfen; das war falsch.
+- `Theming/Dark-Mode-System` faellt, aber nur zur Haelfte: Abschnitt 20
+  fuehrt semantische Farben und einen Hell-/Dunkel-Umschalter ein. Ein
+  `System` im Sinne vererbter Umgebungswerte entsteht ausdruecklich nicht,
+  weil Abschnitt 4 ab Zeile 189 dagegen argumentiert und dieses Argument
+  weiter gilt.
+- `Fraktionale DPI-Skalierung` bleibt ausgeschlossen und wird praezisiert.
+  Ausgeschlossen war nie die Geraetedichte als solche, sondern der
+  gebrochene Faktor. Ganzzahlige Dichte war nirgends verboten und nirgends
+  vorgesehen; sie war eine Luecke, die dieser Ausschluss zugedeckt hat.
+  Abschnitt 18 schliesst sie.
+- `Animationskurven jenseits einfacher Interpolation` faellt. Das
+  Liquid-Glass-Beispiel braucht sie, und Abschnitt 8 hat die Kostenseite von
+  Glass bereits vermessen.
+- `Font-Fallback-Ketten` bleibt ausgeschlossen. Abschnitt 17 bringt ein
+  Font-Register, das ist nicht dasselbe: das Register waehlt eine Schrift
+  anhand von Familie, Gewicht und Stil, es setzt keine zweite Schrift fuer
+  fehlende Glyphen ein.
+
+Nicht aufgehoben, sondern nie enthalten: Zwischenablage und
+Bildschirmtastatur kommen in diesem Dokument bis hier nicht vor. Sie sind
+in Abschnitt 19 geregelt.
 
 ## 15. API-Stabilitaet, Fehler und Logging
 
@@ -1222,6 +1256,287 @@ Debug-Level-Logger muss weiterhin 0 B/op liefern.
 11. API vorerst instabil, Stabilisierung nur auf ausdrueckliche Ansage.
     Kein Logging im Frame-Hotpath, Zaehler statt Logzeilen, `log/slog`
     ausserhalb des Hotpaths und verbindlich im Domain-Code.
+
+## 17. Fonts und Font-Register
+
+Die Beispiele suchen heute jeweils mit einer eigenen, dreimal kopierten
+`loadFont` vier Systempfade ab und fallen auf einen CWD-relativen Pfad
+zurueck. Das ist aus drei Gruenden zu ersetzen, und nur der erste ist
+offensichtlich:
+
+1. Auf einem minimalen Pi-OS-Image greift kein einziger Pfad.
+2. Die *gewaehlte* Schrift unterscheidet sich je Plattform, also ist jedes
+   Pixelergebnis der Beispiele konstruktionsbedingt maschinenabhaengig.
+3. `gifttest` kann Anwendern keine stabilen Goldens anbieten. Die Testschrift
+   liegt unter `internal/` und wird ueber einen relativen Pfad geladen; beides
+   ist ausserhalb dieses Moduls nicht erreichbar.
+
+### Register statt Einzelslot
+
+`ui.SetDefaultFont` setzt eine einzige globale Variable. Zwei
+Side-Effect-Importe wuerden einander in nicht festgelegter
+`init`-Reihenfolge lautlos ueberschreiben. Deshalb ein Register, das eine
+Schrift unter Familie, Gewicht und Stil aufnimmt, mit `gift.RegisterType` als
+Vorbild fuer die Registrierung zur Paketinitialisierung.
+
+Das Register loest *aus den registrierten Schriften* auf. Es ist keine
+Fallback-Kette: fehlt ein Glyph in der gewaehlten Schrift, wird keine zweite
+Schrift befragt. Abschnitt 14 haelt diesen Ausschluss aufrecht.
+
+### Mitgelieferte Schriften
+
+Zwei optionale Pakete, die nichts kosten, solange sie nicht importiert
+werden. Das ist dasselbe Argument, das `internal/stress` fuer seine
+eingebettete Schrift bereits fuehrt.
+
+- Inter, statische Instanzen aus dem Upstream-Release v4.1.
+- IBM Plex Mono.
+
+Belegte Einschraenkung, die die Quelle der Schriften bestimmt:
+`go-text/typesetting` v0.3.5 erkennt in `font/opentype/reader.go` die
+Signatur `wOFF`, aber nicht `wOF2`. Die Schriften im untersuchten
+Nago-Stand liegen fuer Inter ausschliesslich als WOFF2 vor (Magic
+`774f4632`); IBM Plex Mono liegt dort zusaetzlich als WOFF1 vor. Inter wird
+deshalb nicht aus dieser Quelle uebernommen, sondern als TTF vom Upstream
+bezogen. Ein WOFF2-Decoder in Go waere Brotli plus die
+glyf-Ruecktransformation und steht in keinem Verhaeltnis zum Nutzen.
+
+`gifttest.Options` erhaelt ein Font-Feld, damit ein Golden nicht mehr davon
+abhaengt, was irgendein anderer Test zuletzt global gesetzt hat.
+
+## 18. Geraetedichte
+
+Die Zielplattform ist ein Pi bei 1920x1080, also Dichte 1. Auf einer
+Entwicklungsmaschine mit Retina-Display ist die Ausgabe sichtbar unscharf.
+Die Ursache ist nicht kosmetisch:
+
+`backend/ebiten/run.go` implementiert `Layout(int, int) (int, int)` und gibt
+die Groesse unveraendert zurueck. Ebitengine rendert damit in ein Bild in
+logischer Groesse und skaliert es gefiltert auf den physischen Framebuffer.
+`DeviceScaleFactor` wird nirgends aufgerufen. Glyphen rastern bei
+Punktgroesse, und der Renderer dokumentiert die Annahme, der Massstab sei
+eins, mit `FilterNearest` fuer Glyphen.
+
+Verbindlich:
+
+- `LayoutF` statt `Layout`, Dichte aus `ebiten.Monitor().DeviceScaleFactor()`
+  beim Start und bei Monitorwechsel.
+- Ein Dichte-Transform an der Wurzel der Display-Liste. Die Shaderseite ist
+  darauf vorbereitet: `deviceScale` backt Radius, Strichbreite, AA-Rand,
+  Schattensigma und Refraktion bereits aus dem Transform.
+- Glyphen rastern in Geraetepixeln. Der Atlas-Key traegt bereits eine
+  Groesse; er traegt sie dann in Geraetepixeln.
+- Die Bildleiter waehlt ihre Sprosse in Geraetepixeln. Heute waehlt sie nach
+  der Layoutgroesse in Punkten, ein Foto ist also auf einem 2x-Display
+  unabhaengig vom Framebuffer-Problem um den Faktor zwei unterversorgt.
+
+Ganzzahlige Faktoren sind zugesagt. Gebrochene Faktoren bleiben nach
+Abschnitt 14 ausgeschlossen; trifft gift einen solchen, rundet es und
+dokumentiert das Ergebnis, statt Genauigkeit zu behaupten, die es nicht hat.
+
+## 19. Texteingabe, Zwischenablage und Bildschirmtastatur
+
+### Der Rune-Kanal ist die Voraussetzung
+
+`backend/ebiten/input.go` fragt dreizehn fest verdrahtete physische
+Tastencodes mit `IsKeyPressed` ab. Ebitengines eigene Dokumentation haelt zu
+dieser Funktion fest, dass ein `Key` eine physische Taste des US-Layouts
+bezeichnet, und stellt `AppendInputChars` als die
+lokalisierungsabhaengige Uebersetzung nach Unicode daneben. gift ruft
+`AppendInputChars` nirgends auf.
+
+Die Folge ist nicht, dass Umlaute kaputt sind. Die Folge ist, dass **kein
+druckbares Zeichen das Framework erreicht**. Ein perfektes `ui.TextField`
+bekaeme null Zeichen. Der Rune-Kanal ist daher der erste Schritt und die
+Voraussetzung fuer alles Weitere in diesem Abschnitt.
+
+Dazu: `gift.Key` wird um Backspace, Delete und die fuer Kurzbefehle noetigen
+Buchstaben erweitert. Tastenwiederholung baut gift selbst, weil Ebitengine
+keine hat; das steht seit dem ersten Aufschlag in diesem Dokument, bisher
+mit dem Zusatz, ein Texteditor braeuchte sie und sei ausgeschlossen. Der
+Zusatz entfaellt, die Aussage bleibt.
+
+### Zwischenablage ohne cgo
+
+Ebitengine 2.10.1 hat keine oeffentliche Zwischenablage-API. Die
+GLFW-Implementierung liegt unter `internal/` und ist nach den Importregeln
+von Go dauerhaft unerreichbar. Eine externe Abhaengigkeit ist also
+unvermeidlich; sie darf aber den cgo-freien Kern nicht brechen, weil
+`CGO_ENABLED=0 GOOS=linux GOARCH=arm64` zur Abnahmematrix gehoert.
+
+Deshalb purego, als optionales Paket per Side-Effect-Import. `purego` ist
+bereits indirekte Abhaengigkeit ueber Ebitengine. purego fuehrt Linux auf
+amd64 und arm64 als Tier 1 und bringt fuer `!cgo` einen eigenen
+dlopen-Pfad mit; auf Darwin liegt ein vollstaendiger ObjC-Runtime bei.
+
+- macOS: `NSPasteboard` ueber den ObjC-Runtime. Kein Eventloop.
+- Linux/X11: `libX11.so.6` per dlopen, mit einer **eigenen**
+  Display-Verbindung und einem unsichtbaren Fenster auf einem eigenen
+  OS-Thread. Das ist keine Umstaendlichkeit, sondern X11: wer kopiert, wird
+  Owner der `CLIPBOARD`-Selection und muss `SelectionRequest` bedienen,
+  solange der Inhalt gelten soll. Ebitengines Verbindung ist dafuer nicht
+  erreichbar.
+- Windows: Best-Effort. Der Plattformumfang nach Abschnitt 1 kennt Windows
+  nicht als Ziel.
+
+Zwei Dinge werden nicht zugesagt: das INCR-Protokoll fuer grosse Transfers
+entfaellt zunaechst, die uebertragbare Groesse wird gedeckelt und
+dokumentiert. Und der Inhalt verschwindet unter X11 mit dem Prozessende;
+das ist Standardverhalten und kein Fehler.
+
+### Bildschirmtastatur
+
+Ebitengine bietet weder IME noch eine Moeglichkeit, eine native
+Bildschirmtastatur zu oeffnen. Auf dem Kioskziel existiert ohnehin keine.
+gift zeichnet sie also selbst, als Overlay im vorhandenen `ZStack`,
+eingeblendet auf `EventFocusGained`. Fuer das Freihalten des Eingabefelds
+dient das bereits vorhandene und getestete `ScrollIntoView`.
+
+**Die Einblendung haengt an einem ausdruecklichen Kioskschalter, nicht an
+`PointerKind`.** Begruendung, und sie ist belegt: Ebitengines Dokumentation
+zu `AppendTouchIDs` haelt fest, dass die Funktion auf Desktops nichts tut;
+dieser Umstand steht bereits in `backend/ebiten/input.go` und in
+Abschnitt 7. Auf Raspberry Pi OS mit X11 meldet sich ein Touchscreen als
+Maus. Eine an `PointerTouch` gebundene Einblendung wuerde auf genau der
+Hardware nie ausloesen, fuer die sie gebaut wird.
+
+## 20. Semantische Farben
+
+Es gibt heute keine benannte Farbe. Jede Farbe ist ein Literal an der
+Aufrufstelle, und jede Anwendung erklaert ihre Palette als Paketvariablen.
+
+Eingefuehrt werden benannte Farben, die aus einem prozessweiten Thema
+aufloesen, und ein Umschalter zwischen hell und dunkel zur Laufzeit.
+
+Ausdruecklich **nicht** eingefuehrt wird ein Umgebungsmechanismus, der Werte
+den Baum hinunterreicht. Abschnitt 4 ab Zeile 189 haelt fest, dass Styling
+eine Eigenschaft der konkreten Konstruktionsstelle ist und nicht etwas, das
+man auf eine beliebige View anwenden kann. Dieses Argument gilt
+unveraendert. Ein Themenwechsel loest einen Neuaufbau ueber `App.Invalidate`
+aus.
+
+Eine Nebenwirkung, die mitgebaut werden muss: `ButtonStyle` kennt kein
+"dieses Feld wurde nicht gesetzt", und Abschnitt 8 nennt genau das als Grund,
+warum Zustandsstile ganze Boxstile ersetzen statt feldweise zu mischen. Ein
+Thema laesst sich unter einen teilweise gesetzten Stil nur legen, wenn es
+diese Unterscheidung gibt. Das Muster dafuer existiert bereits als
+`hasFG` beim Textvordergrund.
+
+## 21. Icons
+
+Icons werden auf der CPU gerastert und als Bild gezeichnet. Es entsteht
+**kein** Pfad-Primitiv in der Display-Liste. Begruendung, belegt:
+
+- Der eine Shader ist ein Rounded-Box-SDF, und alle vier
+  Vertex-Custom-Attribute sind belegt. Die Datei haelt selbst fest, dass ein
+  fuenfter Wert bereits im Shader neu berechnet werden musste, weil kein
+  Slot mehr frei war. Uniforms scheiden aus, weil sie in Ebitengine eine
+  `map[string]any` sind und pro Operation allozieren wuerden.
+- Ein zweiter Shader ist ein zweites Material und damit ein zusaetzlicher
+  Draw-Call, also genau das, was der Ein-Shader-Entwurf vermeidet.
+- Ein `OpPath` braeuchte eine Seitentabelle nach dem Vorbild der Glyphen und
+  acht weitere Bytes im `Op`. Das waere die dritte Vergroesserung.
+
+Der CPU-Weg kostet dagegen nichts Neues: `golang.org/x/image/vector` ist
+bereits direkte Abhaengigkeit und wird in `internal/text` genau dafuer
+verwendet. Eine Deckungsmaske mit Farbe erst zur Zeichenzeit ist dort
+bereits das tragende Prinzip, und `OpImage.Color` ist ein Multiply-Tint,
+also faerbt eine weisse Maske mal Vordergrundfarbe korrekt und
+kantengeglaettet.
+
+Die SVGs werden zur Bauzeit per `go:generate` zu Pfadsegmenten vorgeparst
+und eingebettet. Damit entsteht kein SVG-Parser im Frame-Pfad und keine
+neue Abhaengigkeit. Gerastert wird pro Groesse und zwischengespeichert; der
+Frame-Pfad bleibt bei 0 B/op nach Abschnitt 11.
+
+Der vorhandene Glyph-Atlas wird wiederverwendet, nicht nachgebaut.
+Abschnitt 14 schliesst eine eigene Atlas-Engine aus.
+
+Icons gehen nicht durch `asset.Pipeline`. Die ist fuer Fotos gebaut, mit
+Groessenleiter, Plattenspeicher-Cache und asynchroner Aufloesung; ein Icon
+ist eingebettet, winzig und sofort verfuegbar, und ein einzelnes
+Platzhalterbild fuer ein 16-Pixel-Symbol waere ein sichtbarer Fehler.
+
+## 22. Weitere Bildformate
+
+Abschnitt 12, Schritt 4 erlaubt weitere Formate ausdruecklich, sofern sie
+ueber klar registrierte Decoder laufen. HEIF/HEIC ist weder RAW noch Video
+und faellt daher nicht unter den Ausschluss in Abschnitt 14.
+
+Eine Luecke im vorhandenen Vertrag muss dafuer geschlossen werden:
+`asset/decode.go` liest die Orientierung nur fuer JPEG und nur aus EXIF. Ein
+registrierter Decoder kann seine eigene Orientierung heute nicht melden.
+HEIC traegt sie in den Boxen `irot` und `imir`. Es braucht daher eine
+optionale Schnittstelle, ueber die ein Decoder seine Orientierung angibt.
+Der Cache-Key traegt die Orientierung bereits, eine korrekt gemeldete
+Orientierung wird also von selbst richtig zwischengespeichert.
+
+`mimeByExtension` kennt nur `.jpg` und `.png` und wird ergaenzt. Da
+Sniffing ohnehin Vorrang vor dem Medientyp hat, ist das die zweite
+Verteidigungslinie und nicht die erste.
+
+### Rechtlicher Hinweis zu HEIF/HEIC
+
+Das Format ist unerwuenscht. Es ist mit diversen Patenten belastet, und die
+unlizenzierte Nutzung kann durch einander widersprechende
+Patentverwerterpools abgemahnt werden. Wir liefern deshalb **keine
+Implementierung mit**, ermuntern niemanden zur Nutzung und raten im
+Gegenteil davon ab. Wer die Unterstuetzung braucht, bindet sie selbst ein
+und traegt die Verantwortung dafuer. Wir uebernehmen keine Haftung. Dies ist
+keine Rechtsberatung.
+
+## 23. Zweite Lieferung in pruefbaren Schritten
+
+Wie Abschnitt 12: jeder Schritt endet in etwas Vorzeigbarem, und jeder
+Schritt wird unabhaengig geprueft. Die sechs Review-Gates der ersten
+Lieferung haben jeweils mindestens einen Blocker gefunden, den der
+Implementierer nicht selbst gemeldet hatte. Das Verfahren bleibt.
+
+### Schritt 6: Zwei Fehler im Scrollen
+
+`pointer.dragged` wird nur beim Druck zurueckgesetzt, nicht beim Loslassen.
+Touch entkommt dem, weil sein Slot beim Loslassen ganz genullt wird; die
+Maus behaelt ihren Slot. Danach traegt jede Hover-Bewegung `Dragged`, der
+Scroller haelt das fuer einen Zug, und der Rueckgabewert von
+`StealPointer`, der genau das verhindern wuerde, wird verworfen.
+
+Kein Test hat das gefunden, weil `Swipe` und `Fling` im Harness den
+Touch-Pfad benutzen und kein Test die Maus **nach** dem Loslassen bewegt.
+Der Regressionstest muss beides tun.
+
+Dazu ein sichtbarer und greifbarer Scrollbalken fuer `ScrollView` und
+`ImageGallery`. Die Geometrie liegt in `ScrollInfo` vollstaendig vor. Der
+Griff muss `EventPointerMove` konsumieren, sonst nimmt ihm der Viewport
+den Zug wieder ab.
+
+Ergebnis: Galerie ohne klebendes Scrollen, mit Balken.
+
+### Schritt 7: Fundamente
+
+Abschnitt 18, Abschnitt 17, der Rune-Kanal aus Abschnitt 19 und
+Abschnitt 20. Diese vier tragen alles Weitere und gehoeren deshalb vor die
+Komponenten.
+
+Ergebnis: scharfe Ausgabe auf 2x, eingebettete Schriften, stabile Goldens
+fuer Anwender, ein Zeichen aus einer deutschen Tastatur kommt an, und ein
+Beispiel schaltet zur Laufzeit zwischen hell und dunkel.
+
+### Schritt 8: Eingabe und Icons
+
+`ui.TextField` nach dem Muster von Button, Bildschirmtastatur, Icons.
+
+Ergebnis: ein Eingabefeld mit Umlauten, Auswahl, Einfuegen und
+Bildschirmtastatur im Kioskmodus.
+
+### Schritt 9: Komponenten
+
+Auswahl nach den Human Interface Guidelines, Navigation ueber eine TabBar,
+Kitchen-Sink-Demo.
+
+### Schritt 10: Beispiele
+
+Liquid Glass mit Animation, Persistenz mit Eingabefeld. HEIF nach
+Abschnitt 22 ist unabhaengig und kann jederzeit vorgezogen werden.
 
 ## Quellen der Architekturpruefung
 
