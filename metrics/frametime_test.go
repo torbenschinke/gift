@@ -137,6 +137,17 @@ func TestFrameTimerRecordDoesNotAllocate(t *testing.T) {
 // The name now says what it is — a harness for the race detector — and it does
 // assert that the two goroutines actually overlapped, because a harness that
 // finished before the other side started would be just as empty.
+//
+// That overlap assertion was itself flaky for a while, and the reason is worth
+// keeping: it asserted the overlap rather than waiting for it. The snapshotter
+// took a fixed two thousand snapshots and then demanded that one of them had
+// seen a sample, which turns an ordinary scheduling outcome — the recorder not
+// running until after the snapshotter is done — into a failure. On a loaded
+// machine it failed several times in ten runs. A test may wait for a condition
+// or it may assert one it has forced, but asserting one it merely hopes for is
+// a coin toss with a stack trace. So the snapshotter now spins until it sees a
+// sample, bounded by a deadline that can only expire if the recorder is truly
+// not running, and the deadline failure says that rather than blaming overlap.
 func TestFrameTimerConcurrentSnapshotHarness(t *testing.T) {
 	f := raw(time.Millisecond, 64)
 	var wg sync.WaitGroup
@@ -157,18 +168,31 @@ func TestFrameTimerConcurrentSnapshotHarness(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
+		defer close(stop)
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			last = f.Snapshot()
+			if last.Draws != 0 && last.FrameInterval.Count != 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				return
+			}
+		}
+		// Keep both goroutines in the detector's way for a while after the
+		// first observed sample, which is the part that needs the two of them
+		// running at once rather than merely having run.
 		for i := 0; i < 2000; i++ {
 			last = f.Snapshot()
 		}
-		close(stop)
 	}()
 	wg.Wait()
 
-	// The snapshotter saw the recorder at work. Without this the test would
-	// still pass if the recording goroutine never got scheduled, which is
-	// exactly the kind of silent nothing it used to be.
+	// The snapshotter saw the recorder at work. Reaching here with an empty
+	// snapshot means the loop above hit its deadline, so the recording
+	// goroutine never ran at all in ten seconds.
 	if last.Draws == 0 || last.FrameInterval.Count == 0 {
-		t.Fatalf("the snapshotter never observed a recorded sample: %+v", last)
+		t.Fatalf("the recording goroutine never ran in ten seconds: %+v", last)
 	}
 	final := f.Snapshot()
 	if final.Draws < last.Draws {
