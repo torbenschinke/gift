@@ -45,6 +45,7 @@ func TestTheGateInventoryIsComplete(t *testing.T) {
 		"textFieldNode.paintContent": "guarded: four assertResolved calls, the first four statements",
 		"tileNode.Paint":             "guarded: assertResolved on TileStyle.Error and TileStyle.Provisional",
 		"imageNode.Paint":            "guarded: assertResolved on the placeholder colour of an Image",
+		"iconNode.Paint":             "guarded: assertResolved on the foreground of an Icon",
 		"keyboardNode.paintKeys": "guarded: five assertResolved calls, the first five statements of the " +
 			"function",
 		"styleSpec.needsPainter": "not a gate: it decides whether a painter is allocated at all, so an " +
@@ -287,6 +288,11 @@ func TestEveryVisibilityGateIsGuarded(t *testing.T) {
 				}).paintKeys(nil, geom.Rect{})
 			},
 			want: "the key border colour of an OnScreenKeyboard",
+		},
+		{
+			name: "the icon foreground",
+			call: func() { (&iconNode{fg: ColorLabel}).Paint(nil) },
+			want: "the foreground of an Icon",
 		},
 		{
 			name: "the image placeholder",

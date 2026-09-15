@@ -61,6 +61,7 @@ var views = []struct {
 	{name: "ui.VScroll", set: setStyled, v: ui.VScroll()},
 	{name: "ui.HScroll", set: setStyled, v: ui.HScroll()},
 	{name: "ui.Image", set: setStyled, v: ui.Image(asset.File("x.jpg"))},
+	{name: "ui.Icon", set: setStyled, v: ui.Icon(ui.Symbol{})},
 	{name: "ui.TextField", set: setStyled, v: ui.TextField(ui.NewTextEditor(""))},
 	{name: "ui.ImageGallery", set: setStyled, v: ui.ImageGallery(ui.NewGallery(asset.NewCollection(nil)))},
 	{name: "ui.OnScreenKeyboard", set: setStyled, v: ui.OnScreenKeyboard()},

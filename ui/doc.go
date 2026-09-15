@@ -192,6 +192,30 @@
 // application creates once and holds; see the documentation of that type for
 // why it is not the view.
 //
+// # Icons
+//
+// [Icon] is a [Symbol] — pre-parsed outlines — rasterised on the CPU into a
+// coverage mask and drawn as a tinted image. It deliberately does not go
+// through the picture path above: the project plan, section 21, keeps icons
+// out of the asset pipeline, because that pipeline is built for photographs
+// with a size ladder, a disk cache and asynchronous resolution, and a
+// placeholder flashing in place of a sixteen pixel symbol would be a visible
+// defect. It also adds no operation kind and no shader: the mask is
+// premultiplied white, the colour of a
+// [github.com/torbenschinke/gift/render.Op] is a multiply, and white times a
+// premultiplied foreground is that foreground at that coverage.
+//
+// The symbols live in packages above this one, like the typefaces:
+//
+//	import "github.com/torbenschinke/gift/icon/outline"
+//
+//	ui.Icon(outline.User).Size(16).Foreground(ui.ColorAccent)
+//
+// The default foreground is [ColorLabel], so an icon follows the theme without
+// the call site saying anything. A mask is cached per symbol *and per device
+// pixel size*, so an icon at 2x is rasterised at 2x rather than magnified, and
+// a warmed frame that draws icons allocates nothing.
+//
 // # Pictures
 //
 // [Image] and [ImageGallery] draw through one application wide service, which

@@ -66,30 +66,42 @@ gift/                       Modulwurzel, Package gift
   font/
     inter/                  Eingebettete Schrift, optional, siehe Abschnitt 17
     ibmplexmono/            Eingebettete Schrift, optional, siehe Abschnitt 17
+  icon/
+    outline/                Eingebettete Icons, optional, siehe Abschnitt 21
+    solid/                  Eingebettete Icons, optional, siehe Abschnitt 21
+  clipboard/                Zwischenablage per purego, optional, Abschnitt 19
   internal/
     scene/                  Indexierte retained Nodes und Handles
     layout/                 Layoutalgorithmen, Masonry-/Zeilenindex
     text/                   Shaping, Messung, Zeilenumbruch, Glyphenschluessel
     stress/                 Parametrisierte Lastszene als Fixture
     example/                Gemeinsame Hilfen der Beispiele
+    icon/                   Icon-Format, Rasterer und Stroker
+    iconsvg/                SVG-Teilmenge, nur fuer den Generator
   cmd/
     example-counter/
     example-gallery/
     example-effects/
     gift-stress/
+    gift-icongen/
 ```
 
 Stand nach Review-Gate 8. `metrics`, `gifttest` und `internal/stress` sind
 nach dem urspruenglichen Entwurf dazugekommen und standen bisher nicht im
 Baum. `cmd/example-layout` ist entfallen; siehe Abschnitt 12 Schritt 2.
 
-`font/*` ist mit Abschnitt 17 dazugekommen. Diese Pakete enthalten Bytes und
-eine Registrierung, sonst nichts: keine Views, kein Layout, keine
-Ein-/Ausgabe. Sie importieren `ui`, weil der Typ, den sie registrieren, dort
-liegt; sie stehen damit **oberhalb** von `ui`, in derselben Stellung wie
-`cmd/`. Kein Paket innerhalb von gift nennt sie, sie sind ausschliesslich
-ueber einen Side-Effect-Import einer Anwendung erreichbar. Die Richtung der
-Abhaengigkeiten aus diesem Abschnitt bleibt dadurch unveraendert.
+`font/*`, `icon/*` und `clipboard` sind mit den Abschnitten 17, 21 und 19
+dazugekommen. Sie enthalten Bytes und eine Registrierung, sonst nichts:
+keine Views, kein Layout, keine Ein-/Ausgabe. Sie importieren `ui`, weil der
+Typ, den sie liefern oder registrieren, dort liegt; sie stehen damit
+**oberhalb** von `ui`, in derselben Stellung wie `cmd/`. Kein Paket innerhalb
+von gift nennt sie, sie sind ausschliesslich ueber einen Side-Effect-Import
+oder eine ausdrueckliche Nennung durch die Anwendung erreichbar. Die Richtung
+der Abhaengigkeiten aus diesem Abschnitt bleibt dadurch unveraendert.
+
+`internal/iconsvg` ist bewusst intern und wird nur vom Generator benutzt: es
+ist eine Teilmenge von SVG fuer genau einen Korpus und keine Zusage, SVG zu
+koennen.
 
 Die Modulwurzel wird als `github.com/torbenschinke/gift` importiert. Kein
 weiteres Verzeichnis gift innerhalb des Moduls und kein generischer
@@ -1486,8 +1498,83 @@ und eingebettet. Damit entsteht kein SVG-Parser im Frame-Pfad und keine
 neue Abhaengigkeit. Gerastert wird pro Groesse und zwischengespeichert; der
 Frame-Pfad bleibt bei 0 B/op nach Abschnitt 11.
 
-Der vorhandene Glyph-Atlas wird wiederverwendet, nicht nachgebaut.
-Abschnitt 14 schliesst eine eigene Atlas-Engine aus.
+Der vorhandene Glyph-Atlas wird **nicht** wiederverwendet. Dieser Absatz hat
+frueher das Gegenteil verlangt; die Umsetzung hat gezeigt, dass die Forderung
+nicht erfuellbar ist, ohne dem heissesten Cache des Renderers einen Zweig
+hinzuzufuegen. Der Atlas ist kein Deckungscache mit glyphfoermigem
+Schluessel, sondern ein Glyphcache: sein Schluessel ist
+`{FontID, Groesse, GlyphID}`, und sein Miss-Pfad schlaegt eine `*text.Font`
+nach und rastert einen Umriss aus deren Tabellen. Ein Icon hat weder Font
+noch Glyph-ID noch Umriss; es koennte den Atlas nur als Glyph einer Schrift
+passieren, die es nicht gibt. Auch die Regalpackung ruht auf einer Annahme,
+die Text erfuellt und Icons nicht: dass alle Glyphen einer Schrift in einer
+Groesse aehnlich hoch sind.
+
+Icons gehen deshalb durch `render.Images`, das genau diese Form von Problem
+schon bedient: Residenz, ein Uploadbudget pro gezeichnetem Frame, Verdraengung
+nach Alter und Bytes, und eine Generation, die ein verfallenes Handle
+erkennbar macht statt ein falsches Bild zu zeigen. Abschnitt 14 bleibt
+gewahrt, weil keine zweite Atlas-Engine entsteht; dreissig Zeilen Map auf
+einem vorhandenen Dienst sind keine.
+
+Der Preis gehoert dazu: eine Textur je Icon und Groesse statt einer
+gemeinsamen Seite, also N Bildoperationen fuer N verschiedene Icons, die
+nicht gebatcht werden. Bei Dutzenden Icons ist das tragbar, bei Tausenden
+Glyphen waere es das nicht. Und weil das Uploadbudget pro gezeichnetem Frame
+gilt, erscheint ein Schirm mit mehr neuen Icons als dem Budget erst ueber
+mehrere Frames vollstaendig. Gemessen: acht pro Frame, also drei Frames fuer
+zwanzig Icons. Ein Icon, dessen Upload abgelehnt wurde, zeichnet nichts und
+holt es im naechsten gezeichneten Frame nach — es blitzt kein Platzhalter,
+was fuer ein 16-Pixel-Symbol der schlechtere Fehler waere.
+
+### Was `x/image/vector` nicht kann
+
+Zwei Dinge, die dieser Abschnitt zunaechst verschwiegen hat, weil sie erst
+beim Vermessen des Korpus sichtbar wurden. Beide sind der Grund, warum das
+Paket groesser ist, als dieser Abschnitt vermuten liess.
+
+**Der Rasterer fuellt, er strichelt nicht.** Die Haelfte des Korpus besteht
+aus Strichen. Die Strichumrisse entstehen daher selbst, als Vereinigung
+konvexer Stempel: ein Viereck je Segment, eine Verbindung je innerem Punkt,
+eine Kappe je freiem Ende, alle gleich orientiert, sodass die
+Nonzero-Fuellung genau ihre Vereinigung ist und keine Boolesche Operation
+noetig wird. Ein versetzter Umriss wuerde sich selbst schneiden, sobald der
+Pfad enger als die halbe Strichbreite dreht. Die Folge, die dazugehoert: die
+Stempel ueberlappen, ein Strich laesst sich also nicht mit einer
+transparenten Farbe zeichnen. Das kostet nichts, weil die Maske Deckung ist
+und das Alpha in der Tinte steckt. Gestrichelt wird zur **Laufzeit**, nicht
+vorab, weil der Umriss einer Kurve nur gegen eine Toleranz abgeflacht werden
+kann und diese Toleranz von der Geraetepixelgroesse abhaengt, die der
+Generator nicht kennt und der Cache-Miss sehr wohl.
+
+**Der Rasterer kennt nur Nonzero.** Ein nennenswerter Teil des Korpus
+deklariert `fill-rule="evenodd"`. Wie viele davon wirklich eine andere
+Flaeche malen, ist zu **messen** und nicht zu schaetzen; gemessen waren es
+45 von 211. Behoben wird das **offline**, indem Konturen nach Schachtelungs-
+tiefe orientiert werden, und der Generator prueft jede Umorientierung gegen
+die urspruengliche Evenodd-Fuellung, bevor er sie ausgibt.
+
+Daraus das allgemeine Prinzip, das ueber diesen Fall hinausgeht und hier
+festgehalten wird: **der Generator darf Arbeit tun, die der Frame-Pfad nicht
+tun koennte, und alles, was der Frame-Pfad wiederholt tun muesste, gehoert in
+den Generator.**
+
+### Der Korpus, und was der Parser von ihm annimmt
+
+Die Annahmen gehoeren aufgeschrieben, damit sie nachpruefbar sind, wenn der
+Korpus sich aendert. Gemessen am Flowbite-Satz: **521 Dateien, 282 outline
+und 239 solid**. Nur `<path>` und ein `<rect>`; kein `<g>`, keine
+Transformationen, keine Verlaeufe. Keine Quadratiken. Der elliptische Bogen
+ist mit Abstand der haeufigste Befehl und wird offline zu Kubiken. `solid/`
+ist gefuellt, `outline/` gestrichelt mit Breite 2 und runden Kappen und
+Verbindungen — wobei Miter der SVG-Standard ist und einige Pfade gar keine
+Verbindung nennen, ihn also stillschweigend fordern.
+
+Drei Ausnahmen, die je eine Regel im Code sind und ohne diese Notiz
+willkuerlich aussaehen: ein abgerundetes `<rect>`, ein Pfad, der zugleich
+gefuellt und gestrichelt ist, und ein Icon, dessen zweite Fuellung ein
+literales Weiss ist und als Aussparung behandelt wird, weil ein Gift-Icon von
+Bauart monochrom ist.
 
 Icons gehen nicht durch `asset.Pipeline`. Die ist fuer Fotos gebaut, mit
 Groessenleiter, Plattenspeicher-Cache und asynchroner Aufloesung; ein Icon

@@ -107,3 +107,12 @@ func WarmKeyRevisionForTest(id asset.ID, size int) (string, bool) {
 	t.Release()
 	return rev, true
 }
+
+// ResetIconService forgets every cached icon mask, so that one test cannot see
+// another's uploads. The service is process wide, exactly like the image
+// service and the default font.
+func ResetIconService() {
+	clear(icons.tex)
+	clear(icons.blank)
+	icons.rasterised, icons.uploads = 0, 0
+}
