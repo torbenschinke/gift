@@ -489,3 +489,50 @@ func paintBorder(ctx *gift.PaintContext, st styleSpec, b geom.Rect) {
 		})
 	}
 }
+
+// focusRingGap is how far the focus ring of a boxed control — [Button] and
+// [TextField] — sits *inside* the control's own border, in logical pixels.
+//
+// # Why the ring is not simply the border in another colour
+//
+// It was, and a human driving the real binary reported the consequence: the
+// ring a keyboard leaves and the ring a press leaves were the same two pixels
+// in the same place, so the pressed state differed from the focused one only
+// by a fill that disappears on release, and neither could be told from a
+// control that simply has an accent border. Two states that mean different
+// things looked alike.
+//
+// A second contour inside the border is a shape rather than a recolouring, so
+// the focused control is recognisable as focused next to an unfocused one with
+// any border at all. The gap goes inwards and not outwards, which is where
+// [Toggle], [Slider] and [SegmentedControl] put theirs: those three draw their
+// shape well inside their hit target and have the room, and a button does not
+// — its bounds *are* its box, and a ring outside them would be clipped away by
+// the first scroll container, list or tab bar the button is placed in, that is
+// exactly where a kiosk puts its buttons.
+//
+// Three logical pixels is the same gap the three controls above use.
+const focusRingGap = float32(3)
+
+// focusRingRect is the rectangle the focus ring of a boxed control is stroked
+// on. A control too small to hold a ring inside its border keeps its bounds
+// rather than producing an inverted rectangle.
+func focusRingRect(b geom.Rect) geom.Rect {
+	in := b.Inset(geom.InsetsAll(focusRingGap))
+	if in.IsEmpty() {
+		return b
+	}
+	return in
+}
+
+// focusRingRadius is the corner radius of that ring: the control's own radius
+// shrunk by the gap, so the ring stays concentric with the corner it is
+// sitting inside instead of cutting across it. A radius smaller than the gap
+// becomes a square corner, which is what a rounded rectangle's inner contour
+// does anyway.
+func focusRingRadius(r float32) float32 {
+	if r <= focusRingGap {
+		return 0
+	}
+	return r - focusRingGap
+}

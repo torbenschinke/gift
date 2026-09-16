@@ -350,7 +350,7 @@ func (n *segmentedNode) Paint(ctx *gift.PaintContext) {
 	ctx.PaintChildren()
 
 	ia := ctx.Interaction()
-	if ia.Focused && !ia.Disabled && n.focusRing.IsVisible() {
+	if ia.FocusVisible && !ia.Disabled && n.focusRing.IsVisible() {
 		g := geom.InsetsAll(-segmentedFocusGap)
 		ctx.Add(strokeOp(b.Inset(g), segmentedRadius+segmentedFocusGap, n.focusRing))
 	}

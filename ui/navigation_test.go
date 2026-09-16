@@ -1134,13 +1134,18 @@ func TestADragOnTheScrimDoesNotScrollWhatEnclosesTheModal(t *testing.T) {
 // path: the field is not hidden, it is destroyed, so the cleanup cannot be in
 // the build that hid a layer. It is the one in gift's own unmount.
 //
-// Escape is the trigger for the same reason enter is there: it is the only way
-// to pop without first moving the focus off the field.
+// The pop is driven from a posted closure and not from a key or a tap, which
+// is what keeps the unmount path the subject: every input that could pop this
+// stack moves the focus off the field first, and the cleanup would then be the
+// blur's rather than the unmount's. Escape used to be the trigger here and is
+// not available any more — with a keyboard up it dismisses the keyboard, see
+// [TestEscapePutsTheOnScreenKeyboardAwayBeforeItPopsAScreen].
 func TestPoppingAScreenTakesTheOnScreenKeyboardAway(t *testing.T) {
 	ui.SetOnScreenKeyboard(nil, true)
 	t.Cleanup(func() { ui.SetOnScreenKeyboard(nil, false) })
 
 	ed := ui.NewTextEditor("")
+	var pop func()
 	h := gifttest.New(t, gifttest.Options{
 		Theme: ui.LightTheme(),
 		Font:  loadTestFont(t),
@@ -1151,6 +1156,7 @@ func TestPoppingAScreenTakesTheOnScreenKeyboardAway(t *testing.T) {
 			if ctx.Read(depth) > 1 {
 				screens = append(screens, ui.Screen("Detail", ui.TextField(ed).Key("field")))
 			}
+			pop = func() { depth.Set(1) }
 			return ui.VStack(
 				ui.NavigationStack(func() { depth.Set(1) }, screens...).Flex(1),
 				ui.OnScreenKeyboard().Key("kb"),
@@ -1163,7 +1169,7 @@ func TestPoppingAScreenTakesTheOnScreenKeyboardAway(t *testing.T) {
 		t.Fatal("tapping the field did not ask for the on-screen keyboard; the fixture is wrong")
 	}
 
-	h.Key(gift.KeyEscape)
+	pop()
 	h.Settle()
 	h.AssertNone(gifttest.ByKey("field"))
 	if h.App().SoftKeyboardRequested() {

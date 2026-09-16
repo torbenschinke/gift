@@ -759,3 +759,149 @@ func barIsPainted(a *gift.App) bool {
 	}
 	return n >= 2
 }
+
+// --- the finger on the thumb ---------------------------------------------------
+
+// The tests of defect 2: on a touchscreen there is no hover, so a bar that
+// stops being a target when it fades is a bar that can only be grabbed within
+// [ScrollBar.Hold] plus [ScrollBar.Fade] of the content last moving. See
+// [ui.scrollBarTouchSlop] and the note on a faded bar above scrollBarState.press.
+
+// thumbCentre returns the centre of the thumb while it is still visible, so
+// that a test can aim at it after it has faded away.
+func thumbCentre(h *gifttest.Harness, s gifttest.Node) geom.Point {
+	ops := barOps(h, s.Bounds())
+	thumb := ops[1].Bounds
+	return geom.Pt(thumb.Min.X+thumb.Width()/2, thumb.Min.Y+thumb.Height()/2)
+}
+
+// TestAFadedScrollBarThumbCanStillBeGrabbedByAFinger is the defect itself. The
+// content is scrolled, the bar is left to fade out completely, and then the
+// thumb is dragged with a touch — no move first, because a finger has none.
+func TestAFadedScrollBarThumbCanStillBeGrabbedByAFinger(t *testing.T) {
+	h := barHarness(t, barScene())
+	s := scroller(h)
+
+	wakeTo(s, 0)
+	grab := thumbCentre(h, s)
+
+	h.Advance(testBar.Hold + 2*testBar.Fade)
+	if ops := barOps(h, s.Bounds()); len(ops) != 0 {
+		t.Fatalf("the bar is still drawn after the fade: %d op(s); the fixture is wrong", len(ops))
+	}
+
+	h.TouchDownAt(grab)
+	h.TouchMoveTo(geom.Pt(grab.X, grab.Y+45))
+
+	// 45 px of thumb travel over a travel of 180 against a MaxOffset of 1800.
+	if got := scroller(h).ScrollInfo().Offset; !nearF64(got, 450) {
+		t.Fatalf("offset after grabbing the faded thumb and dragging 45 px = %g, want 450. "+
+			"A negative or small value means the press fell through to the content, which "+
+			"moves the document the other way and by the distance of the finger", got)
+	}
+	if ops := barOps(h, s.Bounds()); len(ops) != 2 {
+		t.Fatalf("the grabbed bar drew %d op(s), want 2: taking the thumb has to wake the "+
+			"bar, or the user is dragging something they cannot see", len(ops))
+	}
+	h.TouchUpAt(geom.Pt(grab.X, grab.Y+45))
+}
+
+// TestAContentDragNearTheTrailingEdgeStillScrollsTheContent is the cost of the
+// rule above, held to the smallest it can be: the thumb plus
+// [ui.scrollBarTouchSlop] is a target, and everything else near the edge is
+// still the content.
+func TestAContentDragNearTheTrailingEdgeStillScrollsTheContent(t *testing.T) {
+	h := barHarness(t, barScene())
+	s := scroller(h)
+	b := s.Bounds()
+
+	wakeTo(s, 0)
+	thumb := barOps(h, b)[1].Bounds
+	h.Advance(testBar.Hold + 2*testBar.Fade)
+
+	// Two pixels inside the trailing edge, and well below the thumb: this is
+	// the track, which a faded bar does not own.
+	from := geom.Pt(b.Max.X-2, thumb.Max.Y+40)
+	if from.Y > b.Max.Y-10 {
+		t.Fatalf("the fixture's thumb reaches to %v, too close to the bottom edge %v to "+
+			"drag below it", thumb.Max.Y, b.Max.Y)
+	}
+	h.TouchDownAt(from)
+	h.TouchMoveTo(geom.Pt(from.X, from.Y-60))
+
+	// A content drag moves the document *with* the finger: the finger went up
+	// by 60, so the content went down by 60.
+	if got := scroller(h).ScrollInfo().Offset; !nearF64(got, 60) {
+		t.Fatalf("offset after a 60 px content drag two pixels from the trailing edge = %g, "+
+			"want 60. A much larger value means the invisible bar stole the drag and paged "+
+			"or jumped the document", got)
+	}
+	h.TouchUpAt(geom.Pt(from.X, from.Y-60))
+}
+
+// TestAFadedScrollBarDoesNotPageOnATrackPress is the same boundary from the
+// other side, stated as the rule rather than as an offset: an invisible track
+// is not a page control. A tap on it is content, and this is what keeps the
+// region a content drag loses down to the thumb.
+func TestAFadedScrollBarDoesNotPageOnATrackPress(t *testing.T) {
+	h := barHarness(t, barScene())
+	s := scroller(h)
+	b := s.Bounds()
+
+	wakeTo(s, 0)
+	thumb := barOps(h, b)[1].Bounds
+	h.Advance(testBar.Hold + 2*testBar.Fade)
+
+	// On the track, below the thumb, where a visible bar would page by one
+	// viewport extent.
+	h.TapAt(geom.Pt(b.Max.X-5, thumb.Max.Y+40))
+
+	if got := scroller(h).ScrollInfo().Offset; got != 0 {
+		t.Fatalf("a tap on a faded track moved the document to %g; a bar nobody can see "+
+			"must not page, or every tap near the trailing edge jumps a screen", got)
+	}
+}
+
+// TestAVisibleScrollBarStillPagesOnATrackPress is the behaviour the rule above
+// must not have taken away from the mouse.
+func TestAVisibleScrollBarStillPagesOnATrackPress(t *testing.T) {
+	h := barHarness(t, barScene())
+	s := scroller(h)
+	b := s.Bounds()
+
+	wakeTo(s, 0)
+	thumb := barOps(h, b)[1].Bounds
+	h.ClickAt(geom.Pt(b.Max.X-5, thumb.Max.Y+40))
+
+	if got := scroller(h).ScrollInfo().Offset; !nearF64(got, float64(scrollViewportH)) {
+		t.Fatalf("a click on the visible track moved the document to %g, want one viewport "+
+			"extent, %d", got, scrollViewportH)
+	}
+}
+
+// TestAPressBesideTheThumbWithinTheTouchSlopGrabsIt pins what
+// [ui.scrollBarTouchSlop] is for: the drawn thumb is a mouse target, and a
+// finger aiming at an eight pixel wide strip at the edge of the screen misses
+// it. The press here is fifteen pixels in from the trailing edge, which is
+// beside the thumb and not on it.
+func TestAPressBesideTheThumbWithinTheTouchSlopGrabsIt(t *testing.T) {
+	h := barHarness(t, barScene())
+	s := scroller(h)
+	b := s.Bounds()
+
+	wakeTo(s, 0)
+	thumb := barOps(h, b)[1].Bounds
+	beside := geom.Pt(b.Max.X-15, thumb.Min.Y+thumb.Height()/2)
+	if thumb.Contains(beside) {
+		t.Fatalf("the aiming point %v is on the thumb %v; the fixture is wrong", beside, thumb)
+	}
+
+	h.TouchDownAt(beside)
+	h.TouchMoveTo(geom.Pt(beside.X, beside.Y+45))
+
+	if got := scroller(h).ScrollInfo().Offset; !nearF64(got, 450) {
+		t.Fatalf("offset after grabbing beside the thumb and dragging 45 px = %g, want 450. "+
+			"A thumb only grabbable on its drawn eight pixels is a thumb a fingertip misses", got)
+	}
+	h.TouchUpAt(geom.Pt(beside.X, beside.Y+45))
+}

@@ -255,7 +255,7 @@ func (n *toggleNode) Paint(ctx *gift.PaintContext) {
 	}
 
 	ia := ctx.Interaction()
-	if ia.Focused && !ia.Disabled && n.focusRing.IsVisible() {
+	if ia.FocusVisible && !ia.Disabled && n.focusRing.IsVisible() {
 		g := geom.InsetsAll(-toggleFocusGap)
 		strokeCapsule(ctx, track.Inset(g), n.focusRing)
 	}

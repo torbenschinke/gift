@@ -636,6 +636,39 @@ func (h *Harness) TapAt(p geom.Point) {
 	h.Settle()
 }
 
+// TouchDownAt puts a finger down at the device space point p and leaves it
+// there.
+//
+// It is the touch counterpart of [Harness.PressAt], and the difference between
+// the two is not cosmetic: PressAt moves the *mouse* to p first, because a
+// real mouse is somewhere before it is pressed, and that move produces hover.
+// A finger has no hover — the kiosk of the project plan, section 1, delivers a
+// press and nothing before it — so a widget that is only reachable after a
+// hover is unreachable on the target hardware, and a test that used PressAt
+// would never find out. See [ui.ScrollBar] for the defect that was.
+func (h *Harness) TouchDownAt(p geom.Point) {
+	h.t.Helper()
+	h.beginInput()
+	h.app.PointerDown(touchID, gift.PointerTouch, p)
+	h.Settle()
+}
+
+// TouchMoveTo moves the finger that is down to p.
+func (h *Harness) TouchMoveTo(p geom.Point) {
+	h.t.Helper()
+	h.beginInput()
+	h.app.PointerMove(touchID, gift.PointerTouch, p)
+	h.Settle()
+}
+
+// TouchUpAt lifts the finger at p.
+func (h *Harness) TouchUpAt(p geom.Point) {
+	h.t.Helper()
+	h.beginInput()
+	h.app.PointerUp(touchID, gift.PointerTouch, p)
+	h.Settle()
+}
+
 // CancelPointer ends the current mouse press without a release, as the window
 // manager does when the window loses focus. A control that treats it as an
 // activation is broken, and this is how a test says so.

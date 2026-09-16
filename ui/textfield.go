@@ -556,8 +556,8 @@ func (n *textFieldNode) Paint(ctx *gift.PaintContext) {
 	ctx.PopClip()
 
 	paintBorder(ctx, st, b)
-	if ia.Focused && !ia.Disabled && n.focusRing.IsVisible() {
-		paintBorder(ctx, styleSpec{border: n.focusRing, radius: st.radius}, b)
+	if ia.FocusVisible && !ia.Disabled && n.focusRing.IsVisible() {
+		paintBorder(ctx, styleSpec{border: n.focusRing, radius: focusRingRadius(st.radius)}, focusRingRect(b))
 	}
 }
 

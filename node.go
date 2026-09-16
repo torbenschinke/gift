@@ -53,6 +53,14 @@ type nodeData struct {
 	// order is confined to its subtree. See [App.focusRoot].
 	focusTrap bool
 
+	// keyFallback is [Element.KeyFallback]: this node receives key events
+	// while nothing holds the focus. See [App.keyFallbackNode].
+	keyFallback bool
+
+	// preservesFocus is [Element.PreservesFocus]: a press inside this
+	// subtree does not move the focus. See [App.PointerDown].
+	preservesFocus bool
+
 	// xform is [Element.Transform]. It is a pointer because the common case
 	// is the identity and a nil check is cheaper than comparing six floats.
 	xform *geom.Affine2D
@@ -166,6 +174,8 @@ func (nd *nodeData) release() {
 	// is not refreshed on every build is cleared on unmount.
 	nd.hidden = false
 	nd.focusTrap = false
+	nd.keyFallback = false
+	nd.preservesFocus = false
 	nd.xform = nil
 	nd.scroll = nil
 	// The store hands a freed slot back with its payload untouched, which is

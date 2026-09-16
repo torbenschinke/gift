@@ -34,8 +34,20 @@ func (a *App) MoveFocus(forward bool) bool {
 	if next.IsZero() || next == a.in.focus {
 		return false
 	}
-	a.setFocus(next)
+	// Moving the focus is the keyboard's own gesture, so the focus it
+	// installs is visible; see [Interaction.FocusVisible].
+	a.setFocusFrom(next, true)
 	return true
+}
+
+// FocusVisible reports whether the current focus should be shown as a ring,
+// which is the case when it was installed by the keyboard rather than by a
+// pointer; see [Interaction.FocusVisible].
+//
+// It answers false when nothing is focused, because a ring nobody owns cannot
+// be visible.
+func (a *App) FocusVisible() bool {
+	return a.store.Valid(a.in.focus) && a.in.focusVisible
 }
 
 // setFocus moves the focus to h, emitting the lost and gained pair.
@@ -43,14 +55,42 @@ func (a *App) MoveFocus(forward bool) bool {
 // A node that is not focusable — not interactive, disabled, or simply not
 // declared focusable — cannot take the focus; passing one is how a click on a
 // non focusable target clears the focus rather than parking it somewhere
-// invisible.
-func (a *App) setFocus(h scene.Handle) {
+// invisible. [App.PointerDown] relies on exactly that sentence: it hands this
+// method whatever the press hit, and a press that landed on a plain container
+// therefore blurs instead of leaving a focus, and an on-screen keyboard,
+// behind on a node the user has just pointed away from.
+//
+// Whether the focus it installs is *visible* — drawn as a ring — is decided by
+// where the call came from; see [App.setFocusFrom] and
+// [Interaction.FocusVisible]. This entry point takes the answer from the
+// phase gift is in, which is what makes a press hide the ring and a key show
+// it without every caller having to say so.
+func (a *App) setFocus(h scene.Handle) { a.setFocusFrom(h, a.in.keyPhase) }
+
+// setFocusFrom moves the focus to h and states explicitly whether the new
+// focus is keyboard focus that has to be shown.
+func (a *App) setFocusFrom(h scene.Handle, visible bool) {
 	if a.store.Valid(h) && !a.focusable(h) {
 		h = scene.Handle{}
 	}
 	if h == a.in.focus {
+		// The same node, possibly with a different provenance: a keyboard
+		// user who tabs onto a node and then touches it must lose the ring,
+		// and the reverse must gain it. Nothing else about the focus changes,
+		// so no lost/gained pair is owed — only a repaint.
+		if a.in.focusVisible != visible {
+			a.in.focusVisible = visible
+			// Nothing is focused: there is no node to repaint and no ring to
+			// take away, and the only reason to write the field at all is
+			// that a stale true would outlive the node it described.
+			if a.store.Valid(h) {
+				a.data(h).ia.FocusVisible = visible
+				a.markNeedsPaint(h)
+			}
+		}
 		return
 	}
+	a.in.focusVisible = visible
 	prev := a.in.focus
 	a.in.focus = h
 	// A key held down was being repeated into the node that is losing the
@@ -66,7 +106,8 @@ func (a *App) setFocus(h scene.Handle) {
 	// pending.go and [App.settleNotices].
 	notify := a.building == nil
 	if a.store.Valid(prev) {
-		a.data(prev).ia.Focused = false
+		pd := a.data(prev)
+		pd.ia.Focused, pd.ia.FocusVisible = false, false
 		a.markNeedsPaint(prev)
 		if notify {
 			a.deliver(prev, Event{Kind: EventFocusLost, Time: a.in.now, Pointer: MousePointer}, true)
@@ -78,7 +119,8 @@ func (a *App) setFocus(h scene.Handle) {
 		// The focus came back to a node that is still waiting to be told it
 		// lost it. Nothing was lost, so nothing is owed.
 		a.dropNotice(h, noticeFocusLost)
-		a.data(h).ia.Focused = true
+		hd := a.data(h)
+		hd.ia.Focused, hd.ia.FocusVisible = true, visible
 		a.markNeedsPaint(h)
 		if notify {
 			a.deliver(h, Event{Kind: EventFocusGained, Time: a.in.now, Pointer: MousePointer}, true)

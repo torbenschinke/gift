@@ -189,6 +189,16 @@ func (v NavigationStackView) Build(bc *gift.BuildContext) gift.Element {
 	// that is not the escape key, so the event keeps bubbling exactly as it
 	// would have.
 	e.Interactor = navBackKey{stack: v, canPop: top > 0}
+	// And the kiosk half of the escape key. Bubbling from the focused node
+	// reaches this handler only when something *is* focused, which on a touch
+	// panel with no keyboard attached is never: gift moves the focus on a
+	// press and there is nothing to press that takes it. This flag says
+	// "deliver an unfocused key here", so escape from a keyboard plugged into
+	// a kiosk pops the screen whether or not the user has ever touched a
+	// control. See [gift.Element.KeyFallback] for the rule when stacks are
+	// nested, which is the same last-in-document-order rule as the focus
+	// trap's.
+	e.KeyFallback = true
 	return e
 }
 

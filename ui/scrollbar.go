@@ -444,7 +444,45 @@ func (st *scrollBarState) handleEvent(ctx *gift.EventContext, e gift.Event) bool
 	return false
 }
 
+// scrollBarTouchSlop is how far outside the drawn thumb a press still counts
+// as a press on the thumb, in logical pixels.
+//
+// A thumb is [DefaultScrollBar].Width wide, which is eight, and eight pixels is
+// a mouse target and not a fingertip: both Apple and Google document forty four
+// and forty eight for a finger. The slop makes the grab region twenty four
+// across, of which sixteen are over the viewport, without making the *drawn*
+// bar any fatter — an indicator that is thick enough to be grabbed by a finger
+// would cover the content it is indicating.
+//
+// It is the smallest number that does the job rather than the largest that
+// would still look reasonable, because every pixel of it is a pixel where an
+// ordinary content drag near the trailing edge becomes a thumb drag instead;
+// see [TestAContentDragNearTheTrailingEdgeStillScrollsTheContent].
+const scrollBarTouchSlop = float32(8)
+
 // press takes the thumb, or pages the document towards a click on the track.
+//
+// # A faded bar can still be grabbed, and why that had to change
+//
+// It could not, and the sentence that said so — "only a visible bar is a
+// target, a faded one is woken by hovering it" — was written for a pointer
+// this framework's target hardware does not have. There is no hover on a
+// touchscreen: the kiosk of the project plan, section 1, delivers a press and
+// nothing before it. The bar holds for [ScrollBar.Hold] and fades over
+// [ScrollBar.Fade], so on a finger-driven panel the thumb was reachable only
+// within 750 ms of the content last moving, and after that a press on the
+// thumb scrolled the content the *other* way as an ordinary drag. The thumb of
+// a hundred thousand item gallery — the one place a scroll bar earns its
+// keep — was in practice not grabbable at all.
+//
+// So the rule is now the one a touch device needs: a press within
+// [scrollBarTouchSlop] of the thumb takes the thumb whatever the bar's current
+// opacity, and taking it wakes the bar, because a grabbed indicator is an
+// active one. Nothing else about a faded bar is a target — paging on a track
+// nobody can see is refused below — so the region a content drag loses near
+// the trailing edge is the length of the thumb and sixteen pixels of width,
+// and no more. The mouse keeps the behaviour it had: hovering still wakes the
+// bar, and a woken bar still pages.
 //
 // # Paging, and why one viewport
 //
@@ -465,16 +503,12 @@ func (st *scrollBarState) press(ctx *gift.EventContext, ind gift.ScrollIndicator
 	if !ok {
 		return false
 	}
-	// Only a visible bar is a target. A faded one is woken by hovering it,
-	// which is the move handler below.
-	if st.style.opacity(info, ind.Active()) <= 0 {
-		return false
-	}
 	g, ok := st.style.geometry(ctx.DeviceBounds(), info)
-	if !ok || !g.track.Contains(e.Pos) {
+	if !ok {
 		return false
 	}
-	if g.thumb.Contains(e.Pos) {
+	awake := st.style.opacity(info, ind.Active()) > 0
+	if g.thumb.Inset(geom.InsetsAll(-scrollBarTouchSlop)).Contains(e.Pos) {
 		// The press has to be taken away from whatever is underneath — a tile
 		// in the gallery — or that node would see the release as a click and
 		// select a picture the user was only scrolling past. The answer is
@@ -484,8 +518,20 @@ func (st *scrollBarState) press(ctx *gift.EventContext, ind gift.ScrollIndicator
 		}
 		ind.Grabbed = true
 		ind.Grab = g.along(e.Pos) - g.leading(g.thumb)
+		// Grabbed makes the indicator active, so the write below both takes
+		// the grab and wakes a bar that had faded out; see
+		// [gift.ScrollIndicatorState.Active] and
+		// [gift.EventContext.SetScrollIndicator].
 		ctx.SetScrollIndicator(ind)
 		return true
+	}
+	if !awake || !g.track.Contains(e.Pos) {
+		// A faded bar pages nothing. The thumb above is a small, findable
+		// place a finger aims at; the rest of the track is most of the
+		// trailing edge of the viewport, and a press there that jumped the
+		// document by a screen would turn every content drag started near the
+		// edge into a page. Falling through is the content drag.
+		return false
 	}
 
 	page := float64(info.ViewportExtent)

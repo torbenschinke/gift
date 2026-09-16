@@ -101,6 +101,11 @@ type App struct {
 	// overwhelmingly common case of an application with no modal on screen.
 	traps int
 
+	// keyFallbacks is the number of mounted nodes that declare
+	// [Element.KeyFallback]. Same shape and same reason as traps above; see
+	// [App.keyFallbackNode].
+	keyFallbacks int
+
 	// reconcileHidden is the inherited [Element.Hidden] state of the node
 	// currently being applied: true when any ancestor of it, inside the part
 	// of the tree this reconciliation has already walked, declared the flag.

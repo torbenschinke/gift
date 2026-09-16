@@ -178,3 +178,10 @@ func (a *App) tickReveal() {
 		a.ScrollIntoView(NodeRef{h})
 	}
 }
+
+// DismissSoftKeyboard puts the on-screen keyboard away from inside an event
+// handler, by blurring whatever asked for it, and reports whether there was
+// one up. It is [App.DismissSoftKeyboard] reached the way a widget reaches
+// everything else; ui.OnScreenKeyboard's own dismiss key is the caller it
+// exists for.
+func (c *EventContext) DismissSoftKeyboard() bool { return c.app.dismissSoftKeyboard() }

@@ -503,7 +503,8 @@ func (s state) form() gift.View {
 		ui.Card(
 			ui.Text("Tap the field. gift's own on-screen keyboard comes up, because "+
 				"ui.SetOnScreenKeyboard is on; the field asks for it when it takes the "+
-				"focus and dismisses it when it loses it.").
+				"focus and dismisses it when it loses it. Put it away with the key in "+
+				"its bottom right corner, by tapping anywhere outside it, or with escape.").
 				FontSize(12).Foreground(ui.ColorSecondaryLabel),
 			ui.TextField(ed).
 				Placeholder("Your name").

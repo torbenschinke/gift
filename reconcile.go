@@ -163,6 +163,8 @@ func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *
 	// is visible and the answer is written here.
 	a.applyHidden(h, nd, desc.elem.Hidden)
 	a.applyFocusTrap(h, nd, desc.elem.FocusTrap)
+	a.applyKeyFallback(nd, desc.elem.KeyFallback)
+	nd.preservesFocus = desc.elem.PreservesFocus
 	nd.obstructs = desc.elem.Obstructs
 	// "The last one built wins" is what [Element.Obstructs] promises, and the
 	// last one built is not necessarily one anybody can see: a
@@ -321,6 +323,24 @@ func (a *App) applyFocusTrap(h scene.Handle, nd *nodeData, trap bool) {
 	if a.store.Valid(a.in.focus) && !a.isAncestor(h, a.in.focus) {
 		a.setFocus(scene.Handle{})
 	}
+}
+
+// applyKeyFallback writes [Element.KeyFallback] onto the node and maintains
+// the counter that lets [App.keyFallbackNode] skip its tree walk in every
+// application that never declares one.
+//
+// Unlike [App.applyFocusTrap] it has no side effect on the focus: a node that
+// starts receiving unfocused keys does not take anything away from anybody,
+// because the flag only matters while nothing is focused at all.
+func (a *App) applyKeyFallback(nd *nodeData, fallback bool) {
+	switch {
+	case fallback && !nd.keyFallback:
+		a.keyFallbacks++
+	case !fallback && nd.keyFallback:
+		a.keyFallbacks--
+		checkTrapCount(a)
+	}
+	nd.keyFallback = fallback
 }
 
 // stopHiddenWork ends every repaint enrolment inside the subtree of h.
@@ -536,6 +556,12 @@ func (a *App) destroyScopes(h scene.Handle, depth int) {
 		// The counter [App.focusRoot] consults. release() clears the flag but
 		// cannot maintain the count, because a node payload has no App.
 		a.traps--
+		checkTrapCount(a)
+	}
+	if nd.keyFallback {
+		// The counter [App.keyFallbackNode] consults, maintained for the same
+		// reason and in the same two places as a.traps above.
+		a.keyFallbacks--
 		checkTrapCount(a)
 	}
 	a.clearOverflow(nd)

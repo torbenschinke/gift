@@ -121,7 +121,7 @@ const (
 	kbKeyRadius  = float32(6)
 	kbFontSize   = float32(18)
 	kbRows       = 5
-	kbKeyCount   = 47
+	kbKeyCount   = 48
 	kbLabelInset = float32(2)
 
 	// kbDefaultWidth is how wide the keyboard makes itself when nothing
@@ -139,6 +139,9 @@ const (
 	kbShift
 	kbPage
 	kbKeyCode
+	// kbDismiss puts the keyboard away; see [keyboardNode.press] and
+	// [gift.EventContext.DismissSoftKeyboard].
+	kbDismiss
 )
 
 // kbKey is one drawn key.
@@ -187,9 +190,23 @@ func init() {
 		return []kbKey{
 			{label: page, cmd: kbPage, w: 1.5},
 			{label: ",", r: ',', w: 1},
-			{label: "space", r: ' ', key: gift.KeySpace, cmd: kbKeyCode, w: 5},
+			{label: "space", r: ' ', key: gift.KeySpace, cmd: kbKeyCode, w: 3.5},
 			{label: ".", r: '.', w: 1},
 			{label: "\u21b5", key: gift.KeyEnter, cmd: kbKeyCode, w: 1.5},
+			// The dismiss key; see [kbDismiss]. It is the last key of the
+			// bottom row, where a touch keyboard's "hide" affordance sits on
+			// both mobile platforms, and it is the reason a kiosk user with
+			// no physical keyboard can ever put this thing away: escape
+			// needs a keyboard, a tap outside needs somewhere to tap that is
+			// not covered, and the return key of a single line field is not
+			// a dismissal on any platform.
+			//
+			// U+2304 DOWN ARROWHEAD is the glyph, which is the chevron
+			// Android draws for the same key. It is present in the bundled
+			// Inter; a caller who installs a font without it gets whatever
+			// that font draws for a missing glyph, which is the same deal
+			// the shift, backspace and return keys above have always had.
+			{label: "\u2304", cmd: kbDismiss, w: 1.5},
 		}
 	}
 	shift := kbKey{label: "\u21e7", cmd: kbShift, w: 1}
@@ -450,6 +467,12 @@ func (v KeyboardView) Build(bc *gift.BuildContext) gift.Element {
 		// [TestTappingAKeyDoesNotStealTheFocusFromTheField].
 		Interactor: n,
 		Focusable:  false,
+		// The other half of declining the focus: gift blurs on a press that
+		// lands on a node that cannot be focused — see [gift.App.PointerDown]
+		// — which without this would make the first tap on a letter key blur
+		// the field, withdraw this keyboard and deliver the character to
+		// nobody. See [gift.Element.PreservesFocus].
+		PreservesFocus: true,
 		// The reason this exists at all; see [gift.Element.Obstructs].
 		Obstructs: true,
 		Clip:      true,
@@ -761,6 +784,13 @@ func (n *keyboardNode) press(ctx *gift.EventContext, k kbKey) {
 		// be an invisible mode.
 		n.st8.symbols = !n.st8.symbols
 		n.st8.shift = false
+		return
+	case kbDismiss:
+		// The whole gesture, and deliberately no character and no key code:
+		// dismissing is not typing. The field hears EventFocusLost, withdraws
+		// its request and this keyboard is gone on the next build; see
+		// [gift.App.dismissSoftKeyboard].
+		ctx.DismissSoftKeyboard()
 		return
 	case kbKeyCode:
 		n.st8.down = k.key

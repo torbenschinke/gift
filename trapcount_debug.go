@@ -20,7 +20,18 @@ import "fmt"
 // API, and that is the reason this is an assertion under a build tag rather
 // than a clamp: there is no known way in, so a silent repair would hide the
 // day somebody makes one.
+// The same assertion covers [App.keyFallbacks], which is the same counter
+// shape maintained by [App.applyKeyFallback] and [App.destroyScopes] for
+// [Element.KeyFallback], with the same two failure modes: a walk looking for a
+// node that is not there, or an unfocused escape key that reaches nobody.
 func checkTrapCount(a *App) {
+	if a.keyFallbacks < 0 {
+		panic(fmt.Sprintf(
+			"gift: key fallback count went to %d. Element.KeyFallback is counted up in "+
+				"App.applyKeyFallback and down in both App.applyKeyFallback and "+
+				"App.destroyScopes; one of them has run without its partner",
+			a.keyFallbacks))
+	}
 	if a.traps < 0 {
 		panic(fmt.Sprintf(
 			"gift: focus trap count went to %d. Element.FocusTrap is counted up in "+

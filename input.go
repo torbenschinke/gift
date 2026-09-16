@@ -414,6 +414,33 @@ type Interaction struct {
 	Pressed bool
 	// Focused is set while the node holds the keyboard focus.
 	Focused bool
+	// FocusVisible is set while the node holds the keyboard focus *and* that
+	// focus arrived from the keyboard, so that it has to be shown.
+	//
+	// # Why a second bit and not just Focused
+	//
+	// Because focus and the focus ring answer different questions. Focus is
+	// "where do key events go", and a pointer has to move it: a press on a
+	// text field must put the caret there, and a press on a button must make
+	// the space bar activate that button. The ring is "where would the
+	// keyboard go if you used it", and it is noise for a user who is not
+	// using one — on the touchscreen kiosk of the project plan, section 1,
+	// every single tap would otherwise leave a permanent ring behind on the
+	// tab bar, because [Interactor] implementations take the focus on
+	// [EventPointerDown].
+	//
+	// So gift records where the focus came from. A focus installed while a
+	// key event is being dispatched, or by [App.MoveFocus], is visible; one
+	// installed while a pointer event is being dispatched is not. That is
+	// the rule CSS spells :focus-visible and the rule Apple's platforms use,
+	// and it is applied here once, in the core, rather than being
+	// re-litigated by every widget.
+	//
+	// Every focus ring in package ui reads this bit. Everything that is
+	// about *where the keys go* — a text field's caret, its selection
+	// highlight, the key routing itself — reads Focused, because a field
+	// tapped with a finger is being typed into and must show a caret.
+	FocusVisible bool
 	// Disabled mirrors [Element.Disabled]. It is here so that a painter
 	// needs to consult one value rather than two.
 	Disabled bool
@@ -670,6 +697,20 @@ type inputState struct {
 
 	focus scene.Handle
 	ectx  EventContext
+
+	// focusVisible mirrors [Interaction.FocusVisible] of the focused node.
+	// It is kept here as well so that the question "is the current focus
+	// keyboard focus" can be answered without resolving a handle, and so
+	// that a re-focus of the same node can tell whether anything changed.
+	focusVisible bool
+
+	// keyPhase is set while a key, rune or focus-driven event is being
+	// dispatched. It is what [App.setFocus] reads to decide whether the
+	// focus it installs is visible: a node that calls
+	// [EventContext.RequestFocus] out of its own key handler is being
+	// operated by the keyboard, and one that calls it out of
+	// [EventPointerDown] is not.
+	keyPhase bool
 
 	// cur is the pointer whose event is currently being dispatched, nil
 	// outside a pointer dispatch. It exists so that
@@ -943,13 +984,54 @@ func (a *App) PointerDown(id PointerID, kind PointerKind, pos geom.Point) {
 		// A press on empty space drops the keyboard focus, which is what
 		// every desktop toolkit does and what keeps a stale focus ring from
 		// surviving a click on the background.
-		a.setFocus(scene.Handle{})
+		a.setFocusFrom(scene.Handle{}, false)
 		return
+	}
+	// A press on something that is not focusable drops it too, which is what
+	// [App.setFocus] has always documented and did not do: it was only ever
+	// called for a press that hit *nothing*, and a press that landed on a
+	// scroll container — a hit target, not focusable — left the focus, the
+	// caret and the on-screen keyboard exactly where they were. On a kiosk
+	// that was a keyboard the user could not put away by tapping next to it.
+	//
+	// A press on something that *is* focusable is left alone here, and the
+	// node takes the focus from its own handler with
+	// [EventContext.RequestFocus], which is where every control in package ui
+	// already does it. Moving it from here would take the decision away from
+	// the widget for no gain — the two orders end in the same place — and
+	// would focus a node that deliberately declined to be focused on a press.
+	//
+	// The blur happens before the press is delivered, so the ordering is the
+	// same in both branches. A surface that types into the focused node
+	// instead of being focused itself opts out with [Element.PreservesFocus];
+	// gift's on-screen keyboard is that surface and is the only one.
+	if !a.focusable(h) && !a.preservesFocusAt(h) {
+		a.setFocusFrom(scene.Handle{}, false)
 	}
 	a.setPressed(h, true)
 	e := a.pointerEvent(EventPointerDown, p)
 	e.Inside = true
 	a.deliver(h, e, false)
+}
+
+// preservesFocusAt reports whether h, or any of its ancestors, declared
+// [Element.PreservesFocus].
+//
+// It walks the parent chain rather than reading one flag, because the flag is
+// about a *surface*: an on-screen keyboard that grew a composed child one day
+// must not start blurring the field on every press into that child.
+func (a *App) preservesFocusAt(h scene.Handle) bool {
+	for depth := 0; !h.IsZero() && a.store.Valid(h); depth++ {
+		if depth > scene.MaxDepth {
+			return false
+		}
+		n := a.store.Get(h)
+		if n.Payload.preservesFocus {
+			return true
+		}
+		h = n.Parent
+	}
+	return false
 }
 
 // PointerUp reports a release of the pointer id at pos.
@@ -1087,6 +1169,20 @@ func (a *App) KeyDown(k Key, mods Mods) {
 // so that everything else about a repeat, bubbling and the tab fallback
 // included, is provably the same code as a real press.
 func (a *App) dispatchKeyDown(k Key, mods Mods, repeat bool) {
+	if k == KeyEscape && a.dismissSoftKeyboard() {
+		// Escape puts the on-screen keyboard away, and it does so *before*
+		// the event is delivered to anybody.
+		//
+		// Before, and not as a fallback after, because the alternative is
+		// not "the field gets a chance first" — no widget in this project
+		// reads escape — it is "the enclosing ui.NavigationStack pops the
+		// screen the user was typing on while the keyboard stays up". A
+		// modal dismissal key with a covering surface on the screen means
+		// the covering surface, on every platform that has one, and a user
+		// who meant the screen presses it twice. See
+		// [App.dismissSoftKeyboard].
+		return
+	}
 	e := Event{Kind: EventKeyDown, Key: k, Mods: mods, Repeat: repeat, Time: a.in.now, Pointer: MousePointer}
 	if a.deliverKey(e) {
 		return
@@ -1358,13 +1454,98 @@ func (a *App) deliver(h scene.Handle, e Event, direct bool) bool {
 	return false
 }
 
-// deliverKey sends e to the focused node and up its ancestor chain.
+// deliverKey sends e to the focused node and up its ancestor chain, or, when
+// nothing is focused, to the key fallback node; see [Element.KeyFallback].
 func (a *App) deliverKey(e Event) bool {
+	prev := a.in.keyPhase
+	a.in.keyPhase = true
+	defer func() { a.in.keyPhase = prev }()
+
 	h := a.in.focus
 	if !a.store.Valid(h) {
-		return false
+		h = a.keyFallbackNode()
+		if h.IsZero() {
+			return false
+		}
 	}
 	return a.deliver(h, e, false)
+}
+
+// keyFallbackNode is the node an unfocused key event is delivered to: the last
+// node in document order that declared [Element.KeyFallback], skipping hidden
+// subtrees, or the zero handle when nothing did.
+//
+// "Last in pre order" is [App.focusRoot]'s rule, deliberately the same one, and
+// it gives the same answers for the same reasons: a navigation stack nested
+// inside another one wins over the outer one, a screen that is covered is
+// hidden and therefore not a candidate, and a modal presented later is later
+// in the tree.
+//
+// It costs one pre order walk per unfocused key press. The recursion does not
+// even start in an application where nothing ever declared the flag, because
+// [App.keyFallbacks] is then zero, and key presses happen at human speed.
+func (a *App) keyFallbackNode() scene.Handle {
+	if a.keyFallbacks == 0 || a.root == nil {
+		return scene.Handle{}
+	}
+	found := scene.Handle{}
+	a.findKeyFallback(a.root.node, 0, &found)
+	return found
+}
+
+func (a *App) findKeyFallback(h scene.Handle, depth int, out *scene.Handle) {
+	if depth > scene.MaxDepth || !a.store.Valid(h) {
+		return
+	}
+	nd := a.data(h)
+	if nd.hidden {
+		return
+	}
+	if nd.keyFallback && nd.interactor != nil && !nd.disabled {
+		*out = h
+	}
+	for _, c := range nd.children {
+		a.findKeyFallback(c, depth+1, out)
+	}
+}
+
+// dismissSoftKeyboard takes the focus away from whatever asked for an
+// on-screen keyboard, which is how the keyboard goes away, and reports whether
+// there was one to dismiss.
+//
+// # Why blurring, rather than hiding the keyboard behind the field's back
+//
+// Because the request is the focused node's and only the focused node ever
+// withdraws it; see [EventContext.RequestSoftKeyboard]. Clearing the bit from
+// outside would leave a field that still believes it has a keyboard, and
+// tapping that same field again would not bring one back — the request is made
+// on [EventFocusGained] and the field never lost the focus. Blurring runs the
+// ordinary path: the field hears [EventFocusLost], withdraws its request, ends
+// its caret enrolment, and a later tap on it is an ordinary focus gain.
+//
+// The caret goes with it, which is correct: a kiosk user who put the keyboard
+// away is not typing any more.
+func (a *App) dismissSoftKeyboard() bool {
+	if !a.in.soft.wanted {
+		return false
+	}
+	a.setFocusFrom(scene.Handle{}, false)
+	// A field that was not focused at all cannot have been the requester, so
+	// the bit would otherwise survive a blur that changed nothing. It is the
+	// state of the process and not of a node; clearing it here is what makes
+	// this method's answer true exactly when the keyboard is now down.
+	a.requestSoftKeyboard(false)
+	return true
+}
+
+// DismissSoftKeyboard puts gift's on-screen keyboard away by blurring whatever
+// asked for it, and reports whether there was a keyboard up. It is
+// [App.dismissSoftKeyboard] as an application can reach it — a kiosk with a
+// "done" affordance of its own calls it — and it is what the escape key and
+// the keyboard's own dismiss key do.
+func (a *App) DismissSoftKeyboard() bool {
+	a.assertUIGoroutine("DismissSoftKeyboard")
+	return a.dismissSoftKeyboard()
 }
 
 // markNeedsPaint flags h and its ancestors as needing to be drawn again. It

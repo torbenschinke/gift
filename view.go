@@ -284,6 +284,46 @@ type Element struct {
 	// from a node outside — nothing outside can be reached by a pointer under
 	// a scrim, so there is no caller.
 	FocusTrap bool
+
+	// KeyFallback declares that this node receives key events while *nothing*
+	// holds the keyboard focus.
+	//
+	// Keys go to the focused node and bubble upwards, which is the right rule
+	// and is no rule at all on the touchscreen kiosk of the project plan,
+	// section 1: a panel with no keyboard attached never focuses anything, so
+	// an application-wide key such as escape reaches nobody. The symptom was
+	// a navigation stack that told the user to press escape and did nothing
+	// when they did. A node that declares this flag is where such a key goes
+	// instead; the event then bubbles from it exactly as it would have
+	// bubbled from a focused node, so an outer handler still sees what the
+	// inner one declined.
+	//
+	// The rule is [Element.FocusTrap]'s, deliberately: the *last* node in
+	// document order that declares it wins, hidden subtrees are skipped, and
+	// a node that is disabled or has no [Interactor] is not a candidate. A
+	// nested navigation stack therefore beats the one it is nested in, and a
+	// covered screen is not a candidate at all. See [App.keyFallbackNode].
+	//
+	// It changes nothing while something *is* focused. A keyboard user gets
+	// the ordinary focused delivery and this flag never comes into play.
+	KeyFallback bool
+
+	// PreservesFocus declares that a press landing on this node, or anywhere
+	// inside its subtree, leaves the keyboard focus where it is.
+	//
+	// A press moves the focus: onto the node it hit when that node is
+	// focusable, and to nowhere when it is not — see [App.PointerDown] and
+	// [App.setFocus] — which is what makes a tap on the background of a form
+	// put an on-screen keyboard away. Exactly one kind of surface must be
+	// exempt from that, and it is the surface that is typing *into* the
+	// focused node: gift's own on-screen keyboard is not focusable, so
+	// without this flag the first tap on a letter key would blur the field,
+	// withdraw the keyboard and deliver the character to nobody.
+	//
+	// It is about focus and about nothing else. The node is an ordinary hit
+	// target, gets the press, and takes the focus by asking for it if it
+	// wants it.
+	PreservesFocus bool
 }
 
 // BuildContext is passed to [View.Build].
