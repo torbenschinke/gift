@@ -55,6 +55,20 @@
 // a fallback chain: a glyph the chosen face lacks is not looked for in a
 // second one, and the project plan, section 14, keeps it that way.
 //
+// # The window background is the application's
+//
+// gift paints nothing an application did not ask for, and Ebitengine hands a
+// real window a transparent black screen at the top of every frame; see the
+// project plan, section 6. So the root view of an application paints the page
+// itself, and [Window] is the whole of it:
+//
+//	func screen(ctx *gift.Context) gift.View { return ui.Window(content) }
+//
+// Forgetting it is silent. Nothing panics, nothing logs, every structural
+// assertion passes, and the window has holes in it — which on a kiosk is
+// whatever the framebuffer held before. gifttest's Harness.AssertOpaque is
+// the gate; see [Window] for how this module found out the expensive way.
+//
 // # Colour
 //
 // Colours are either literal — [RGB] and [RGBA] — or semantic. A semantic

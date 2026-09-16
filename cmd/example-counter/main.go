@@ -102,9 +102,11 @@ func counter(ctx *gift.Context) gift.View {
 	count := ctx.State("count", 0)
 	n := ctx.Read(count)
 
-	// The ZStack fills the window: a Box is greedy on every bounded axis, and
-	// a ZStack bounds both. The panel is centred on top of it.
-	return ui.ZStack(ui.Box().Background(ui.ColorBackground), ui.VStack(
+	// [ui.Window] fills the window with ColorBackground and puts the panel on
+	// top of it. gift paints no background of its own — see ui.Window for why
+	// that is the application's obligation — and this line is the whole of
+	// meeting it.
+	return ui.Window(ui.VStack(
 		// No Spacer between the two: a flexible child would stretch this row
 		// to the full window width and take the panel with it, and a panel
 		// that is as wide as the window is not the counter of section 4.

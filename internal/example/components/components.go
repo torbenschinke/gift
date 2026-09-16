@@ -96,16 +96,20 @@ func Get(name string) (Scene, bool) {
 }
 
 // page wraps a scene in the window background and a margin, which is what
-// makes a golden of a component a golden of the component: without the fill
-// the frame is whatever [gifttest.Options.Background] happens to be, and a
-// dark theme scene on a white clear colour tells nobody anything.
+// makes a golden of a component a golden of the component and of nothing else.
+//
+// It is [ui.Window], the same one line an application writes, and that is the
+// point: the harness contributes no pixel to a golden, so the fill behind a
+// component in a picture has to come from the view tree exactly as it does in
+// a window. It used to be able to come from a gifttest option instead, and
+// that option is why four demo screens with no background at all had eight
+// green goldens.
 func page(size geom.Size, children ...gift.View) Scene {
 	return Scene{
-		View: ui.VStack(children...).
+		View: ui.Window(ui.VStack(children...).
 			Gap(12).
 			Padding(16).
-			Frame(size.W, size.H).
-			Background(ui.ColorBackground),
+			Frame(size.W, size.H)),
 		Size: size,
 	}
 }

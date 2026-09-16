@@ -82,7 +82,19 @@ const (
 // that they follow a later [SetTheme]; see [defaultButtonStyle] in button.go
 // for the full argument.
 var (
-	defaultFieldBackground = ColorSurface
+	// The face is [ColorControl] and not [ColorSurface], which is the one
+	// correction the role audit of WU-AF made to this file.
+	//
+	// A field is a control at rest, and every other control in this package
+	// — [ButtonView], the track of a [Slider], the tray of a
+	// [SegmentedControl], the off state of a [Toggle], a key of the
+	// [OnScreenKeyboard] — spells that [ColorControl]. A surface is what a
+	// control sits *on*: a [Card], a sheet, the bar of a [TabBar]. A field
+	// with a surface face and a field inside a card were therefore the same
+	// colour, and in the dark theme exactly the same colour, so the only
+	// thing separating the two was the hairline. That is the flattening of
+	// the two-level hierarchy the roles exist to express.
+	defaultFieldBackground = ColorControl
 	defaultFieldBorder     = Border{Width: 1, Color: ColorSeparator}
 	defaultFieldFocusRing  = Border{Width: 2, Color: ColorAccent}
 	defaultFieldRadius     = float32(6)
@@ -1237,7 +1249,7 @@ func (v TextFieldView) MaxWidth(f float32) TextFieldView { v.setMaxWidth(f); ret
 func (v TextFieldView) MaxHeight(f float32) TextFieldView { v.setMaxHeight(f); return v }
 
 // Background fills the bounds behind the text, replacing the themed
-// [ColorSurface].
+// [ColorControl].
 func (v TextFieldView) Background(b Background) TextFieldView { v.setBackgroundSpec(b); return v }
 
 // Border strokes the inside of the bounds, replacing the themed hairline.

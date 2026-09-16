@@ -65,31 +65,25 @@ type Options struct {
 	// glyph masks and thumbnails inside it.
 	Density float64
 
-	// Background is the colour a golden image is rendered onto, behind
-	// everything the application draws. The zero value means opaque white.
+	// There is deliberately no Background field here any more.
 	//
-	// It exists because gift has no concept of a window background: a view
-	// that wants one draws it, and a view that does not leaves whatever the
-	// platform cleared the screen to. A golden image has to pick something,
-	// and picking transparent black would compare the alpha channel of every
-	// untouched pixel and render dark text invisible. White is the choice
-	// that makes a default styled application legible; an application with a
-	// dark design sets this to its own colour.
+	// There used to be one, and it defaulted to opaque white. It meant that
+	// every golden image this package produced was a picture of the
+	// application *plus one rectangle the application never painted* — and
+	// that is the one thing a golden must never contain, because it is
+	// precisely the thing a golden cannot report. Four demo screens shipped
+	// with thirty to forty per cent of their pixels at {0, 0, 0, 0} while
+	// twelve goldens of those very screens were green.
 	//
-	// A semantic colour is accepted and is resolved against [Options.Theme],
-	// so the obvious thing to write next to a dark theme works:
+	// The harness now clears to transparent black, which is exactly what
+	// Ebitengine hands a real window at the top of every Draw; see the
+	// project plan, section 6. A view that wants a background paints one, and
+	// [ui.Window] is how an application says so in one line. A test whose
+	// subject is a component rather than a window wraps it the same way:
 	//
-	//	gifttest.Options{Theme: ui.DarkTheme(), Background: ui.ColorBackground}
+	//	gifttest.New(t, gifttest.Options{View: ui.Window(card), Theme: ui.DarkTheme()})
 	//
-	// It is resolved rather than documented as "must be literal", because this
-	// field sits three lines below Theme and an unresolved colour would not
-	// have produced an error — it would have produced a golden cleared to
-	// transparent cyan, which is what {0, 255, 255, 0} is and what this field
-	// used to hand to Ebitengine's Fill.
-	//
-	// [ui.ColorClear] resolves to fully transparent, which is a legal thing to
-	// ask for here and means "compare the alpha channel too".
-	Background render.Color
+	// [Harness.AssertOpaque] is the assertion that the obligation was met.
 
 	// Theme is the colour theme the views under test resolve their semantic
 	// colours against, for the duration of the test.
@@ -168,7 +162,6 @@ type Harness struct {
 	density   float32
 	now       time.Duration
 	maxFrames int
-	bg        render.Color
 
 	// list is the display list of the most recent paint. It is borrowed from
 	// the App and is valid until the next frame, which is why every accessor
@@ -217,10 +210,6 @@ func New(t TB, opts Options) *Harness {
 		maxFrames = DefaultMaxFrames
 	}
 
-	bg := opts.Background
-	if bg == (render.Color{}) {
-		bg = render.RGB(255, 255, 255)
-	}
 	// Before the App exists, because the first Settle below already builds and
 	// therefore already resolves both. See [Options.Theme] and [Options.Font].
 	if opts.Theme != (ui.Theme{}) {
@@ -233,17 +222,11 @@ func New(t TB, opts Options) *Harness {
 		ui.SetDefaultFont(opts.Font)
 		t.Cleanup(func() { ui.SetDefaultFont(prev) })
 	}
-	// After the theme is installed, and resolved rather than required to be
-	// literal; see [Options.Background]. The zero test above is safe in front
-	// of it because no semantic colour is the zero Color — the encoding puts a
-	// -1 in the red channel.
-	bg = ui.ResolveColor(bg)
 	h := &Harness{
 		t:         t,
 		app:       gift.New(gift.Options{Root: root, Logger: opts.Logger}),
 		size:      size,
 		maxFrames: maxFrames,
-		bg:        bg,
 	}
 	// Before the first Settle, so that the first build and the first layout
 	// already see the density and no test has to settle twice to get the

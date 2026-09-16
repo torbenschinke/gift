@@ -78,12 +78,16 @@ func (h *Harness) Image() image.Image {
 		return nil
 	}
 	dst := eb.NewImage(w, hgt)
-	// Cleared to a known colour, never left transparent: a golden of a scene
-	// with a transparent background would compare the alpha of every pixel
-	// the application did not touch, and dark text on it would be invisible
-	// to a reviewer. See [Options.Background]. The real window is cleared
-	// every frame by Ebitengine anyway; see the project plan, section 6.
-	dst.Fill(clearFor(h.bg))
+	// Not cleared to anything. A fresh Ebitengine image is transparent black,
+	// and transparent black is exactly what Ebitengine hands a real window at
+	// the top of every Draw; see the project plan, section 6. So the only
+	// pixels in this image are pixels the application painted.
+	//
+	// This used to be a Fill with [Options.Background], defaulting to opaque
+	// white, and that one line made every golden in this module a picture of
+	// the application plus a rectangle it never drew. It hid the fact that
+	// four demo screens had no window background at all. An application paints
+	// its own — see ui.Window — and [Harness.AssertOpaque] is the gate.
 
 	r.SetTarget(dst)
 	// BeginFrame, then paint, then submit: exactly the order backend.Run

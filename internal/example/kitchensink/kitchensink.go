@@ -142,7 +142,13 @@ func Screen(ctx *gift.Context) gift.View {
 	// The keyboard is an overlay over the whole application and is the last
 	// child, so it is drawn last and hit tested first. It draws nothing at all
 	// while no field has the focus.
-	return ui.ZStack(
+	//
+	// [ui.Window] is the first thing here and not a detail: gift paints
+	// nothing an application did not ask for, so without it the gaps between
+	// the cards are transparent black — which is what this demo shipped as,
+	// on thirty to forty per cent of its pixels, while every golden of it
+	// looked right because the harness cleared its own canvas. See ui.Window.
+	return ui.Window(
 		ui.Modal(body, alert).
 			Presented(st.alert.Get()).
 			OnDismiss(func() { st.alert.Set(false) }),

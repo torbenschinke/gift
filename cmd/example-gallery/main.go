@@ -265,7 +265,12 @@ func browser(ctx *gift.Context, g *ui.Gallery) gift.View {
 		arrangement = ui.Justified().RowHeight(200).Gap(10)
 	}
 
-	return ui.VStack(
+	// A greedy plate under everything, which is what ui.Window does for a
+	// demo that uses the semantic palette. This one has a palette of its own
+	// — it is a photo viewer and the ink is part of the design — so it spells
+	// the same idiom with its own colour. gift paints no background; see
+	// gift.Options.Root.
+	return ui.ZStack(ui.Box().Background(ink), ui.VStack(
 		toolbar(ctx, g, justified, ctx.Read(picked)),
 		ui.ImageGallery(g).
 			Layout(arrangement).
@@ -277,7 +282,7 @@ func browser(ctx *gift.Context, g *ui.Gallery) gift.View {
 			Background(ink).
 			OnSelect(func(id asset.ID) { picked.Set(id) }).
 			Flex(1),
-	).Background(ink)
+	).Background(ink))
 }
 
 func toolbar(ctx *gift.Context, g *ui.Gallery, justified *gift.State[bool], picked asset.ID) gift.View {

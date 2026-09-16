@@ -46,11 +46,10 @@ func mountTheme(t *testing.T, size geom.Size, theme ui.Theme) *gifttest.Harness 
 // mountOptions is what mountTheme hands the harness, separated out for the one
 // test that has to change a field of it.
 //
-// [gifttest.Options.Background] is the colour behind everything the
-// application paints, and this demo paints no window background of its own, so
-// it is the colour of every gap between its cards. It is named here as the
-// window colour of the theme under test rather than left to default to white,
-// which would put a dark screen on a white sheet.
+// There is no background option in it, and that is deliberate: this demo
+// paints its own window background through [ui.Window], the harness
+// contributes no pixel of its own, and every golden below is therefore a
+// picture of the application and of nothing else.
 func mountOptions(t *testing.T, size geom.Size, theme ui.Theme) gifttest.Options {
 	t.Helper()
 	var err error
@@ -63,10 +62,9 @@ func mountOptions(t *testing.T, size geom.Size, theme ui.Theme) gifttest.Options
 		// The same typeface example.LoadFont installs in main, named here
 		// rather than inherited, so that these tests do not depend on what
 		// some other test in the process left as the default.
-		Font:       ui.MustFont(ui.FontQuery{Family: inter.Family}),
-		Size:       size,
-		Background: ui.ColorBackground,
-		Root:       Screen,
+		Font: ui.MustFont(ui.FontQuery{Family: inter.Family}),
+		Size: size,
+		Root: Screen,
 	}
 }
 
@@ -626,6 +624,37 @@ func TestEveryTabLooksTheWayItLooks(t *testing.T) {
 	}
 }
 
+// TestEveryTabOfTheDemoPaintsAWindowBackgroundWithNoHolesInIt is the pixel
+// gate on the one obligation gift puts on an application: the window
+// background.
+//
+// # What it would have caught
+//
+// This demo shipped with no background at all. Thirty to forty per cent of the
+// pixels of every one of its four screens were {0, 0, 0, 0} — the gaps between
+// the cards, read back from the framebuffer of the running program — and the
+// eight goldens next door were all green throughout, because the test harness
+// filled its canvas with a colour of its own before rendering. A golden of a
+// scene with holes in it is a perfectly stable golden; that is precisely why
+// this assertion cannot be a golden and has to be its own.
+//
+// It runs over both themes and all four tabs, because a background is painted
+// by one line in one place and a screen that escapes that line escapes it
+// completely.
+func TestEveryTabOfTheDemoPaintsAWindowBackgroundWithNoHolesInIt(t *testing.T) {
+	for _, theme := range []struct {
+		name string
+		t    ui.Theme
+	}{{"light", ui.LightTheme()}, {"dark", ui.DarkTheme()}} {
+		h := mountTheme(t, goldenSize, theme.t)
+		for _, tab := range []string{"Home", "Settings", "List", "Form"} {
+			tabButton(h, tab).Click()
+			warm(h)
+			h.AssertOpaque()
+		}
+	}
+}
+
 // TestTheThemeSwitchRebuildsEveryColourOnTheScreen replaces a test that
 // counted fills by colour, and it is worth recording why that one was not good
 // enough, because its own author said so in his report before the defect it
@@ -653,16 +682,11 @@ func TestEveryTabLooksTheWayItLooks(t *testing.T) {
 // TestAMemoisedSubtreeIsRepaintedByAThemeSwitch in the ui package.
 func TestTheThemeSwitchRebuildsEveryColourOnTheScreen(t *testing.T) {
 	opts := mountOptions(t, goldenSize, ui.DarkTheme())
-	// The clear colour of the *end* state, as a literal, and the one thing in
-	// this test that has to be said out loud. gifttest clears the frame once,
-	// at mount, and this demo paints no window background of its own — so the
-	// pixels between its cards are the harness's clear colour and nothing the
-	// theme switch can reach. Leaving it at the dark theme's would make this
-	// comparison fail for a reason that has nothing to do with the claim.
-	// (That the demo has no background of its own is a defect in the demo and
-	// is reported rather than fixed here; on a real window those gaps are
-	// whatever Ebitengine cleared to.)
-	opts.Background = ui.LightTheme().Color(ui.ColorBackground)
+	// Nothing has to be said about a clear colour any more, and that is the
+	// point of this paragraph. The harness contributes no pixel; the demo
+	// paints its own window background through [ui.Window]; so the gaps
+	// between the cards are part of what the theme switch reaches, and the
+	// golden below compares a screen that is entirely the application's.
 	h := gifttest.New(t, opts)
 	App = h.App()
 	t.Cleanup(func() { App = nil })

@@ -49,10 +49,12 @@ func TestImageGolden(t *testing.T) {
 	defer ui.SetImagePipeline(nil)
 
 	h := gifttest.New(t, gifttest.Options{
-		View: ui.Image(asset.File(path)).Key("picture").Size(64).Frame(64, 64).
-			Fit(ui.FitStretch).Placeholder(ui.RGB(0, 0, 0)),
-		Size:       geom.Sz(96, 96),
-		Background: ui.RGB(20, 24, 34),
+		View: ui.ZStack(
+			ui.Box().Background(ui.RGB(20, 24, 34)),
+			ui.Image(asset.File(path)).Key("picture").Size(64).Frame(64, 64).
+				Fit(ui.FitStretch).Placeholder(ui.RGB(0, 0, 0)),
+		),
+		Size: geom.Sz(96, 96),
 	})
 	del.waitFor(t, 1)
 	del.drain()

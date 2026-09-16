@@ -350,14 +350,13 @@ func focusRingScene(t *testing.T) *gifttest.Harness {
 	t.Helper()
 	ed := ui.NewTextEditor("name")
 	return gifttest.New(t, gifttest.Options{
-		View: ui.ZStack(ui.Box(), ui.VStack(
+		View: ui.Window(ui.VStack(
 			ui.Button(ui.Text("Save"), func() {}).Key("save"),
 			ui.TextField(ed).Frame(180, geom.Unbounded()).Key("field"),
 		).Gap(12).Padding(16)),
-		Size:       geom.Sz(260, 140),
-		Theme:      ui.LightTheme(),
-		Font:       ui.MustFont(ui.FontQuery{Family: inter.Family}),
-		Background: ui.ColorBackground,
+		Size:  geom.Sz(260, 140),
+		Theme: ui.LightTheme(),
+		Font:  ui.MustFont(ui.FontQuery{Family: inter.Family}),
 	})
 }
 

@@ -68,22 +68,20 @@ func TestAMemoisedSubtreeIsRepaintedByAThemeSwitch(t *testing.T) {
 
 	// Born dark: the reference.
 	born := gifttest.New(t, gifttest.Options{
-		View:       memoisedScene(),
-		Size:       geom.Sz(300, 200),
-		Theme:      dark,
-		Font:       font,
-		Background: ui.ColorBackground,
+		View:  memoisedScene(),
+		Size:  geom.Sz(300, 200),
+		Theme: dark,
+		Font:  font,
 	})
-	// Born light, switched at run time. The clear colour is the dark theme's,
-	// as a literal, because the harness clears once at mount and the scene
-	// paints its own background over all of it anyway; naming it makes the two
-	// frames comparable rather than different by a border nobody painted.
+	// Born light, switched at run time. Both scenes paint their own window
+	// background over the whole 300 by 200 viewport — the harness paints
+	// nothing at all — so the two frames differ in the theme and in nothing
+	// else, which is what makes the comparison below mean something.
 	switched := gifttest.New(t, gifttest.Options{
-		View:       memoisedScene(),
-		Size:       geom.Sz(300, 200),
-		Theme:      light,
-		Font:       font,
-		Background: dark.Color(ui.ColorBackground),
+		View:  memoisedScene(),
+		Size:  geom.Sz(300, 200),
+		Theme: light,
+		Font:  font,
 	})
 	if n := opsInColour(switched, light.Color(ui.ColorSurface)); n == 0 {
 		t.Fatal("the light theme's surface colour is nowhere in the frame; the fixture is wrong")

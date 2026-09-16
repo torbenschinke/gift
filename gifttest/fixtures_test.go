@@ -60,7 +60,11 @@ func counter(ctx *gift.Context) gift.View {
 	count := ctx.State("count", 0)
 	n := ctx.Read(count)
 
-	return ui.VStack(
+	// A window, not a bare stack: an application paints its own background —
+	// see [ui.Window] — and this fixture stands in for an application, so the
+	// goldens of it are pictures of a whole window rather than of a stack on
+	// a colour the harness supplied.
+	return ui.Window(ui.VStack(
 		ui.Text("Counter").FontSize(20),
 		ui.Text(strconv.Itoa(n)).Key("count").FontSize(32),
 		ui.HStack(
@@ -69,7 +73,7 @@ func counter(ctx *gift.Context) gift.View {
 			ui.Button(ui.Text("+"), func() { count.Set(count.Get() + 1) }).
 				Key("plus").Frame(56, 44),
 		).Gap(8),
-	).Gap(16).Padding(24)
+	).Gap(16).Padding(24))
 }
 
 // --- a recorder that stands in for *testing.T -------------------------------

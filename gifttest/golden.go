@@ -43,8 +43,8 @@ import (
 // pixel fails the comparison, and the test states the margin by which it does.
 const GoldenTolerance = 4
 
-// clearFor converts the harness background into the premultiplied eight bit
-// colour Ebitengine's Fill takes. [render.Color] is already premultiplied and
+// clearFor converts a [render.Color] into the premultiplied eight bit colour
+// an image comparison works in. [render.Color] is already premultiplied and
 // already in the zero to one range, so this is a scale and nothing else.
 func clearFor(c render.Color) color.RGBA {
 	to8 := func(v float32) uint8 {
@@ -286,8 +286,7 @@ func writePNG(path string, img image.Image) error {
 // pixels the frame did not touch.
 //
 // The colour is a [render.Color], premultiplied like everything else in gift,
-// so a test names the colour it gave [Options.Background] rather than
-// converting one.
+// so a test names the colour its view painted rather than converting one.
 //
 // Without the giftgpu tag there are no pixels. It then skips, or fails when
 // GIFT_REQUIRE_GOLDEN is set, exactly like [Harness.AssertGolden].
@@ -312,4 +311,59 @@ func (h *Harness) AssertPixel(p geom.Point, want render.Color) {
 	h.t.Errorf("gifttest: the pixel at (%g, %g) is {%d %d %d %d}, want {%d %d %d %d} "+
 		"within %d per channel",
 		p.X, p.Y, got.R, got.G, got.B, got.A, exp.R, exp.G, exp.B, exp.A, GoldenTolerance)
+}
+
+// AssertOpaque fails unless every pixel of the framebuffer is fully opaque.
+//
+// # What it is for
+//
+// It is the gate on the one obligation gift puts on an application and
+// nothing in gift can meet for it: the window background. gift paints exactly
+// what the view tree says, Ebitengine hands a real window a transparent black
+// screen at the top of every Draw — the project plan, section 6 — and an
+// application that paints no background therefore ships a window with holes in
+// it. On a desktop that is a composited hole; on a kiosk it is whatever was in
+// the framebuffer before. [ui.Window] is the one-line answer, and this is the
+// assertion that it was written.
+//
+// It is deliberately an alpha test and not a comparison against a colour. The
+// defect is an *absent* pixel, not a wrong one, and no golden image can report
+// it: a golden of a scene with holes in it is a perfectly stable golden. This
+// module shipped twelve of those.
+//
+// The failure names the first offending pixel in scan order and how many there
+// are in total, because one is a rounding artefact at an edge and half a
+// million is a missing background.
+//
+// Without the giftgpu tag there are no pixels. It then skips, or fails when
+// GIFT_REQUIRE_GOLDEN is set, exactly like [Harness.AssertGolden].
+func (h *Harness) AssertOpaque() {
+	h.t.Helper()
+	img, ok := h.framebuffer("AssertOpaque")
+	if !ok {
+		return
+	}
+	b := img.Bounds()
+	holes := 0
+	firstX, firstY := 0, 0
+	var firstPx color.RGBA
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if _, _, _, a := img.At(x, y).RGBA(); a >= 0xffff {
+				continue
+			}
+			if holes == 0 {
+				firstX, firstY, firstPx = x-b.Min.X, y-b.Min.Y, rgba8(img.At(x, y))
+			}
+			holes++
+		}
+	}
+	if holes == 0 {
+		return
+	}
+	h.t.Errorf("gifttest: %d of %d pixels are not fully opaque; the first is (%d, %d) "+
+		"at {%d %d %d %d}.\nA gift application paints its own window background: "+
+		"wrap the root view in ui.Window.",
+		holes, b.Dx()*b.Dy(), firstX, firstY,
+		firstPx.R, firstPx.G, firstPx.B, firstPx.A)
 }

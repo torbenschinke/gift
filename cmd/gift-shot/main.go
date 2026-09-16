@@ -53,7 +53,6 @@ import (
 	"flag"
 	"fmt"
 	"image"
-	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -67,7 +66,6 @@ import (
 	"github.com/torbenschinke/gift/internal/example"
 	"github.com/torbenschinke/gift/internal/example/components"
 	"github.com/torbenschinke/gift/internal/example/kitchensink"
-	"github.com/torbenschinke/gift/render"
 	"github.com/torbenschinke/gift/ui"
 )
 
@@ -144,10 +142,14 @@ func shoot() error {
 	}
 	opts.Density = *density
 	opts.Font = ui.MustFont(ui.FontQuery{Family: inter.Family})
-	// The window background of the theme, so that a dark scene is not a dark
-	// rectangle on a white sheet. It is resolved against opts.Theme by the
-	// harness; see gifttest.Options.Background.
-	opts.Background = ui.ColorBackground
+	// No background is set here, and there is no field for one any more.
+	//
+	// There was, and it filled the image with ui.ColorBackground before the
+	// scene was rendered. Every golden and every shot this tool produced was
+	// therefore a picture of the application *plus a rectangle the
+	// application never painted* — in a tool built to end exactly that class
+	// of reconstruction. The scenes paint their own window background now;
+	// see ui.Window.
 
 	tb := &shotTB{}
 	var h *gifttest.Harness
@@ -255,14 +257,11 @@ func renderPNG(h *gifttest.Harness, r *backend.Renderer) ([]byte, error) {
 	// the golden path. Eight frames, because this demo needs more than one
 	// budget's worth of icons; see the -icons trace of cmd/example-kitchensink.
 	for range 8 {
-		// Cleared to the theme's window colour on every frame, never left
-		// transparent. gift has no concept of a window background — a view
-		// that wants one draws it — so the pixels no view touched would
-		// otherwise be transparent black, and a viewer that shows
-		// transparency as white turns a dark theme shot into a light one with
-		// invisible text. This is the same clear gifttest performs for a
-		// golden, for the same reason.
-		dst.Fill(clearFor(ui.ResolveColor(ui.ColorBackground)))
+		// Nothing is filled in first. A fresh Ebitengine image is transparent
+		// black, which is what Ebitengine hands a real window at the top of
+		// every Draw, so this file's output is the application and nothing
+		// else. A shot with holes in it is a scene that forgot ui.Window, and
+		// seeing that is the point.
 		r.SetTarget(dst)
 		r.BeginFrame(geom.Sz(float32(w), float32(hgt)))
 		r.Submit(h.App().Paint())
@@ -362,25 +361,6 @@ func (t *shotTB) catch(f func()) (err error) {
 	}()
 	f()
 	return nil
-}
-
-// clearFor converts a premultiplied [render.Color] into the eight bit colour
-// Ebitengine's Fill takes. It is the same conversion gifttest performs before
-// it renders a golden, and it is duplicated rather than exported because three
-// lines of arithmetic are a smaller dependency than a new public function on a
-// test package.
-func clearFor(c render.Color) color.RGBA {
-	to8 := func(v float32) uint8 {
-		switch {
-		case v <= 0:
-			return 0
-		case v >= 1:
-			return 255
-		default:
-			return uint8(v*255 + 0.5)
-		}
-	}
-	return color.RGBA{to8(c.R), to8(c.G), to8(c.B), to8(c.A)}
 }
 
 // encodePNG turns the RGBA bytes Ebitengine read back into a PNG.

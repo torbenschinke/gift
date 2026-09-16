@@ -218,25 +218,50 @@ type ThemeInfo struct {
 	Roles map[string][4]uint8 `json:"roles"`
 }
 
-// themeRoles is the table /diag reports. It is written out rather than derived
-// because the role enum is unexported in ui, and a debugging tool that
-// silently omitted a role would be the worst possible place to learn that.
-var themeRoles = []struct {
+// themeRoles is the table /diag reports and /theme accepts: every semantic
+// colour of the ui package, under the lowerCamel spelling this interface uses
+// in JSON.
+//
+// It is derived from [ui.SemanticColors] and is deliberately no longer a
+// literal slice. It used to be one, with the comment "it is written out rather
+// than derived because the role enum is unexported in ui, and a debugging tool
+// that silently omitted a role would be the worst possible place to learn
+// that" — which named the hazard exactly and then walked into it, because
+// nothing checked the list against the enum. A role added to ui would have
+// been absent from /diag and unreachable from /theme, so the one tool that can
+// prove a role is used would have reported it as unused. ui exports the
+// enumeration now; see TestEveryColourRoleOfTheUIPackageIsReachable.
+var themeRoles = buildThemeRoles()
+
+type themeRole struct {
 	name string
 	c    ui.Color
-}{
-	{"label", ui.ColorLabel},
-	{"secondaryLabel", ui.ColorSecondaryLabel},
-	{"background", ui.ColorBackground},
-	{"surface", ui.ColorSurface},
-	{"separator", ui.ColorSeparator},
-	{"accent", ui.ColorAccent},
-	{"onAccent", ui.ColorOnAccent},
-	{"control", ui.ColorControl},
-	{"controlHover", ui.ColorControlHover},
-	{"controlPressed", ui.ColorControlPressed},
-	{"controlDisabled", ui.ColorControlDisabled},
-	{"danger", ui.ColorDanger},
+}
+
+func buildThemeRoles() []themeRole {
+	all := ui.SemanticColors()
+	out := make([]themeRole, 0, len(all))
+	for _, c := range all {
+		out = append(out, themeRole{jsonRoleName(c.Name), c.Color})
+	}
+	return out
+}
+
+// jsonRoleName turns the Go identifier of a semantic colour into the spelling
+// this interface uses on the wire: "ColorSecondaryLabel" becomes
+// "secondaryLabel".
+//
+// The mapping is mechanical rather than a second table, for the reason
+// themeRoles is derived: a table is a thing that falls behind. A name that
+// does not start with "Color" is passed through with its first letter lowered,
+// so an unexpected addition is still reachable under a name rather than
+// silently dropped.
+func jsonRoleName(goName string) string {
+	s := strings.TrimPrefix(goName, "Color")
+	if s == "" {
+		return goName
+	}
+	return strings.ToLower(s[:1]) + s[1:]
 }
 
 // themeInfo reads the installed theme. It runs on the UI goroutine, like

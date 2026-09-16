@@ -117,10 +117,25 @@ var (
 	// text: captions, units, hints. It is legible and visibly quieter.
 	ColorSecondaryLabel = semanticColor(roleSecondaryLabel)
 
-	// ColorBackground is the colour behind everything, the window itself.
+	// ColorBackground is the colour of the page: the window itself, behind
+	// everything else.
+	//
+	// Exactly one thing in this package paints it, [Window], and an
+	// application that never calls Window never puts it on the screen — gift
+	// paints no background of its own. For three work units nothing called
+	// it, so tinting this role magenta at run time changed zero pixels on all
+	// four screens of cmd/example-kitchensink while every other role changed
+	// thousands. It was not a redundant role; it was an unpainted one.
 	ColorBackground = semanticColor(roleBackground)
 	// ColorSurface is the colour of a panel, card or sheet raised above
-	// [ColorBackground].
+	// [ColorBackground]: a [Card], a [Modal] sheet, the bar of a [TabBar] or
+	// a [NavigationStack], the keyboard's panel.
+	//
+	// The two are a hierarchy and not two names for "light grey". A surface
+	// is what sits *on* the page, so a view that fills the window with this
+	// role has flattened the hierarchy rather than used it — and a control
+	// wears [ColorControl], not this, which is the correction the role audit
+	// made to [TextField].
 	ColorSurface = semanticColor(roleSurface)
 	// ColorSeparator is the colour of a hairline: a border, a divider, the
 	// edge of a control.
@@ -545,4 +560,52 @@ func resolveShadow(s Shadow) Shadow {
 func resolveMaterial(m render.Material) render.Material {
 	m.Glass.Tint = ResolveColor(m.Glass.Tint)
 	return m
+}
+
+// --- enumerating the palette --------------------------------------------------
+
+// NamedColor pairs one semantic colour with the name it is exported under.
+type NamedColor struct {
+	// Name is the Go identifier, for example "ColorAccent".
+	Name string
+	// Color is the semantic colour itself, ready for [Theme.Color] or
+	// [ResolveColor].
+	Color Color
+}
+
+// SemanticColors returns every semantic colour of this package that a theme
+// assigns a value to, in declaration order.
+//
+// [ColorClear] is not in it. It is transparency rather than a palette entry —
+// [Theme.With] refuses it — so a caller iterating the palette would have to
+// special-case it, and every caller that forgot would report a thirteenth
+// colour that no theme can change.
+//
+// # Why this is exported
+//
+// Because the alternative is a hand-maintained list, and this module has
+// already paid for one of those twice. Review gate 13 found [ColorDanger]
+// outside both palette tests, so making it fully transparent in both themes
+// left the suite green; the role audit of WU-AF found the same shape again in
+// gift/auto, whose /diag route listed the roles it reports as a literal slice
+// that nothing checked for completeness. A list that is derived cannot fall
+// behind an enum that grows, and a debugging tool that silently omits a role
+// is the worst possible place to learn that it did.
+//
+// It is a small enough thing to keep for ever, and it is the right shape for
+// an application that offers a theme editor, a diagnostics overlay, or a
+// contrast check of its own palette:
+//
+//	for _, c := range ui.SemanticColors() {
+//		fmt.Println(c.Name, ui.CurrentTheme().Color(c.Color))
+//	}
+//
+// The returned slice is freshly allocated, so a caller may keep it and sort
+// it. Do not call it per frame.
+func SemanticColors() []NamedColor {
+	out := make([]NamedColor, 0, numColorRoles)
+	for r := roleClear + 1; r < numColorRoles; r++ {
+		out = append(out, NamedColor{Name: roleNames[r], Color: semanticColor(r)})
+	}
+	return out
 }

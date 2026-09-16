@@ -50,15 +50,15 @@ func TestEveryComponentLooksTheWayItLooks(t *testing.T) {
 				Size:  sc.Size,
 				Theme: theme.t,
 				Font:  ui.MustFont(ui.FontQuery{Family: inter.Family}),
-				// The scene paints the window colour itself, so the clear
-				// colour only decides what a defect in that fill would look
-				// like. Naming it makes the two agree.
-				Background: ui.ColorBackground,
 			})
 			// A scene that overflows is a scene composed at the wrong size,
 			// and a golden of one would pin the mistake. This is the assertion
 			// that keeps the fixtures honest, and it runs without a GPU.
 			h.AssertNoOverflow()
+			// And no holes: a scene is a window, it paints its own
+			// background through [ui.Window], and a golden cannot report a
+			// pixel that is missing rather than wrong.
+			h.AssertOpaque()
 			h.Warm()
 			h.AssertGolden("component-" + name + "-" + theme.name)
 		}

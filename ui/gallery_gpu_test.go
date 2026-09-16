@@ -62,8 +62,7 @@ func TestGalleryRendersOnGPU(t *testing.T) {
 				Background(ui.RGB(245, 246, 248)).
 				Flex(1).Key("gallery"),
 		).Frame(320, 240),
-		Size:       geom.Sz(320, 240),
-		Background: ui.RGB(255, 255, 255),
+		Size: geom.Sz(320, 240),
 	})
 
 	// Something was drawn at all, before any pixel comparison: a golden that

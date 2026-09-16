@@ -21,11 +21,17 @@ import (
 // display it is on: the density changes the pixels, never the program.
 func densityLabel() gifttest.Options {
 	return gifttest.Options{
-		View: ui.VStack(
-			ui.Text("Density").Key("label").FontSize(24).Foreground(ui.RGB(240, 242, 246)),
-		).Padding(12).Background(ui.RGB(20, 24, 34)),
-		Size:       geom.Sz(160, 60),
-		Background: ui.RGB(20, 24, 34),
+		// The plate is part of the scene and not part of the harness: the
+		// harness contributes no pixel to any image in this module, so the
+		// view under test paints its own background exactly as a window
+		// would. See [ui.Window].
+		View: ui.ZStack(
+			ui.Box().Background(ui.RGB(20, 24, 34)),
+			ui.VStack(
+				ui.Text("Density").Key("label").FontSize(24).Foreground(ui.RGB(240, 242, 246)),
+			).Padding(12),
+		),
+		Size: geom.Sz(160, 60),
 	}
 }
 
@@ -236,11 +242,13 @@ func TestDensityOneIsBitIdenticalToTheCommittedGoldens(t *testing.T) {
 	want := readPNG(t, "testdata/glyphs.png")
 
 	h := gifttest.New(t, gifttest.Options{
-		View: ui.VStack(
-			ui.Text("Glyphs").Key("label").FontSize(24).Foreground(ui.RGB(240, 242, 246)),
-		).Padding(12).Background(ui.RGB(20, 24, 34)),
-		Size:       geom.Sz(160, 60),
-		Background: ui.RGB(20, 24, 34),
+		View: ui.ZStack(
+			ui.Box().Background(ui.RGB(20, 24, 34)),
+			ui.VStack(
+				ui.Text("Glyphs").Key("label").FontSize(24).Foreground(ui.RGB(240, 242, 246)),
+			).Padding(12),
+		),
+		Size: geom.Sz(160, 60),
 	})
 	// The skip gate for a build without giftgpu, and a real assertion rather
 	// than a golden call: [gifttest.Harness.AssertPixel] never writes a file,
@@ -334,14 +342,14 @@ func TestShapesAreBakedInDevicePixels(t *testing.T) {
 	scene := func() gifttest.Options {
 		return gifttest.Options{
 			View: ui.ZStack(
+				ui.Box().Background(ui.RGB(40, 44, 56)),
 				ui.Box().Key("card").Frame(72, 40).
 					Background(ui.RGB(240, 242, 246)).
 					CornerRadius(10).
 					Border(ui.Border{Width: 3, Color: ui.RGB(30, 90, 200)}).
 					Shadow(ui.Shadow{Blur: 12, OffsetY: 3, Color: ui.RGBA(0, 0, 0, 140)}),
 			).Frame(120, 80),
-			Size:       geom.Sz(120, 80),
-			Background: ui.RGB(40, 44, 56),
+			Size: geom.Sz(120, 80),
 		}
 	}
 	h2 := gifttest.New(t, withDensity(scene(), 2))
@@ -423,7 +431,7 @@ func boxAverage(img image.Image, x, y int) (r, g, bl uint32) {
 func TestGlassAtTwoX(t *testing.T) {
 	scene := func() gifttest.Options {
 		return gifttest.Options{
-			View: glassScene(ui.Full), Size: geom.Sz(120, 80), Background: panelBG,
+			View: glassScene(ui.Full), Size: geom.Sz(120, 80),
 		}
 	}
 	// The golden is of the *Reduced* level and the blur profile below is of
@@ -434,7 +442,7 @@ func TestGlassAtTwoX(t *testing.T) {
 	// below for what the irreproducibility actually was and where it was
 	// fixed.
 	red := gifttest.New(t, withDensity(gifttest.Options{
-		View: glassScene(ui.Reduced), Size: geom.Sz(120, 80), Background: panelBG,
+		View: glassScene(ui.Reduced), Size: geom.Sz(120, 80),
 	}, 2))
 	red.Find(gifttest.ByKey("panel")).AssertMaterial(render.MaterialGlass)
 	red.AssertGolden("density-glass-2x")

@@ -46,8 +46,7 @@ func TestImageViewDrawsTheRealPixels(t *testing.T) {
 	h := gifttest.New(t, gifttest.Options{
 		View: ui.Image(asset.File(path)).Size(64).Frame(64, 64).
 			Fit(ui.FitStretch).Placeholder(ui.RGB(0, 0, 0)),
-		Size:       geom.Sz(64, 64),
-		Background: ui.RGB(0, 0, 255),
+		Size: geom.Sz(64, 64),
 	})
 	del.waitFor(t, 1)
 	del.drain()
@@ -168,8 +167,7 @@ func TestGalleryWithRealPicturesGolden(t *testing.T) {
 			Padding(8).
 			Background(ui.RGB(245, 246, 248)).
 			Frame(320, 240).Key("gallery"),
-		Size:       geom.Sz(320, 240),
-		Background: ui.RGB(255, 255, 255),
+		Size: geom.Sz(320, 240),
 	})
 
 	settlePictures(t, h, g, del)

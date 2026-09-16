@@ -22,9 +22,14 @@ import (
 // because they say *why* something is wrong, then the goldens, which only ever
 // say that something changed.
 
-// panelBG is the colour behind the glass panels, and deliberately not white:
-// a background the frame has to preserve has to be distinguishable from the
-// transparent black a lost one would leave.
+// panelBG is the colour [glassScene] paints behind the glass panels, and
+// deliberately not white: a background the frame has to preserve has to be
+// distinguishable from the transparent black a lost one would leave.
+//
+// It is painted by the scene and not by the harness. The harness contributes
+// no pixel to any image in this module — see the note where Options.Background
+// used to be — so a test that needs something behind its subject puts it in
+// the view tree, which is where the application would have put it.
 var panelBG = ui.RGB(10, 200, 10)
 
 // glassScene is a panel over a patterned backdrop, which is the scene of the
@@ -32,11 +37,14 @@ var panelBG = ui.RGB(10, 200, 10)
 // blur, and margins the panel does not cover.
 func glassScene(q ui.GlassQuality) gift.View {
 	return ui.ZStack(
+		// The window background of this scene, which the scene itself paints:
+		// a greedy Box under everything, exactly as [ui.Window] does it.
+		ui.Box().Background(panelBG),
 		// The backdrop: a dark plate with a bright bar across it, so that a
 		// blur has an edge to smear and an unblurred sample has one to keep.
 		//
 		// It is deliberately smaller than the viewport. The margin it leaves
-		// is [Options.Background], so the golden itself is evidence that a
+		// is the panelBG plate above, so the golden itself is evidence that a
 		// frame containing a material composites onto the target instead of
 		// replacing it; see TestAFrameWithAMaterialDoesNotDisturbTheTarget.
 		ui.VStack(
@@ -55,7 +63,7 @@ func glassScene(q ui.GlassQuality) gift.View {
 // of the display list, so everything an application asked for is readable.
 func TestGlassIsVisibleToTheHarness(t *testing.T) {
 	h := gifttest.New(t, gifttest.Options{
-		View: glassScene(ui.Reduced), Size: geom.Sz(120, 80), Background: panelBG,
+		View: glassScene(ui.Reduced), Size: geom.Sz(120, 80),
 	})
 
 	panel := h.Find(gifttest.ByKey("panel"))
@@ -111,7 +119,7 @@ func TestGlassGolden(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := gifttest.New(t, gifttest.Options{
-				View: glassScene(c.q), Size: geom.Sz(120, 80), Background: panelBG,
+				View: glassScene(c.q), Size: geom.Sz(120, 80),
 			})
 			h.Find(gifttest.ByKey("panel")).AssertGlassQuality(c.q)
 			h.AssertGolden(c.name)
@@ -122,21 +130,23 @@ func TestGlassGolden(t *testing.T) {
 // TestAFrameWithAMaterialDoesNotDisturbTheTarget is the assertion the blit fix
 // is owed, stated on its own rather than folded into a golden.
 //
-// The scene draws a small panel in the middle of a large viewport and touches
-// nothing else. Every pixel outside it must still hold what the harness put
-// there, and that must be true whether or not the frame contained a material —
+// The scene draws a small panel in the middle of a large viewport over a plain
+// plate. Every pixel outside the panel must still hold the plate, and that
+// must be true whether or not the frame contained a material —
 // otherwise the same display list means two different things depending on
 // whether a glass panel happens to be present.
 func TestAFrameWithAMaterialDoesNotDisturbTheTarget(t *testing.T) {
-	// Deliberately transparent everywhere but the panel: nothing in the
-	// scene paints the margins, so anything there came from the target.
+	// A plate and a panel on it, and nothing else: every pixel outside the
+	// panel is the plate, and a blit that replaced the target instead of
+	// compositing onto it would take the plate with it.
 	view := ui.ZStack(
+		ui.Box().Background(panelBG),
 		ui.Box().Key("panel").Frame(40, 24).
 			Background(ui.Glass().Quality(ui.Reduced)).CornerRadius(8),
 	).Frame(120, 80)
 
 	h := gifttest.New(t, gifttest.Options{
-		View: view, Size: geom.Sz(120, 80), Background: panelBG,
+		View: view, Size: geom.Sz(120, 80),
 	})
 	h.Find(gifttest.ByKey("panel")).AssertMaterial(render.MaterialGlass)
 
@@ -151,12 +161,12 @@ func TestAFrameWithAMaterialDoesNotDisturbTheTarget(t *testing.T) {
 func TestShadowGolden(t *testing.T) {
 	h := gifttest.New(t, gifttest.Options{
 		View: ui.ZStack(
+			ui.Box().Background(ui.RGB(40, 44, 56)),
 			ui.Box().Key("card").Frame(72, 40).
 				Background(ui.RGB(240, 242, 246)).CornerRadius(10).
 				Shadow(ui.Shadow{Blur: 16, OffsetY: 4, Color: ui.RGBA(0, 0, 0, 120)}),
 		).Frame(120, 80),
-		Size:       geom.Sz(120, 80),
-		Background: ui.RGB(40, 44, 56),
+		Size: geom.Sz(120, 80),
 	})
 
 	// Structural first: a shadow extends the paint bounds and neither the
@@ -175,11 +185,13 @@ func TestShadowGolden(t *testing.T) {
 // a failure points at the atlas or the glyph quad and not at a layout.
 func TestGlyphGolden(t *testing.T) {
 	h := gifttest.New(t, gifttest.Options{
-		View: ui.VStack(
-			ui.Text("Glyphs").Key("label").FontSize(24).Foreground(ui.RGB(240, 242, 246)),
-		).Padding(12).Background(ui.RGB(20, 24, 34)),
-		Size:       geom.Sz(160, 60),
-		Background: ui.RGB(20, 24, 34),
+		View: ui.ZStack(
+			ui.Box().Background(ui.RGB(20, 24, 34)),
+			ui.VStack(
+				ui.Text("Glyphs").Key("label").FontSize(24).Foreground(ui.RGB(240, 242, 246)),
+			).Padding(12),
+		),
+		Size: geom.Sz(160, 60),
 	})
 	h.Find(gifttest.ByKey("label")).AssertDrawsGlyphs()
 	h.AssertGolden("glyphs")
@@ -220,7 +232,7 @@ func TestGlyphGolden(t *testing.T) {
 func TestGlassFullDoesNotDependOnAllocationHistory(t *testing.T) {
 	scene := func(d float64) gifttest.Options {
 		o := gifttest.Options{
-			View: glassScene(ui.Full), Size: geom.Sz(120, 80), Background: panelBG,
+			View: glassScene(ui.Full), Size: geom.Sz(120, 80),
 		}
 		o.Density = d
 		return o

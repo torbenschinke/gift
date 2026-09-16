@@ -29,6 +29,29 @@ type Options struct {
 	// Root is the root component function. It is mounted as a component with
 	// the key "root" and therefore owns a state scope like any other
 	// component.
+	//
+	// # The view it returns paints the window background, or nothing does
+	//
+	// gift draws exactly what the tree says. It has one display list, no
+	// window chrome and no appearance of its own — it does not even know what
+	// a colour role is — and Ebitengine clears the screen to transparent
+	// black at the top of every Draw; see the project plan, section 6. A root
+	// view that does not cover the viewport therefore ships a window with
+	// holes in it: a composited hole on a desktop, and on a Raspberry Pi
+	// kiosk whatever was in the framebuffer before the program started.
+	//
+	// The obligation is the application's and ui has the one line that meets
+	// it:
+	//
+	//	gift.New(gift.Options{Root: func(ctx *gift.Context) gift.View {
+	//		return ui.Window(content)
+	//	}})
+	//
+	// gifttest's Harness.AssertOpaque is the assertion that it was written.
+	// This is not a theoretical hazard: cmd/example-kitchensink shipped for
+	// three work units with thirty to forty per cent of every screen at
+	// {0, 0, 0, 0}, behind eight golden images that were all green, because
+	// the test harness used to fill its own canvas first.
 	Root func(*Context) View
 }
 

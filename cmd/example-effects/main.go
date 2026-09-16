@@ -167,6 +167,11 @@ func root(ctx *gift.Context) gift.View {
 	pinned := ctx.State("pinned", ui.Adaptive)
 
 	return ui.ZStack(
+		// The window background, spelled the way ui.Window spells it but in
+		// this demo's own ink: gift paints none of its own, and the gallery
+		// below is not guaranteed to cover every pixel of the viewport. See
+		// gift.Options.Root.
+		ui.Box().Background(ink),
 		ui.ImageGallery(gallery).
 			Layout(ui.Masonry().MinColumnWidth(200).Gap(8)).
 			Tile(tiles).

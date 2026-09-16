@@ -96,10 +96,10 @@ func TestOptionsFontIsRestoredAfterTheTest(t *testing.T) {
 // AssertGolden skips.
 func TestOptionsFontGoldenIsStableAcrossProcesses(t *testing.T) {
 	h := gifttest.New(t, gifttest.Options{
-		View: ui.VStack(
+		View: ui.Window(ui.VStack(
 			ui.Text("Consumer golden").FontSize(20),
 			ui.Text("pinned to Inter Regular").FontSize(13),
-		).Gap(8).Padding(16),
+		).Gap(8).Padding(16)),
 		Size: geom.Sz(320, 120),
 		Font: ui.MustFont(ui.FontQuery{Family: inter.Family}),
 	})

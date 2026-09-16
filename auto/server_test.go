@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/torbenschinke/gift"
+	"github.com/torbenschinke/gift/ui"
 )
 
 // newTestServer mounts the fixture and returns the HTTP handler under test
@@ -221,5 +222,80 @@ func TestAMalformedBatchIsRejectedWithBadRequestAndNotWithAPanic(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	if w := get(t, h, "POST", "/input", "{not json"); w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+// TestEveryColourRoleOfTheUIPackageIsReachable is the completeness gate this
+// package did not have.
+//
+// /diag reported its palette from a hand written slice and /theme resolved a
+// role name from the same one. A role added to ui would therefore have been
+// invisible here and untintable from here — and this is the interface the role
+// audit uses to decide whether a role is used at all, so an omission would
+// have presented as "the application does not use that colour" rather than as
+// "the tool does not know that colour". That is the worst way round.
+//
+// The assertion is against [ui.SemanticColors], which is the enum itself, so
+// it cannot fall behind it. It fails if a role is missing from the report, and
+// it fails if a role cannot be tinted through /theme, because those are two
+// different tables in every implementation that has them as tables.
+func TestEveryColourRoleOfTheUIPackageIsReachable(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	defer get(t, h, "POST", "/theme", `{"mode":"light"}`)
+
+	w := get(t, h, "GET", "/diag", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("/diag: status %d", w.Code)
+	}
+	var d Diag
+	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+		t.Fatalf("decoding /diag: %v", err)
+	}
+	roles := ui.SemanticColors()
+	if len(roles) == 0 {
+		t.Fatal("ui.SemanticColors is empty; the fixture is wrong")
+	}
+	if len(d.Theme.Roles) != len(roles) {
+		t.Errorf("/diag reports %d roles and ui has %d", len(d.Theme.Roles), len(roles))
+	}
+	for _, c := range roles {
+		name := jsonRoleName(c.Name)
+		if _, ok := d.Theme.Roles[name]; !ok {
+			t.Errorf("/diag does not report the role %s, which it calls %q", c.Name, name)
+			continue
+		}
+		body := `{"roles":{"` + name + `":[255,0,255,255]}}`
+		tw := get(t, h, "POST", "/theme", body)
+		if tw.Code != http.StatusOK {
+			t.Errorf("/theme %s: status %d", name, tw.Code)
+			continue
+		}
+		var info ThemeInfo
+		if err := json.Unmarshal(tw.Body.Bytes(), &info); err != nil {
+			t.Errorf("decoding /theme for %s: %v", name, err)
+			continue
+		}
+		if got := info.Roles[name]; got != [4]uint8{255, 0, 255, 255} {
+			t.Errorf("after tinting %s the theme reports %v, want the magenta that was installed",
+				name, got)
+		}
+	}
+}
+
+// TestTheJSONSpellingOfARoleNameDropsTheColorPrefix pins the mapping
+// [jsonRoleName] performs, because it is the one place the wire format is
+// decided and a change to it breaks every driver script in existence.
+func TestTheJSONSpellingOfARoleNameDropsTheColorPrefix(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"ColorAccent", "accent"},
+		{"ColorSecondaryLabel", "secondaryLabel"},
+		{"ColorControlPressed", "controlPressed"},
+		{"ColorBackground", "background"},
+		{"Color", "Color"},
+		{"Whatever", "whatever"},
+	} {
+		if got := jsonRoleName(c.in); got != c.want {
+			t.Errorf("jsonRoleName(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
