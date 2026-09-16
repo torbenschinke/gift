@@ -721,11 +721,23 @@ func TestAListInAHiddenTabIsNotPaintedAndKeepsItsScrollOffset(t *testing.T) {
 	sel = 1
 	h.App().Invalidate()
 	h.Settle()
-	// Tab B's list is a different list of the same length, so the count is
-	// the same; what would change is the count *doubling* if both were drawn.
+	// While the switch is in flight both tabs are on the screen, because one
+	// of them is sliding out; that is [gift.TransitionSpec] and it is the
+	// bounded exception to the rule this test is about. Tab B's list is a
+	// different list of the same length, so "both are drawn" is the count
+	// roughly doubling.
+	if got := len(separatorOps(t, h, sepColor())); got <= visible {
+		t.Errorf("during the tab transition the frame has %d separators where one tab draws "+
+			"%d; the outgoing tab is not being painted, so the switch is a cut", got, visible)
+	}
+
+	// And the rule itself, one transition later: the outgoing tab stops being
+	// painted and the guarantee is back in force. The pair is the test — a
+	// single count proves neither half.
+	h.Advance(ui.ControlAnimation + 32*time.Millisecond)
 	if got := len(separatorOps(t, h, sepColor())); got > visible {
-		t.Errorf("with tab B selected the frame has %d separators where one tab draws %d; "+
-			"the hidden tab is being painted", got, visible)
+		t.Errorf("a transition after selecting tab B the frame has %d separators where one tab "+
+			"draws %d; the hidden tab is still being painted", got, visible)
 	}
 
 	sel = 0

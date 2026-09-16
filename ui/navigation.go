@@ -169,7 +169,11 @@ func (v NavigationStackView) Build(bc *gift.BuildContext) gift.Element {
 
 	layers := make([]gift.View, len(v.screens))
 	for i, s := range v.screens {
-		layers[i] = newLayer(s.identity(i), s.content).Hidden(i != top)
+		layers[i] = newLayer(s.identity(i), s.content).
+			Hidden(i != top).
+			Parked(geom.Pt(-1, 0)).
+			Entry(geom.Pt(1, 0)).
+			Return(geom.Pt(-navReturn, 0))
 	}
 
 	e := VStack(
@@ -201,6 +205,43 @@ func (v NavigationStackView) Build(bc *gift.BuildContext) gift.Element {
 	e.KeyFallback = true
 	return e
 }
+
+// navReturn is how far towards the leading edge a screen waits before it is
+// uncovered by a pop, as a fraction of its own width.
+//
+// # The three places a screen of a stack can be, and why there are three
+//
+// A push slides the arriving screen in from the trailing edge while the screen
+// it covers slides a full width out to the leading one. A full width and not
+// an eighth: the two then move in lockstep and their edges meet, so neither is
+// ever drawn over the other. That matters here in a way it does not in a tab
+// bar, because a screen in this package draws no background of its own — the
+// cards do — so two overlapping screens are two screens legible *through* each
+// other. The alternative, giving every screen an opaque background, was built
+// and measured and then taken out again: the window of this project's own demo
+// has no background at all, so painting one only while a screen moves is a
+// visible flash at both ends of every transition, and painting one always
+// changes the resting picture of every golden image in the repository. The
+// geometry is the cheaper fix.
+//
+// A pop cannot be the mirror image of that, and the reason is worth stating
+// rather than hiding. The screen being popped is *unmounted* — the application
+// shortened its list, which is what a pop is in this design; see
+// [NavigationStackView] — and an unmounted node has no state, no bounds and
+// nothing to paint, so nothing in gift can animate it out. Only the revealed
+// screen moves. If it came back from the full width it was parked at, the
+// window would be empty for the first frame of every pop, so it comes back
+// from here instead: a short slide, with a strip of this width at the trailing
+// edge showing whatever is behind the stack until it arrives. Moving where it
+// waits is invisible, because a parked screen is not painted;
+// [gift.TransitionSpec.Return] is that move.
+//
+// The honest fix for both halves is a core that keeps an unmounted subtree
+// alive for the length of its exit — a "leaving" child list that is painted
+// but never laid out, hit tested or reconciled. That is a real feature with
+// real invariants and it is not this one; it is written down in the report
+// rather than implied by an animation that half works.
+const navReturn = float32(0.08)
 
 // bar builds the title bar of the screen at index top.
 func (v NavigationStackView) bar(top int) gift.View {

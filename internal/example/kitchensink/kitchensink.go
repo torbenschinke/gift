@@ -118,30 +118,34 @@ func Screen(ctx *gift.Context) gift.View {
 	// The modal layer is outermost, so its scrim covers the tab bar as well.
 	// A dialog that leaves the tab bar live is a dialog the user can walk
 	// away from, which is the opposite of modal.
-	var alert gift.View
-	if st.alert.Get() {
-		alert = ui.Alert(
-			"Reset everything?",
-			"Every setting on this screen goes back to its default. This cannot be undone.",
-			ui.AlertCancel("Cancel", func() { st.alert.Set(false) }),
-			ui.AlertDestructive("Reset", func() {
-				st.on.Set(true)
-				st.notify.Set(false)
-				st.volume.Set(0.62)
-				st.quality.Set(1)
-				st.progress.Set(0.35)
-				st.busy.Set(false)
-				st.saved.Set("")
-				st.alert.Set(false)
-			}),
-		)
-	}
+	// The alert view is built whether or not it is on the screen, and
+	// ui.ModalView.Presented decides. Passing nil to close would unmount it,
+	// and an unmounted dialog cannot be seen to leave; see that method. The
+	// price is a handful of nodes that stay mounted and hidden after the
+	// first time the alert is opened.
+	alert := ui.Alert(
+		"Reset everything?",
+		"Every setting on this screen goes back to its default. This cannot be undone.",
+		ui.AlertCancel("Cancel", func() { st.alert.Set(false) }),
+		ui.AlertDestructive("Reset", func() {
+			st.on.Set(true)
+			st.notify.Set(false)
+			st.volume.Set(0.62)
+			st.quality.Set(1)
+			st.progress.Set(0.35)
+			st.busy.Set(false)
+			st.saved.Set("")
+			st.alert.Set(false)
+		}),
+	)
 
 	// The keyboard is an overlay over the whole application and is the last
 	// child, so it is drawn last and hit tested first. It draws nothing at all
 	// while no field has the focus.
 	return ui.ZStack(
-		ui.Modal(body, alert).OnDismiss(func() { st.alert.Set(false) }),
+		ui.Modal(body, alert).
+			Presented(st.alert.Get()).
+			OnDismiss(func() { st.alert.Set(false) }),
 		ui.OnScreenKeyboard(),
 	).Align(geom.Bottom)
 }
@@ -311,7 +315,7 @@ func (s state) details() gift.View {
 				ui.Row("Progress").Accessory(ui.ProgressBar(s.progress.Get()).Frame(90, 6)).Key("p"),
 				ui.Row("Indeterminate").
 					Subtitle("holds the device awake while it is mounted").
-					Accessory(ui.ProgressBar(-1).Frame(120, 6)).
+					Accessory(ui.ProgressBar(0).Indeterminate().Frame(120, 6)).
 					Key("i"),
 			),
 		).Padding(0).Header("More rows"),
@@ -448,7 +452,7 @@ func busyBar(on bool) gift.View {
 	if !on {
 		return ui.Text("Idle").FontSize(13).Foreground(ui.ColorSecondaryLabel)
 	}
-	return ui.ProgressBar(-1).Frame(120, 6)
+	return ui.ProgressBar(0).Indeterminate().Frame(120, 6).Key("busy-bar")
 }
 
 // --- tab three: the long list ------------------------------------------------------

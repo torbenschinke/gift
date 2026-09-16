@@ -88,6 +88,27 @@ type Diagnostics struct {
 	// this counter is how a test tells a repeat from a second real press.
 	KeyRepeats uint64
 
+	// Animations is the number of repaint enrolments in force: the
+	// [EventContext.Animate] windows, the kinetic flings and the scroll
+	// indicator lingers, plus the [TransitionSpec] movements, which share
+	// the first list.
+	//
+	// It exists because "the picture stopped changing" was, until it did,
+	// the only external evidence that anything was moving at all, and a
+	// transition shorter than the jitter of a screenshot over HTTP is
+	// indistinguishable from no transition by that evidence. This number is
+	// not a picture: it is non zero for exactly as long as something has
+	// asked to be redrawn, so an automated driver can wait for motion to
+	// start and wait for it to stop instead of guessing frame counts. See
+	// the gift/auto package, which serves it as "animations".
+	Animations uint64
+
+	// Animating reports whether Animations is non zero. It is the same fact
+	// as a bool because that is the question a test asks — "has it gone
+	// idle" — and a test that spells it as a comparison against zero is a
+	// test that has to be changed when a fourth enrolment kind appears.
+	Animating bool
+
 	// OverflowExtent is the sum over those nodes of their horizontal plus
 	// vertical overflow, in logical pixels.
 	//
@@ -131,6 +152,8 @@ type diagPublisher struct {
 func (a *App) publishDiagnostics() {
 	a.diag.LiveNodes = uint64(a.store.Len())
 	a.diag.LiveScopes = a.liveScopes
+	a.diag.Animations = uint64(len(a.in.anims) + len(a.in.flings) + len(a.in.indicators))
+	a.diag.Animating = a.diag.Animations > 0
 	a.pub.mu.Lock()
 	a.pub.snap = a.diag
 	a.pub.mu.Unlock()

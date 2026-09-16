@@ -2,6 +2,7 @@ package ui_test
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/torbenschinke/gift"
@@ -74,8 +75,33 @@ func TestAProgressBarClampsAFractionOutsideItsRange(t *testing.T) {
 	if got := progressAt(t, 1.4); got != full {
 		t.Fatalf("a bar at 1.4 is %v wide, want the full %v", got, full)
 	}
-	if got := progressAt(t, -3); got != 0 {
-		t.Fatalf("a bar at -3 is %v wide, want nothing", got)
+}
+
+// TestAProgressBarRejectsANegativeFractionAndSaysWhatToWriteInstead is the
+// other half of the asymmetry above, and it is a regression test for a defect
+// that shipped in this project's own demo: ui.ProgressBar(-1) was accepted,
+// clamped to zero, and drew a bar sitting at 0 % where its author meant an
+// indeterminate one. -1 looks like an obvious sentinel and is not one.
+//
+// The message has to name the modifier, because the caller who writes -1 is by
+// definition looking for the indeterminate mode and has not found it.
+func TestAProgressBarRejectsANegativeFractionAndSaysWhatToWriteInstead(t *testing.T) {
+	for _, v := range []float64{-1, -0.0001, -3} {
+		func() {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Errorf("ui.ProgressBar(%v) was accepted; a negative fraction is a "+
+						"mistake and used to be clamped to a bar at 0 %%", v)
+					return
+				}
+				if msg, _ := r.(string); !strings.Contains(msg, "Indeterminate()") {
+					t.Errorf("ui.ProgressBar(%v) panicked with %q, which does not name the "+
+						"modifier the caller was reaching for", v, msg)
+				}
+			}()
+			ui.ProgressBar(v)
+		}()
 	}
 }
 

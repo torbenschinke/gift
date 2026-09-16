@@ -65,6 +65,14 @@ type nodeData struct {
 	// is the identity and a nil check is cheaper than comparing six floats.
 	xform *geom.Affine2D
 
+	// trans is the retained half of [Element.Transition]: where this node is
+	// between "shown" and "hidden", and how it got there. It is nil for
+	// every node that never declared a transition, which is all of them
+	// except the layers of ui's three navigation containers, and it is a
+	// pointer for exactly that reason — see [nodeData.scroll], which is a
+	// pointer for the same one.
+	trans *transitionState
+
 	// scroll is the retained presentation state of a scroll container, nil
 	// for every other node. Like [Interaction] it lives here and not in the
 	// view, because the project plan, section 5, requires the scroll offset
@@ -178,6 +186,11 @@ func (nd *nodeData) release() {
 	nd.preservesFocus = false
 	nd.xform = nil
 	nd.scroll = nil
+	// The movement a hidden node was in the middle of. It is not refreshed
+	// from the element either — a fresh node in this slot would inherit a
+	// phase of 1 and be drawn parked off the screen, or inherit an enrolment
+	// that has nothing left to animate.
+	nd.trans = nil
 	// The store hands a freed slot back with its payload untouched, which is
 	// what makes an unmount/remount cycle allocation free, so a field that is
 	// not refreshed from the element has to be dropped here or the next node

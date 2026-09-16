@@ -46,6 +46,32 @@
 // See the giftauto-tagged files of this package for the implementation and its
 // tests.
 //
+// # Seeing something that moves
+//
+// A screenshot request cannot see an animation. It is a round trip, so the
+// frame it captures is whichever one the window drew next — measured against
+// the kitchen sink between two and six frames after the input — and a
+// transition is eleven frames long at 60 Hz. Two consecutive screenshots that
+// look alike therefore prove nothing at all, which is exactly how four missing
+// transitions and a frozen progress bar were reported as present.
+//
+// Two answers to that, and both are here:
+//
+//   - the "capture" step of an input batch arms a burst *on the UI goroutine*
+//     and collects the next n frames the window draws, in order, with their
+//     hashes and the number of pixels each changed against the one before it.
+//     Motion is a run of non zero counts; the end of a movement is the run of
+//     zeroes after it.
+//
+//   - /diag and the answer to /input both carry "animating" and "animations"
+//     from [gift.Diagnostics]: whether anything has asked to be repainted at
+//     all. It is the one fact "the picture stopped changing" could never
+//     establish, and a driver can wait on it instead of counting frames.
+//
+//     curl -s -XPOST localhost:7391/input -d '{"steps":[
+//     {"op":"capture","frames":16,"png":true},
+//     {"op":"tap","x":100,"y":700}]}' | jq '.captured[] | {index,changed}'
+//
 // # Coordinates and units
 //
 // Every coordinate in and out of this interface is in gift's logical pixels,

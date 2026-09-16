@@ -134,6 +134,34 @@ func Enabled() Selector {
 	}
 }
 
+// Visible matches a node that is actually on the screen: not inside a subtree
+// that declared [gift.Element.Hidden], and not entirely clipped away by an
+// ancestor.
+//
+// It exists because the tree walk deliberately does *not* stop at a hidden
+// subtree — a test about an inactive tab keeping its half typed text has to be
+// able to find that text — and because "the alert is gone" and "the alert is
+// hidden" became two different things the day a modal started animating out.
+// An application that keeps a dismissed dialog mounted so that it can be seen
+// to leave — see ui.ModalView.Presented — has its title in the tree for ever,
+// and a test that asserts the dialog is closed has to say which of the two
+// questions it is asking.
+//
+//	h.AssertNone(gifttest.ByText("Reset everything?").And(gifttest.Visible()))
+//
+// It is the same answer [Node.IsVisible] gives and therefore the same answer
+// [gift.App.NodeVisibleBounds] gives, which is the one gift's own reveal and
+// scroll-into-view use.
+func Visible() Selector {
+	return Selector{
+		desc: "visible",
+		match: func(h *Harness, r gift.NodeRef) bool {
+			_, ok := h.app.NodeVisibleBounds(r)
+			return ok
+		},
+	}
+}
+
 // Any matches every node in the tree. It is the base of a hand written
 // predicate and the argument of [Harness.Dump] when everything is wanted.
 func Any() Selector {

@@ -3,7 +3,13 @@
 package auto
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
+	"image"
+	"image/png"
 	"time"
 
 	"github.com/torbenschinke/gift"
@@ -83,11 +89,39 @@ type Step struct {
 
 	// Forward is the direction of the "focus" op.
 	Forward *bool `json:"forward,omitempty"`
+
+	// PNG asks the "capture" op to include the pixels of every captured
+	// frame, base64 encoded, and not only their hashes and their counts of
+	// changed pixels.
+	PNG bool `json:"png,omitempty"`
 }
 
 // Batch is the body of a /input request.
 type Batch struct {
 	Steps []Step `json:"steps"`
+}
+
+// Capture is one frame of a burst; see the "capture" op of [runStep].
+type Capture struct {
+	// Index is the position of this frame in the burst and Frame is the
+	// backend's own drawn frame counter for it, the same number the
+	// X-Gift-Frames header of a screenshot carries.
+	Index int    `json:"index"`
+	Frame uint64 `json:"frame"`
+
+	// SHA is the SHA-256 of the raw pixels, and Changed is how many of them
+	// differ from the previous frame of this burst. Changed is -1 for the
+	// first frame, which has nothing to be compared with.
+	//
+	// These two numbers are the point of the whole mechanism: "nothing
+	// moves" is a run of frames whose hashes are equal, and a transition is
+	// a run whose Changed counts are large and then fall to zero. A caller
+	// gets that without transferring a single pixel.
+	SHA     string `json:"sha"`
+	Changed int    `json:"changed"`
+
+	// PNG is the frame itself, base64 encoded, when the step asked for it.
+	PNG string `json:"png,omitempty"`
 }
 
 // BatchResult is what /input answers with: the counters before and after, so
@@ -98,6 +132,17 @@ type BatchResult struct {
 	FramesBefore uint64 `json:"framesBefore"`
 	FramesAfter  uint64 `json:"framesAfter"`
 	UpdatesAfter uint64 `json:"updatesAfter"`
+
+	// Captured are the frames of the "capture" op, if the batch had one.
+	Captured []Capture `json:"captured,omitempty"`
+
+	// Animating and Animations are [gift.Diagnostics] as of the end of the
+	// batch: whether anything has asked to be repainted, and how many things
+	// have. They are here as well as in /diag because the interesting moment
+	// is the one immediately after an input, and a second request would be a
+	// second round trip during which a 180 ms transition can end.
+	Animating  bool   `json:"animating"`
+	Animations uint64 `json:"animations"`
 }
 
 // pointerID is the identifier every synthesised touch uses. gift only compares
@@ -138,16 +183,79 @@ var modByName = map[string]gift.Mods{
 // is guaranteed by the transport, not hoped for by the caller.
 func (d *driver) runBatch(b Batch) (BatchResult, error) {
 	res := BatchResult{Steps: len(b.Steps), FramesBefore: d.Frames()}
+	var pending *burst
+	var wantPNG bool
 	for i, s := range b.Steps {
+		if s.Op == "capture" {
+			n := max(1, s.Frames)
+			// Armed from the UI goroutine, so that the first collected frame
+			// is the first one drawn after the step before it; see [burst].
+			if err := d.do(func(*gift.App) { pending = d.armBurst(n) }); err != nil {
+				return res, fmt.Errorf("step %d (capture): %w", i, err)
+			}
+			wantPNG = s.PNG
+			continue
+		}
 		if err := d.runStep(s); err != nil {
 			return res, fmt.Errorf("step %d (%s): %w", i, s.Op, err)
 		}
 	}
+	if pending != nil {
+		shots, err := d.waitBurst(pending)
+		res.Captured = encodeCaptures(shots, wantPNG)
+		if err != nil {
+			return res, err
+		}
+	}
 	res.FramesAfter = d.Frames()
 	if app, _, err := d.target(); err == nil {
-		res.UpdatesAfter = app.Diagnostics().Updates
+		diag := app.Diagnostics()
+		res.UpdatesAfter = diag.Updates
+		res.Animating, res.Animations = diag.Animating, diag.Animations
 	}
 	return res, nil
+}
+
+// encodeCaptures turns the captured framebuffers into what a driving script
+// can read: a hash per frame, the number of pixels that differ from the frame
+// before it, and optionally the picture.
+func encodeCaptures(shots []shot, withPNG bool) []Capture {
+	out := make([]Capture, 0, len(shots))
+	for i, s := range shots {
+		sum := sha256.Sum256(s.img.Pix)
+		c := Capture{Index: i, Frame: s.count, SHA: hex.EncodeToString(sum[:]), Changed: -1}
+		if i > 0 {
+			c.Changed = changedPixels(shots[i-1].img, s.img)
+		}
+		if withPNG {
+			var buf bytes.Buffer
+			if err := png.Encode(&buf, s.img); err == nil {
+				c.PNG = base64.StdEncoding.EncodeToString(buf.Bytes())
+			}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// changedPixels counts the pixels of two frames of the same size that differ.
+//
+// It is the measurement the defect report was written in — "frame 4000 differs
+// from the pre-tap frame by 1,723,004 pixels, and frames 4006, 4012, 4018 and
+// 4024 are bit-identical to it" — computed where the pixels already are
+// instead of in a script that had to fetch two PNGs to do it.
+func changedPixels(a, b *image.RGBA) int {
+	if a.Bounds() != b.Bounds() || len(a.Pix) != len(b.Pix) {
+		return -1
+	}
+	n := 0
+	for i := 0; i+3 < len(a.Pix); i += 4 {
+		if a.Pix[i] != b.Pix[i] || a.Pix[i+1] != b.Pix[i+1] ||
+			a.Pix[i+2] != b.Pix[i+2] || a.Pix[i+3] != b.Pix[i+3] {
+			n++
+		}
+	}
+	return n
 }
 
 // runStep executes one step.
@@ -160,6 +268,7 @@ func (d *driver) runBatch(b Batch) (BatchResult, error) {
 //	text
 //	focus
 //	waitMs, waitFrames, waitTicks
+//	capture
 func (d *driver) runStep(s Step) error {
 	switch s.Op {
 	case "waitMs":

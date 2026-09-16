@@ -226,3 +226,74 @@ func BenchmarkTabSwitch(b *testing.B) {
 		step()
 	}
 }
+
+// BenchmarkTabTransitionFrame is what a tab switch costs per frame *while it
+// moves*, next to BenchmarkNavigationIdleFrame, which is what the same tree
+// costs when it does not.
+//
+// The difference is the honest price of [gift.TransitionSpec] and it is not
+// subtle: for [ui.ControlAnimation] two screens are painted instead of one, so
+// the frame costs roughly twice what an idle frame of the same tree costs. It
+// is bounded — the enrolment expires, the outgoing screen stops being painted,
+// and the frame goes back to the idle number — and it must not allocate, which
+// is what this measures that the wall clock does not.
+func BenchmarkTabTransitionFrame(b *testing.B) {
+	for _, moving := range []bool{false, true} {
+		name := "idle"
+		if moving {
+			name = "transition"
+		}
+		b.Run(name, func(b *testing.B) { benchTabFrame(b, moving) })
+	}
+}
+
+func benchTabFrame(b *testing.B, moving bool) {
+	sel := 0
+	a := navApp(b, func(ctx *gift.Context) gift.View {
+		s := ctx.State("tab", 0)
+		s.Set(sel)
+		return ui.TabBar(ctx.Read(s), nil,
+			ui.Tab("One", ui.Symbol{}, heavyColumn("a ")),
+			ui.Tab("Two", ui.Symbol{}, heavyColumn("b ")),
+		)
+	})
+	now := time.Duration(0)
+	step := func() {
+		now += 16 * time.Millisecond
+		a.BeginInput(now)
+		if err := a.Update(geom.Sz(640, 480)); err != nil {
+			b.Fatal(err)
+		}
+		a.Paint()
+	}
+	for range 8 {
+		step()
+	}
+	// Into the transition and stay there: the clock is only moved by this
+	// benchmark, so re-arming the switch every iteration would measure the
+	// rebuild instead. Selecting the other tab once and then holding the
+	// clock still inside the window keeps every measured frame a moving one.
+	if moving {
+		sel = 1
+		a.Invalidate()
+		step()
+		if !a.Diagnostics().Animating {
+			b.Fatal("the fixture is not animating; this would measure an idle frame")
+		}
+	} else if a.Diagnostics().Animating {
+		b.Fatal("the idle fixture is animating")
+	}
+	hold := now
+	if moving {
+		hold = now + 60*time.Millisecond
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		a.BeginInput(hold)
+		if err := a.Update(geom.Sz(640, 480)); err != nil {
+			b.Fatal(err)
+		}
+		a.Paint()
+	}
+}

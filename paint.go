@@ -297,7 +297,14 @@ func (a *App) paintNode(h scene.Handle) {
 	// node unless something says otherwise. This is that something, and it is
 	// checked before the transform is pushed so that a hidden subtree costs
 	// one field read and nothing else.
-	if nd.hidden {
+	//
+	// The second half of the condition is the only concession
+	// [TransitionSpec] asks of this rule, and it is bounded in time rather
+	// than in scope: a node that is hidden and has not finished moving out of
+	// the window is still drawn. The field read is a nil test for every node
+	// that never declared a transition, which is every node in an application
+	// that has no navigation in it.
+	if nd.hidden && !nd.paintedDespiteHidden(a.in.now) {
 		return
 	}
 	if a.paintDepth > scene.MaxDepth {
@@ -320,10 +327,35 @@ func (a *App) paintNode(h scene.Handle) {
 	// positions are divided by the density once, at the backend boundary, so
 	// that one unit system carries drag slop, fling velocity and scroll
 	// offsets.
+	//
+	// The transition translation is the documented exception to the "one
+	// declaration, two readers" rule, and the one place in gift where the
+	// picture and the hit test are allowed to disagree; the argument is in
+	// [TransitionSpec].
 	prevXform := a.pctx.xform
+	prevPhase := a.transPhase
+	m, moved := nd.transXform(a.in.now, n.Bounds)
 	if nd.xform != nil {
-		a.pctx.xform = a.list.PushXform(nd.xform.Mul(a.list.Xform(prevXform)))
-		defer func() { a.pctx.xform = prevXform }()
+		if moved {
+			m = nd.xform.Mul(m)
+		} else {
+			m = *nd.xform
+		}
+		moved = true
+	}
+	if moved {
+		a.pctx.xform = a.list.PushXform(m.Mul(a.list.Xform(prevXform)))
+	}
+	if nd.trans != nil {
+		if p := nd.trans.phase(a.in.now); p > a.transPhase {
+			a.transPhase = p
+		}
+	}
+	if moved || a.transPhase != prevPhase {
+		defer func() {
+			a.pctx.xform = prevXform
+			a.transPhase = prevPhase
+		}()
 	}
 
 	if nd.painter == nil {

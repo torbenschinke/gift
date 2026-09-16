@@ -137,14 +137,14 @@ func (a *App) mountChild(parent scene.Handle, desc childDesc, owner *scope) scen
 		return h
 	}
 
-	a.applyElement(h, nd, desc, owner)
+	a.applyElement(h, nd, desc, owner, true)
 	a.store.AppendChild(parent, h)
 	return h
 }
 
 // applyElement writes the freshly built element onto an existing node and
 // reconciles its children.
-func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *scope) {
+func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *scope, mounting bool) {
 	nd.view = desc.view
 	nd.layouter = desc.elem.Layouter
 	nd.painter = desc.elem.Painter
@@ -161,7 +161,18 @@ func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *
 	nd.clip = desc.elem.Clip
 	// Before the obstruction below, because that one asks whether this node
 	// is visible and the answer is written here.
+	//
+	// The transition is decided first and enrolled last: it needs the
+	// *previous* value of nd.hidden, which applyHidden is about to
+	// overwrite, and its repaint enrolment must outlive the
+	// [App.stopHiddenWork] that applyHidden performs — a screen sliding out
+	// is a hidden node that has to keep being drawn, which is exactly the
+	// enrolment stopHiddenWork exists to end. See [App.applyTransition].
+	a.applyTransition(h, nd, desc.elem.Transition, desc.elem.Hidden, mounting)
 	a.applyHidden(h, nd, desc.elem.Hidden)
+	if nd.trans != nil && nd.trans.target != nd.trans.phase(a.in.now) {
+		a.enrolTransition(h, desc.elem.Transition.Duration)
+	}
 	a.applyFocusTrap(h, nd, desc.elem.FocusTrap)
 	a.applyKeyFallback(nd, desc.elem.KeyFallback)
 	nd.preservesFocus = desc.elem.PreservesFocus
@@ -446,7 +457,7 @@ func (a *App) updateChild(h scene.Handle, desc childDesc, owner *scope) {
 		a.buildScope(sc)
 		return
 	}
-	a.applyElement(h, nd, desc, owner)
+	a.applyElement(h, nd, desc, owner, false)
 }
 
 // reconcileChildren matches views against the existing children of h, updates

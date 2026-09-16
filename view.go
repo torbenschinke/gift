@@ -285,6 +285,15 @@ type Element struct {
 	// a scrim, so there is no caller.
 	FocusTrap bool
 
+	// Transition makes a change of Hidden a movement rather than a cut; see
+	// [TransitionSpec].
+	//
+	// It is the one declaration in this struct that is read *after* the build
+	// that made it, on every frame until the movement is over, and it is
+	// therefore the one that has retained state behind it. The zero value is
+	// the behaviour every node had before it existed.
+	Transition TransitionSpec
+
 	// KeyFallback declares that this node receives key events while *nothing*
 	// holds the keyboard focus.
 	//

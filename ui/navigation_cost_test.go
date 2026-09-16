@@ -27,6 +27,21 @@ import (
 // because the cheapest way to make a frame counter read zero is to break the
 // fixture.
 
+// afterTheTransition lets the movement a tab switch now performs finish, so
+// that a measurement of "what does a hidden subtree cost per frame" is not
+// really a measurement of "what does a transition cost while it runs".
+//
+// The two are different questions and both have a right answer. A transition
+// costs a full paint of the outgoing subtree for [ui.ControlAnimation] — see
+// [gift.TransitionSpec], which is where the bargain is written down — and a
+// hidden subtree costs nothing per frame once it is over. Every test in this
+// file is about the second number, and
+// TestTheTransitionOfATabSwitchEndsAndTheApplicationGoesIdle next door is
+// about the first one and about the fact that it is bounded at all.
+func afterTheTransition(h *gifttest.Harness) {
+	h.Advance(ui.ControlAnimation + 32*time.Millisecond)
+}
+
 // --- the caret, which is the expensive one -----------------------------------
 
 // TestHidingATabWithAFocusedFieldStopsTheCaretBlink is the reviewer's
@@ -78,6 +93,7 @@ func TestHidingATabWithAFocusedFieldStopsTheCaretBlink(t *testing.T) {
 	h.Settle()
 	h.AssertNoFocus()
 	h.AssertExists(gifttest.ByKey("field"))
+	afterTheTransition(h)
 
 	if busy := busyTicks(h, 120); busy != 0 {
 		t.Fatalf("hiding the tab of a focused text field left the application asking for "+
@@ -232,6 +248,7 @@ func TestAControlChangedWhileHiddenDoesNotAnimate(t *testing.T) {
 			// nobody is looking at.
 			sel.Set(1)
 			h.Settle()
+			afterTheTransition(h)
 			on.Set(true)
 			// One frame, not zero, and the one is not the animation. It is
 			// not true that any state write costs a frame: a write nobody
@@ -318,6 +335,7 @@ func TestHidingATabStopsAFlingInItAndLeavesTheOffsetAlone(t *testing.T) {
 	}
 	sel.Set(1)
 	h.Settle()
+	afterTheTransition(h)
 	atHide := list().ScrollOffset()
 	if info := list().ScrollInfo(); info.Flinging {
 		t.Fatalf("the list in the hidden tab is still flinging at %g units per second. "+

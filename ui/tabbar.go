@@ -226,7 +226,9 @@ func (t TabBarView) Build(bc *gift.BuildContext) gift.Element {
 
 	layers := make([]gift.View, len(t.tabs))
 	for i, tab := range t.tabs {
-		layers[i] = newLayer(tab.identity(i), tab.content).Hidden(i != sel)
+		layers[i] = newLayer(tab.identity(i), tab.content).
+			Hidden(i != sel).
+			Parked(tabParked(i, sel))
 	}
 	items := make([]gift.View, len(t.tabs))
 	for i, tab := range t.tabs {
@@ -243,6 +245,43 @@ func (t TabBarView) Build(bc *gift.BuildContext) gift.Element {
 			HStack(items...).Frame(geom.Unbounded(), TabBarHeight),
 		).Background(ColorSurface).Key("bar"),
 	).Key(t.key).Flex(t.flex).Build(bc)
+}
+
+// tabParked is where the tab at index i waits while it is not the selected
+// one: a full width off the leading edge when it is to the left of the
+// selection and a full width off the trailing edge when it is to the right.
+//
+// # Why the direction can be computed from one build, with no memory
+//
+// The obvious way to animate a tab switch is "which way did the selection
+// move", and that needs the *previous* selection, which a [TabBarView] does
+// not have and must not keep — it is stateless by design, and a widget that
+// remembered the last index would be a second source of truth next to the
+// application's own.
+//
+// It does not need one. Every tab has a resting place on a line: the selected
+// one is in the window and the others are parked off it, in index order. The
+// build that changes the selection therefore hands the outgoing tab a parked
+// position on one side and the incoming tab one on the other, and
+// [gift.TransitionSpec] interpolates each of them towards the position it was
+// just given. Switching from Home to Settings parks Home to the left and
+// brings Settings in from the right; switching back does the mirror image,
+// for free, because the parked positions are the same function of the new
+// index either way.
+//
+// The two screens move in lockstep — same clock, same easing, same distance —
+// so the trailing edge of the one that leaves and the leading edge of the one
+// that arrives are the same coordinate on every frame. No gap opens between
+// them and neither one is drawn over the other.
+func tabParked(i, sel int) geom.Point {
+	switch {
+	case i < sel:
+		return geom.Pt(-1, 0)
+	case i > sel:
+		return geom.Pt(1, 0)
+	default:
+		return geom.Point{}
+	}
 }
 
 // item builds one tab item.

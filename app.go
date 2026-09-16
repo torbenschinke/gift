@@ -70,6 +70,11 @@ type App struct {
 	needsPaint  bool
 	layoutDepth int
 	paintDepth  int
+	// transPhase is how far the subtree currently being painted is through a
+	// [TransitionSpec], for [PaintContext.TransitionPhase]. It is saved and
+	// restored by [App.paintNode] like the active transform, and it is zero
+	// outside a transitioning subtree.
+	transPhase float32
 	// layoutPass is the ordinal of the layout pass; see [LayoutContext.Pass].
 	layoutPass uint64
 
@@ -321,6 +326,7 @@ func (a *App) Paint() *render.List {
 
 	a.list.Reset()
 	a.paintDepth = 0
+	a.transPhase = 0
 	// The density transform of the project plan, section 18, and the only
 	// place it enters the display list. At density 1 nothing is pushed and
 	// the root transform stays index 0, the identity, so a 1x frame is the

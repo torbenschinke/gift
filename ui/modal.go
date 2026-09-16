@@ -5,12 +5,14 @@ import (
 
 	"github.com/torbenschinke/gift"
 	"github.com/torbenschinke/gift/geom"
+	"github.com/torbenschinke/gift/render"
 )
 
 var (
-	modalType = gift.RegisterType("ui.Modal")
-	scrimType = gift.RegisterType("ui.scrim")
-	alertType = gift.RegisterType("ui.Alert")
+	modalType       = gift.RegisterType("ui.Modal")
+	scrimType       = gift.RegisterType("ui.scrim")
+	alertType       = gift.RegisterType("ui.Alert")
+	modalDialogType = gift.RegisterType("ui.modalDialog")
 )
 
 // Metrics of the modal layer, in logical pixels.
@@ -27,6 +29,18 @@ const (
 	// alertTitleSize and alertMessageSize are the two type sizes of the card.
 	alertTitleSize   = float32(17)
 	alertMessageSize = float32(14)
+
+	// modalRise is how far below its place a modal waits while it is not
+	// presented, as a fraction of its own height; see [gift.TransitionSpec].
+	//
+	// A third of the card and not a whole window: an alert comes up from
+	// under its own footprint rather than travelling across the screen, which
+	// is what every phone platform does and what keeps the movement short
+	// enough to be over in [ControlAnimation] without looking hurried. The
+	// scrim cannot move with it — it covers the window, and a scrim that
+	// slid would uncover the top of it — so the scrim fades instead; see
+	// [scrimNode].
+	modalRise = float32(0.35)
 )
 
 // defaultScrimColor is the wash drawn over the application while a modal is
@@ -100,6 +114,11 @@ type ModalView struct {
 	// scrim is the wash colour; the zero value means [defaultScrimColor].
 	scrim    Color
 	hasScrim bool
+	// presented is [ModalView.Presented]; hasPresented separates "not
+	// presented" from "not said", because the default is "presented if there
+	// is a modal at all".
+	presented    bool
+	hasPresented bool
 }
 
 // Modal returns content with modal presented on top of it. A nil modal is the
@@ -131,13 +150,48 @@ func (m ModalView) Build(bc *gift.BuildContext) gift.Element {
 	if m.hasScrim {
 		wash = m.scrim
 	}
+	presented := true
+	if m.hasPresented {
+		presented = m.presented
+	}
 	return ZStack(
 		m.content,
 		newLayer("modal", ZStack(
 			scrim{color: wash, onTap: m.onDismiss},
-			m.modal,
-		).Align(geom.Center)).Trap(true),
+			modalDialog{hidden: !presented, child: m.modal},
+		).Align(geom.Center)).
+			Trap(presented).
+			Hidden(!presented),
 	).Key(m.key).Flex(m.flex).Build(bc)
+}
+
+// modalDialog is the node the modal itself hangs under, and it exists for one
+// reason: it is the thing that moves.
+//
+// It cannot be a [layer], which is what the rest of this package uses for a
+// subtree that can be taken out of the frame, because a layer fills the area
+// it is given and would stretch an alert card across the window. This is a
+// [ZStack] of one child — so it shrink wraps exactly as the modal view did
+// when it was a direct child — carrying the two fields a layer would have
+// carried.
+type modalDialog struct {
+	base
+	hidden bool
+	child  gift.View
+}
+
+// ViewType implements gift.View.
+func (d modalDialog) ViewType() gift.TypeID { return modalDialogType }
+
+// Build implements gift.View.
+func (d modalDialog) Build(bc *gift.BuildContext) gift.Element {
+	e := ZStack(d.child).Key("dialog").Build(bc)
+	e.Hidden = d.hidden
+	e.Transition = gift.TransitionSpec{
+		Parked:   geom.Pt(0, modalRise),
+		Duration: ControlAnimation,
+	}
+	return e
 }
 
 // --- modifiers -------------------------------------------------------------
@@ -150,6 +204,36 @@ func (m ModalView) Build(bc *gift.BuildContext) gift.Element {
 // either way and never reaches the content below. The only question here is
 // whether it also means something.
 func (m ModalView) OnDismiss(fn func()) ModalView { m.onDismiss = fn; return m }
+
+// Presented says whether the modal is on the screen right now, separately
+// from whether there is one.
+//
+//	ui.Modal(screen, alert).Presented(open)
+//
+// # Why this exists, when a nil modal already means "closed"
+//
+// Because a nil modal *unmounts* the dialog, and an unmounted subtree cannot
+// be animated out of the window: it has no node, no bounds and nothing to
+// paint. An application that passes nil to close therefore gets a movement on
+// the way in — the dialog is mounted and arrives from below — and a cut on the
+// way out, which is exactly half of what a person looking at the screen
+// expects.
+//
+// Handing the modal view in and saying "not now" keeps it mounted and hidden,
+// which is the state this framework already has a name and a price for: the
+// subtree keeps its state, is not painted, is not hit tested, is not in the
+// focus order and costs one field read per frame — the same bargain
+// [TabBarView] makes for an inactive tab. The dismissal then has both halves
+// of its animation.
+//
+// The cost, stated plainly: the modal's subtree stays mounted for as long as
+// the application keeps passing it. For an alert that is a handful of nodes.
+// An application that presents something expensive and wants it gone passes
+// nil instead and accepts the cut.
+//
+// The default is "presented", so an application that says nothing behaves
+// exactly as it did: a non nil modal is an open modal.
+func (m ModalView) Presented(v bool) ModalView { m.presented, m.hasPresented = v, true; return m }
 
 // Scrim sets the wash drawn over the content while the modal is open. It may
 // be a semantic colour and is resolved during build. [ColorClear] gives an
@@ -183,7 +267,13 @@ func (s scrim) ViewType() gift.TypeID { return scrimType }
 
 // Build implements gift.View.
 func (s scrim) Build(bc *gift.BuildContext) gift.Element {
-	e := Box().Background(s.color).Build(bc)
+	e := Box().Build(bc)
+	// The wash is drawn by [scrimNode] rather than by the box's background,
+	// because it has to fade with the modal's transition and a background is
+	// a fixed colour decided at build time. Everything else about the node —
+	// the layouter that fills the window, the hit target, the refusal to take
+	// the focus — is the box's and is untouched.
+	e.Painter = scrimNode{color: ResolveColor(s.color)}
 	// Interactive but emphatically not focusable. A scrim in the tab order
 	// would be a stop on the way round the alert's buttons that shows no ring
 	// and does nothing, and pressing space on it would dismiss the alert by
@@ -191,6 +281,42 @@ func (s scrim) Build(bc *gift.BuildContext) gift.Element {
 	e.Interactor = scrimInteractor{onTap: s.onTap}
 	e.Focusable = false
 	return e
+}
+
+// scrimNode paints the wash, at the strength the modal's transition is at.
+//
+// A scrim cannot slide with the dialog it belongs to: it covers the whole
+// window, and a covering rectangle that moves stops covering. So it is the one
+// part of a modal that fades, which the display list supports without a render
+// target or a second material because a premultiplied colour scaled by a
+// factor is the same colour at a lower alpha; see [fadeBy].
+//
+// It reads [gift.PaintContext.TransitionPhase], which is the phase of the
+// nearest transitioning ancestor — the modal layer — so the scrim and the
+// dialog are driven by one number and cannot drift apart.
+type scrimNode struct{ color Color }
+
+// Paint implements gift.Painter.
+func (n scrimNode) Paint(ctx *gift.PaintContext) {
+	assertResolved(n.color, "the scrim of a Modal")
+	c := fadeBy(n.color, 1-ctx.TransitionPhase())
+	if c.A <= 0 {
+		return
+	}
+	ctx.Add(render.Op{Kind: render.OpFillRect, Bounds: ctx.Bounds(), Color: c})
+}
+
+// fadeBy scales a premultiplied colour towards transparent. Premultiplied is
+// what makes this one multiplication per channel rather than a conversion; see
+// [render.Color] and [lerpColor], which relies on the same property.
+func fadeBy(c Color, k float32) Color {
+	if k >= 1 {
+		return c
+	}
+	if k <= 0 {
+		return Color{}
+	}
+	return Color{R: c.R * k, G: c.G * k, B: c.B * k, A: c.A * k}
 }
 
 // scrimInteractor swallows everything.

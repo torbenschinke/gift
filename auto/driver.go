@@ -62,9 +62,13 @@ type driver struct {
 	// read-back off every frame that nobody asked for.
 	want atomic.Bool
 
-	// shots are the screenshot requests waiting for the next frame.
-	shotMu sync.Mutex
-	shots  []chan shot
+	// shots are the screenshot requests waiting for the next frame, and
+	// pending is the burst that is collecting consecutive ones; see
+	// [driver.armBurst]. Both are under shotMu, because both are read by the
+	// frame path in [driver.Frame].
+	shotMu  sync.Mutex
+	shots   []chan shot
+	pending *burst
 
 	timeout time.Duration
 
@@ -80,6 +84,31 @@ type driver struct {
 type shot struct {
 	img   *image.RGBA
 	count uint64
+}
+
+// burst is a request for the next n *consecutive* frames.
+//
+// # Why one screenshot is not enough to see a transition
+//
+// A screenshot request is an HTTP round trip: the input is applied on the UI
+// goroutine, the answer travels back, the caller asks for pixels, and the
+// frame that is captured is whichever one the window happened to draw next.
+// Measured against this very application, that was between two and six frames
+// after the input — and a transition is eleven frames long at 60 Hz, so a
+// single capture cannot say whether the picture moved, stood still, or had
+// already finished moving before the camera arrived.
+//
+// A burst is armed *on the UI goroutine*, as a step of an input batch, so it
+// starts collecting in the same update that dispatched the tap. It then takes
+// every frame the window draws, in order, with no round trip in between. The
+// evidence for "this transition moves" is then a sequence of frames that
+// differ from each other, and the evidence for "it ended" is that the last
+// few do not — which is exactly the shape of the evidence that identified the
+// defect in the first place.
+type burst struct {
+	n     int
+	shots []shot
+	done  chan struct{}
 }
 
 // newDriver returns a driver that is not attached to an application yet.
@@ -186,9 +215,10 @@ func (d *driver) Frame(w, h int, pix []byte, count uint64) {
 	d.shotMu.Lock()
 	waiting := d.shots
 	d.shots = nil
-	d.want.Store(false)
+	b := d.pending
+	d.want.Store(b != nil)
 	d.shotMu.Unlock()
-	if len(waiting) == 0 {
+	if len(waiting) == 0 && b == nil {
 		return
 	}
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
@@ -196,6 +226,59 @@ func (d *driver) Frame(w, h int, pix []byte, count uint64) {
 	s := shot{img: img, count: count}
 	for _, ch := range waiting {
 		ch <- s
+	}
+	if b == nil {
+		return
+	}
+	// The burst keeps its own copy per frame: the whole point is to hold a
+	// sequence, and the buffer above belongs to the frame loop.
+	b.shots = append(b.shots, s)
+	if len(b.shots) < b.n {
+		return
+	}
+	d.shotMu.Lock()
+	if d.pending == b {
+		d.pending = nil
+		d.want.Store(len(d.shots) > 0)
+	}
+	d.shotMu.Unlock()
+	close(b.done)
+}
+
+// armBurst starts collecting the next n frames and returns the collector.
+//
+// It is called from a posted closure, that is on the UI goroutine at the start
+// of an update, which is what makes the first captured frame the first one
+// drawn after the input of that update. A second burst replaces the first:
+// there is one camera.
+func (d *driver) armBurst(n int) *burst {
+	b := &burst{n: n, done: make(chan struct{})}
+	d.shotMu.Lock()
+	d.pending = b
+	d.want.Store(true)
+	d.shotMu.Unlock()
+	return b
+}
+
+// waitBurst blocks until the burst is full, or fails with the same diagnosis
+// a screenshot gives when the window is not being drawn.
+func (d *driver) waitBurst(b *burst) ([]shot, error) {
+	if b == nil {
+		return nil, nil
+	}
+	select {
+	case <-b.done:
+		return b.shots, nil
+	case <-time.After(d.timeout):
+		d.shotMu.Lock()
+		if d.pending == b {
+			d.pending = nil
+			d.want.Store(len(d.shots) > 0)
+		}
+		got := len(b.shots)
+		d.shotMu.Unlock()
+		return b.shots, d.notDrawnError(fmt.Sprintf(
+			"waited for %d consecutive frames and got %d", b.n, got))
 	}
 }
 

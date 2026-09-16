@@ -1,6 +1,7 @@
 package kitchensink
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -131,6 +132,75 @@ func TestEveryTabOfTheDemoBuildsAndTheHiddenOnesAreNotDrawn(t *testing.T) {
 	}
 }
 
+// TestTheIndeterminateBarOfThisDemoActuallyMoves is the regression test for a
+// defect that shipped: both call sites in this file wrote ui.ProgressBar(-1),
+// which is a *determinate* bar whose fraction was clamped to zero, so the
+// demo showed an empty grey track that never moved while its author believed
+// it was a spinner. The indeterminate mode is a modifier and -1 was never a
+// sentinel for it; ui.ProgressBar now rejects a negative fraction outright.
+//
+// The evidence has to be a pair of frames. Six consecutive frames of the
+// broken demo were pixel identical across the whole screen, and any single
+// frame of it looks exactly like a legitimate bar at 0 %.
+func TestTheIndeterminateBarOfThisDemoActuallyMoves(t *testing.T) {
+	h := mount(t, geom.Sz(900, 760))
+	tabButton(h, "Settings").Click()
+	h.First(gifttest.ByText("Busy")).Click()
+	h.AssertExists(gifttest.ByKey("busy-bar"))
+
+	// Every filled shape inside the bar's own rectangle: the track, and the
+	// pill when there is one.
+	shapes := func() []geom.Rect {
+		b := h.Find(gifttest.ByKey("busy-bar")).Bounds()
+		var out []geom.Rect
+		for _, op := range h.Ops() {
+			if op.Kind != render.OpFillRoundRect {
+				continue
+			}
+			r := h.List().Xform(op.Xform).TransformRect(op.Bounds)
+			if r.Min.X >= b.Min.X-1 && r.Max.X <= b.Max.X+1 &&
+				r.Min.Y >= b.Min.Y-1 && r.Max.Y <= b.Max.Y+1 {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+
+	// A third of a period apart, three times: an indeterminate bar is a pill
+	// travelling across the track, so no two of these may be the same
+	// picture, and at least one of them has to have a pill in it at all.
+	var seen [][]geom.Rect
+	for range 3 {
+		seen = append(seen, shapes())
+		h.Advance(ui.ProgressPeriod / 3)
+	}
+	withPill := 0
+	for _, s := range seen {
+		if len(s) > 1 {
+			withPill++
+		}
+	}
+	if withPill == 0 {
+		t.Fatalf("the indeterminate bar drew nothing but its track at any of three points "+
+			"of its period; it is a determinate bar at 0 %%. Frames: %v", seen)
+	}
+	same := 0
+	for i := 1; i < len(seen); i++ {
+		if fmt.Sprint(seen[i]) == fmt.Sprint(seen[0]) {
+			same++
+		}
+	}
+	if same == len(seen)-1 {
+		t.Fatalf("three frames a third of a period apart drew the identical bar %v; "+
+			"nothing is moving", seen[0])
+	}
+	if !h.Diagnostics().Animating {
+		t.Error("an indeterminate bar on screen leaves the application reporting that " +
+			"nothing is animating, so no automated driver can tell it apart from a " +
+			"still picture")
+	}
+}
+
 // TestPushingAndPoppingTheNavigationStackKeepsTheScrollOffset is the promise of
 // step 9b as this demo exercises it, and it is the one a kiosk user would
 // notice within a minute of the promise being broken.
@@ -180,7 +250,10 @@ func TestTheAlertBlocksTheScreenUnderneath(t *testing.T) {
 	if h.Exists(gifttest.ByText("Covered, not unmounted")) {
 		t.Fatalf("a tap through the scrim pushed the Details screen.\n%s", h.Dump())
 	}
-	h.AssertNone(gifttest.ByText("Reset everything?"))
+	// "Gone" means "not on the screen" and not "not in the tree": this demo
+	// keeps the alert mounted and hidden so that the dismissal can be seen to
+	// happen, which is ui.ModalView.Presented. See [gifttest.Visible].
+	h.AssertNone(gifttest.ByText("Reset everything?").And(gifttest.Visible()))
 
 	// And the other half of the same property: an alert that does *not*
 	// dismiss on an outside tap is still there afterwards. The demo has no
@@ -197,7 +270,7 @@ func TestTheAlertBlocksTheScreenUnderneath(t *testing.T) {
 
 	// And the alert's own buttons still work.
 	h.First(gifttest.ByText("Cancel")).Click()
-	h.AssertNone(gifttest.ByText("Reset everything?"))
+	h.AssertNone(gifttest.ByText("Reset everything?").And(gifttest.Visible()))
 }
 
 // TestTheSwitchInsideARowTakesTheTapInTheRealScreen is the row-and-accessory
@@ -507,6 +580,13 @@ var goldenSize = geom.Sz(900, 760)
 // above. A golden taken on the first frame would therefore be a golden of a
 // screen with twenty symbols missing, and it would pass for ever.
 func warm(h *gifttest.Harness) {
+	// A transition first. Since the navigation containers of this demo move
+	// rather than cut — see [gift.TransitionSpec] — a golden taken in the
+	// frame after a tab switch or after an alert was opened would be a
+	// picture of a screen that is halfway in, and would therefore depend on
+	// how many frames the harness happened to run. Moving the clock past the
+	// end of the movement is what makes the picture the resting state again.
+	h.Advance(ui.ControlAnimation + 32*time.Millisecond)
 	for range 6 {
 		h.Warm()
 	}

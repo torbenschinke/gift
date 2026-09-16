@@ -372,3 +372,92 @@ func TestAPointerStepIsATouchUnlessItAsksForTheMouse(t *testing.T) {
 		t.Fatalf("activations = %d, want 2: both the tap and the click must activate", got)
 	}
 }
+
+// TestACaptureStepCollectsConsecutiveFramesAndSaysWhatChangedBetweenThem is the
+// answer to the limitation this package's author reported: a screenshot is
+// always *after* the input and is not always the *first* frame after it —
+// measured between two and six frames late — so a movement shorter than that
+// jitter cannot be told apart from no movement at all.
+//
+// A capture step is armed on the UI goroutine and takes every frame the window
+// draws from that update onwards, in order. The evidence for motion is then a
+// sequence: frames that differ from one another, and then frames that do not.
+func TestACaptureStepCollectsConsecutiveFramesAndSaysWhatChangedBetweenThem(t *testing.T) {
+	var count int
+	// The framebuffer of this fake carries a number in its first pixel, so
+	// "the picture changed" is a byte a test can arrange: here it changes for
+	// three frames after the tap and then stands still, which is the shape of
+	// a transition that ends.
+	frames := 0
+	l := newFakeLoop(t, func(*gift.Context) gift.View {
+		return tapTarget{w: 100, h: 100, count: &count, key: "target"}
+	}, func() byte {
+		if count == 0 {
+			return 0
+		}
+		frames++
+		if frames > 3 {
+			return 99
+		}
+		return byte(frames)
+	})
+
+	res, err := l.d.runBatch(Batch{Steps: []Step{
+		{Op: "capture", Frames: 6},
+		{Op: "tap", X: f32(10), Y: f32(10)},
+	}})
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	if len(res.Captured) != 6 {
+		t.Fatalf("the capture collected %d frames, want 6", len(res.Captured))
+	}
+	if res.Captured[0].Changed != -1 {
+		t.Errorf("the first frame of a burst reports %d changed pixels; it has nothing to "+
+			"be compared with and must say so", res.Captured[0].Changed)
+	}
+	moved, still := 0, 0
+	for _, c := range res.Captured[1:] {
+		if c.Changed > 0 {
+			moved++
+		} else if c.Changed == 0 {
+			still++
+		}
+	}
+	if moved == 0 {
+		t.Errorf("no frame of the burst differs from the one before it, although the "+
+			"fixture changes its framebuffer three times: %+v", res.Captured)
+	}
+	if still == 0 {
+		t.Errorf("no frame of the burst equals the one before it, so the burst cannot show "+
+			"that a movement ended: %+v", res.Captured)
+	}
+	for i := 1; i < len(res.Captured); i++ {
+		if res.Captured[i].Frame <= res.Captured[i-1].Frame {
+			t.Fatalf("the captured frames are not consecutive: %+v", res.Captured)
+		}
+	}
+}
+
+// TestACaptureStepCanCarryThePixelsOfEveryFrameItTook. The hashes are enough
+// to prove that something moved; a person who has to look at *what* moved
+// needs the pictures, and asking for them one round trip at a time is exactly
+// the thing a burst exists to avoid.
+func TestACaptureStepCanCarryThePixelsOfEveryFrameItTook(t *testing.T) {
+	var count int
+	l := newFakeLoop(t, func(*gift.Context) gift.View {
+		return tapTarget{w: 100, h: 100, count: &count}
+	}, nil)
+	res, err := l.d.runBatch(Batch{Steps: []Step{{Op: "capture", Frames: 2, PNG: true}}})
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	for i, c := range res.Captured {
+		if c.PNG == "" {
+			t.Errorf("frame %d of a burst that asked for pixels carries none", i)
+		}
+		if c.SHA == "" {
+			t.Errorf("frame %d of a burst carries no hash", i)
+		}
+	}
+}

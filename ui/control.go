@@ -290,9 +290,38 @@ func clamp01(v float32) float32 {
 // does: an infinite or NaN fraction turns into NaN vertex positions three
 // layers below the mistake, and the symptom is an empty window rather than a
 // misplaced knob.
+//
+// # A negative fraction is a mistake and is not clamped
+//
+// A fraction slightly *above* one is clamped in silence, and that asymmetry is
+// deliberate. 1.02 is the ordinary arithmetic of a download whose declared
+// size was a little short: the value is a real measurement, the intent is
+// unambiguous and a panic would turn a cosmetic inaccuracy into an outage on
+// a kiosk.
+//
+// A negative fraction is not a measurement. done/total is never below zero for
+// counts, so a negative value arrives either from a subtraction that went the
+// wrong way or — the case this was written for — from somebody writing
+// ui.ProgressBar(-1) because -1 looks like an obvious sentinel for "no idea
+// how far along this is". It is not one: the indeterminate mode is
+// [ProgressBarView.Indeterminate], and -1 was accepted and clamped to zero, so
+// both call sites in this project's own demo shipped a bar that sat at 0 %
+// for ever while its author believed it was an indeterminate spinner. That is
+// the "plausible looking wrong picture" this project prefers to fail loudly
+// on, and it survived a human looking at the screen precisely because a bar at
+// 0 % is a perfectly ordinary thing to see.
+//
+// So it panics, in the same call and for the same reason NaN does, and the
+// message names the modifier the caller was reaching for.
 func checkFraction(what string, v float64) float64 {
 	if v != v || v > 1e38 || v < -1e38 {
 		panic(fmt.Sprintf("gift/ui: %s(%v) must be a finite number", what, v))
+	}
+	if v < 0 {
+		panic(fmt.Sprintf("gift/ui: %s(%v): a fraction is never negative. "+
+			"A value above 1 is clamped, because a download can overshoot its "+
+			"declared size; a negative one is a mistake. If you meant \"no idea how "+
+			"far along this is\", that is ui.ProgressBar(0).Indeterminate()", what, v))
 	}
 	return v
 }

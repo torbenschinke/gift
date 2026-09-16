@@ -30,7 +30,7 @@ type server struct {
 //
 //	GET  /health      counters and liveness
 //	GET  /screenshot  a PNG of the real framebuffer
-//	POST /input       a batch of input steps with waits
+//	POST /input       a batch of input steps with waits, and frame bursts
 //	GET  /tree        the retained tree
 //	GET  /query       the nodes matching a filter, flat
 //	GET  /diag        diagnostics, overflow, theme, focus

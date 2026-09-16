@@ -121,6 +121,13 @@ var views = []struct {
 			"colour and the dismiss action, are ModalView.Scrim and ModalView.OnDismiss.",
 	},
 	{
+		name: "ui.modalDialog", set: setInternal,
+		why: "the node a presented modal hangs under, and the thing that moves when one " +
+			"opens or closes. It is not a layer because a layer fills the window and " +
+			"would stretch an alert card across it; it carries gift.Element.Hidden and " +
+			"gift.Element.Transition and nothing else. See ui/modal.go.",
+	},
+	{
 		name: "ui.Spacer", set: setMinimal, v: ui.Spacer(),
 		why: "a Spacer draws nothing and has no bounds of its own; a Background it then " +
 			"ignored would be exactly the lie variant A exists to avoid. See SpacerView.",
