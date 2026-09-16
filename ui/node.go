@@ -14,6 +14,7 @@ const (
 	kindOverlay
 	kindBox
 	kindScroll
+	kindLayer
 )
 
 // node is the retained half of every container view: it is both the
@@ -85,6 +86,8 @@ func (n *node) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 		res = layout.Stack(n.spec, cc, k, n, n.items, n.origins)
 	case kindScroll:
 		res = n.layoutScroll(ctx, cc, k)
+	case kindLayer:
+		res = n.layoutLayer(ctx, cc, k)
 	case kindBox:
 		// A Box has no content, so it is greedy: it takes the whole extent
 		// on every axis that is bounded, and collapses to its padding on an
@@ -227,6 +230,91 @@ func (n *node) layoutScroll(ctx *gift.LayoutContext, cc geom.Constraints, k int)
 	ctx.ReportScrollContent(float64(mainExtent(n.spec.Axis, content)), 0)
 	res.Size = cc.Constrain(content)
 	return res
+}
+
+// layoutLayer is the layout of one screen of a navigation container: fill the
+// area, and stretch the single child to fill it too.
+//
+// # Why this is not the overlay algorithm
+//
+// A [layer] is not a box that happens to hold one child, it *is* the screen —
+// the whole of the tab, or the whole of the area above a navigation bar — and
+// a screen that shrink-wrapped its content would be the wrong answer twice
+// over. Its own size would be the width of the widest label on it, so a
+// background behind it would not reach the edges of the window; and its
+// child's would be the same, so a [VScroll] inside a tab would be as wide as
+// its longest row rather than as wide as the tab.
+//
+// A stack measures its children with a *loose* cross axis — see
+// layout.Stack — so neither of those falls out of the ordinary machinery, and
+// there is no "stretch" cross alignment in this project to ask for. There does
+// not need to be one here: a layer has exactly one child, and the question
+// "where does the child sit inside the leftover space" has no leftover space
+// to be about.
+//
+// # An unbounded axis is refused
+//
+// A layer must fill what it is given, and an axis with no finite maximum gives
+// it nothing to fill. The earlier version of this function shrink-wrapped such
+// an axis, and that was a silent defect of the worst class this project has:
+// the scrim of a [ModalView] is a layer child with no content of its own, so
+// on an unbounded axis it measured zero — while the alert above it sized and
+// painted exactly as usual. The dialog was on the screen, looked right, and a
+// tap went straight through it to the "Delete all" button underneath. Nothing
+// reported it: the size equals the constraint on an unbounded axis, so the
+// overflow is zero, there is no visual difference, and there is no diagnostic.
+//
+// A panic is therefore the only honest answer. "Documented and not fixed" was
+// not available, because [ModalView] promises without qualification that the
+// scrim swallows every pointer event; and a diagnostic that only fires under
+// giftdebug would let a kiosk ship with a confirmation dialog that is
+// decoration. The message names the composition, because the composition is
+// always the same shape — a navigation container inside something that
+// measures its children loosely, which in this package means a scroll
+// container or an inflexible child of a stack.
+func (n *node) layoutLayer(ctx *gift.LayoutContext, cc geom.Constraints, k int) layout.Result {
+	if !cc.HasBoundedWidth() || !cc.HasBoundedHeight() {
+		panic("gift/ui: a navigation container was measured with an unbounded " +
+			"axis. ui.TabBar, ui.NavigationStack and ui.Modal are screens: they " +
+			"fill the area they are given, and there is nothing to fill here. " +
+			"The two ways to get here are putting one inside a scroll container, " +
+			"which is not a place a screen belongs, and making it an inflexible " +
+			"child of a stack, where the stack measures it with an unbounded main " +
+			"axis — ui.VStack(nav) rather than ui.VStack(nav.Flex(1)). Give it a " +
+			"Flex, or a Frame with a finite size on both axes. This is a panic " +
+			"and not a silently smaller screen because the scrim of a ui.Modal " +
+			"would measure zero on the unbounded axis while the alert above it " +
+			"drew normally, and every tap would go through a dialog that is on " +
+			"the screen")
+	}
+	fill := cc.Constrain(cc.Max)
+
+	size := fill
+	if k > 0 {
+		child := ctx.Measure(0, geom.Constraints{Min: fill, Max: cc.Max})
+		n.origins[0] = geom.Point{}
+		// The child may refuse the minimum — a Frame smaller than the screen
+		// does — and it may exceed the maximum, which is rule 1 of the
+		// overflow model of the project plan, section 7: gift passes an
+		// oversized child through rather than clamping it silently.
+		if child.W > size.W {
+			size.W = child.W
+		}
+		if child.H > size.H {
+			size.H = child.H
+		}
+	}
+	outer := cc.Constrain(size)
+	return layout.Result{Size: outer, Overflow: geom.Sz(
+		clampLow(size.W-outer.W), clampLow(size.H-outer.H))}
+}
+
+// clampLow returns v or zero, whichever is larger.
+func clampLow(v float32) float32 {
+	if v > 0 {
+		return v
+	}
+	return 0
 }
 
 // mainExtent returns the component of s along ax.

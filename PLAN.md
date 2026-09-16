@@ -287,6 +287,30 @@ Geste wird dort beendet, wo die Deaktivierung angewandt wird. Ein Wachposten
 im Widget selbst ist dort unerreichbar und darum kein zusaetzlicher Schutz,
 sondern eine irrefuehrende Behauptung.
 
+Ein Knoten kennt einen dritten Zustand neben gemountet und abgeraeumt:
+**gemountet und aus dem Bild genommen** (`Element.Hidden`). Er wird nicht
+gezeichnet, ist kein Zeigerziel und steht nicht in der Fokusreihenfolge; sein
+Zustand, seine Scrolloffsets und sein halb getippter Text bleiben. Aufbau und
+Layout laufen weiter, weil ein sauberer Teilbaum ohnehin nicht gemessen wird
+und das Ueberspringen eines schmutzigen die Arbeit nur in den Frame
+verschieben wuerde, in dem er wieder sichtbar wird — also genau dorthin, wo
+sie als Ruckler auffaellt. Das ist die eine Kosten, die ein verborgener Tab
+nicht spart, und sie gehoert benannt statt weggeredet.
+
+Wer den Fokus oder einen erfassten Zeiger haelt, waehrend seine Ebene
+verborgen wird, verliert ihn dort, wo verborgen wird. Ein Unmount findet nicht
+statt, es raeumt also sonst niemand auf. Das ist keine Feinheit: ein erfasster
+Zeiger wird ohne Treffertest zugestellt, ein Regler unter dem Finger schreibt
+also weiter, waehrend ihn niemand sieht. Und jede Repaint-Anmeldung eines
+verborgenen Teilbaums wird **beendet**, nicht auslaufen gelassen.
+
+Daraus folgt eine Regel ueber diesen Abschnitt hinaus. Wird einem Knoten vom
+Kern etwas weggenommen, das er selbst haelt — Fokus, Erfassung, Hover —, dann
+muss er davon erfahren, auch wenn das mitten in einem Build geschieht und auch
+wenn er deaktiviert ist. Sonst gibt er seine Anmeldungen nie frei. Eine
+Zustellung, die waehrend der Rekonziliation nicht laufen darf, wird
+**aufgeschoben** und im selben Update nachgeholt, nicht verworfen.
+
 Noch kein allgemeiner Signal-/Effect-Graph, keine implizite Goroutine-Sicherheit
 fuer State und keine magische Erkennung von In-place-Mutationen an Maps/Slices.
 
@@ -1687,7 +1711,26 @@ Bildschirmtastatur im Kioskmodus.
 
 Auswahl nach den Human Interface Guidelines: `ui.Toggle`, `ui.Slider`,
 `ui.SegmentedControl` und `ui.ProgressBar`, jeweils nach dem Muster von
-`ui.Button`. Navigation ueber eine TabBar, Kitchen-Sink-Demo.
+`ui.Button`. Navigation ueber eine TabBar, einen NavigationStack und eine
+modale Ebene. Kitchen-Sink-Demo.
+
+Ein inaktiver Tab und ein ueberdeckter Schirm bleiben **gemountet** und werden
+nach Abschnitt 5 aus dem Bild genommen. Abmounten waere der Verlust von
+Scrollposition und halb getippter Eingabe, was auf einem Kiosk der teuerste
+Fehler ist. Gemountet **und gezeichnet** waere schlimmer, weil gift beim
+Zeichnen nichts verwirft: eine unbestimmte Fortschrittsanzeige in einem
+unsichtbaren Tab hielte das Geraet dauerhaft wach. Die modale Ebene ist die
+ausdrueckliche Ausnahme — der Inhalt darunter wird weiter gezeichnet, sonst
+waere der Abdunkler ein graues Rechteck.
+
+Eingaben unter einer modalen Ebene faengt ein bildschirmfuellender Abdunkler,
+die Tastatur eine Fokusfalle. Der Abdunkler allein genuegt nicht, weil
+Tabulator keine Zeigerposition hat. `bildschirmfuellend` ist dabei das
+tragende Wort und wird erzwungen: ein Navigationsbehaelter auf einer
+unbegrenzten Achse wird abgewiesen, statt still zu schrumpfen. Ein Abdunkler
+der Groesse null unter einem normal gezeichneten Dialog ist ein
+Bestaetigungsdialog, der unbemerkt zur Dekoration wird, und das ist die
+schlimmste Fehlerklasse dieses Projekts.
 
 Verbindlich fuer jedes dieser Steuerelemente:
 

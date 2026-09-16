@@ -56,3 +56,32 @@ func NodeSlotForTest(a *App, key string) (uint32, bool) {
 	}
 	return walk(a.root.node)
 }
+
+// FocusTrapCountForTest is [App.traps], the number of mounted nodes declaring
+// [Element.FocusTrap].
+//
+// It is exported to the test package because the counter has no observable
+// effect while it is merely *wrong in the positive direction*: a count left
+// above zero by a missing decrement makes [App.focusRoot] walk the tree
+// looking for a trap that is not there, which is slower and finds nothing, so
+// every behavioural test still passes. Deleting the decrement in
+// App.destroyScopes left the whole suite green, which is what this exists to
+// stop.
+func FocusTrapCountForTest(a *App) int { return a.traps }
+
+// ObstructionForTest returns the node currently recorded as covering part of
+// the window, and whether one is recorded; see [Element.Obstructs].
+//
+// The record is invisible from outside: its only reader is
+// [App.ScrollIntoView], and the effect of pointing it at the wrong node is a
+// reveal that moves a scroll container by the wrong amount — which a test can
+// only see by building a form tall enough to reveal in, and which says nothing
+// about *which* node was picked. Review gate 13 found the rule picking the
+// on-screen keyboard of an inactive tab; this is what names it.
+func ObstructionForTest(a *App) (NodeRef, bool) {
+	h := a.in.soft.obstruct
+	if !a.store.Valid(h) {
+		return NodeRef{}, false
+	}
+	return NodeRef{h}, true
+}

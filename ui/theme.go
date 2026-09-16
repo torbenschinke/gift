@@ -48,6 +48,7 @@ const (
 	roleControlHover
 	roleControlPressed
 	roleControlDisabled
+	roleDanger
 	numColorRoles
 )
 
@@ -67,6 +68,7 @@ var roleNames = [numColorRoles]string{
 	roleControlHover:    "ColorControlHover",
 	roleControlPressed:  "ColorControlPressed",
 	roleControlDisabled: "ColorControlDisabled",
+	roleDanger:          "ColorDanger",
 }
 
 // The semantic colours. Every one of them is named for what it is *for* and
@@ -141,6 +143,20 @@ var (
 	ColorControlPressed = semanticColor(roleControlPressed)
 	// ColorControlDisabled is the face of a control that is out of input.
 	ColorControlDisabled = semanticColor(roleControlDisabled)
+
+	// ColorDanger is the colour of a choice that destroys something: the
+	// "Delete" button of an alert.
+	//
+	// It is the twelfth role and it arrived with the widget that needs it,
+	// which is the rule the paragraph above states. [AlertDestructive]
+	// is the only consumer in this package, and there is deliberately still
+	// no success and no warning colour, because nothing draws one.
+	//
+	// It is not simply "red". It is red in both themes and it is a
+	// *different* red in each, because a red that is legible on the light
+	// theme's white surface is muddy on the dark theme's slate one — which is
+	// the same argument [ColorOnAccent] exists for.
+	ColorDanger = semanticColor(roleDanger)
 )
 
 // --- the encoding -----------------------------------------------------------
@@ -271,6 +287,7 @@ func LightTheme() Theme {
 	t.c[roleControlHover] = RGB(244, 246, 250)
 	t.c[roleControlPressed] = RGB(200, 204, 212)
 	t.c[roleControlDisabled] = RGBA(0, 0, 0, 20)
+	t.c[roleDanger] = RGB(200, 30, 40)
 	return t
 }
 
@@ -303,6 +320,7 @@ func DarkTheme() Theme {
 	t.c[roleControlHover] = RGB(70, 78, 98)
 	t.c[roleControlPressed] = RGB(36, 40, 52)
 	t.c[roleControlDisabled] = RGBA(255, 255, 255, 20)
+	t.c[roleDanger] = RGB(255, 105, 110)
 	t.dark = true
 	return t
 }

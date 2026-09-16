@@ -1685,23 +1685,28 @@ func TestTheBlinkWindowIsAShortNumberOfSeconds(t *testing.T) {
 	}
 }
 
-// TestDisablingAFocusedFieldLeaksAtMostOneBlinkWindow pins a bound on a known
-// and accepted defect, so that it stays bounded.
+// TestDisablingAFocusedFieldStopsTheCaretAtOnce used to be
+// TestDisablingAFocusedFieldLeaksAtMostOneBlinkWindow, and the rename is the
+// finding.
 //
-// A field that is disabled while it holds the focus is never told
-// [gift.EventFocusLost]: gift suppresses the notification when the focus
-// changes during a build, because an application handler that reshaped the
-// tree under the reconciler is the worse of the two failures; see
-// [gift.EventContext.Animate]. So the field never cancels its animation and
-// the application keeps asking for frames until the deadline it last asked for
-// — about ten seconds of wakeups drawing no caret, because a disabled field
-// draws none.
+// A field that is disabled while it holds the focus was never told
+// [gift.EventFocusLost]: gift suppressed the notification when the focus
+// changed during a build, because an application handler that reshaped the
+// tree under the reconciler is the worse of the two failures. So the field
+// never cancelled its animation and the application kept asking for frames
+// until the deadline it last asked for — ten seconds of wakeups drawing no
+// caret, because a disabled field draws none. That was written down, bounded
+// and accepted.
 //
-// That is acceptable *because it ends*. What this test forbids is the change
-// that would make it not end: suppressing the state change instead of the
-// notification would leave the field holding the focus, re-arming on its own
-// events, and ten seconds would become for ever.
-func TestDisablingAFocusedFieldLeaksAtMostOneBlinkWindow(t *testing.T) {
+// It is not accepted any more. The notification is deferred to the end of the
+// build instead of dropped, and it reaches a disabled node, because the node
+// is the only thing in the process that can let go of what it is holding; see
+// gift's pending.go. So the bound is zero and this test asserts zero.
+//
+// The control case is the point of the first loop: a focused field that is
+// left alone asks for frames on every tick, so a failure to measure anything
+// cannot be mistaken for a fix.
+func TestDisablingAFocusedFieldStopsTheCaretAtOnce(t *testing.T) {
 	ed := ui.NewTextEditor("x")
 	var off *gift.State[bool]
 	h := gifttest.New(t, gifttest.Options{
@@ -1714,19 +1719,56 @@ func TestDisablingAFocusedFieldLeaksAtMostOneBlinkWindow(t *testing.T) {
 		Font: loadTestFont(t),
 	})
 	h.Find(gifttest.ByKey("field")).Focus()
+	if busy := busyTicks(h, 20); busy != 20 {
+		t.Fatalf("a focused field asked for %d of 20 frames; the caret is not enrolled at "+
+			"all and the measurement below would prove nothing", busy)
+	}
+
 	off.Set(true)
 	h.Settle()
-
 	if _, ok := caretOp(h); ok {
 		t.Fatal("a disabled field is still drawing a caret")
 	}
-	// Past the window the field last armed, with room for the tick that
-	// expires it, and then quiet.
-	h.Advance(ui.CaretBlinkWindow + time.Second)
-	if asksForFrames(h) {
-		t.Fatalf("the application still asks for frames %v after a focused field was disabled. "+
-			"The enrolment is no longer bounded by the blink window, which is the one thing "+
-			"that made this defect acceptable; see gift.EventContext.Animate.",
-			ui.CaretBlinkWindow+time.Second)
+	// Ten seconds at 60 Hz is 600 ticks; 120 is two seconds, which is two
+	// orders of magnitude more than the zero this must be and short enough to
+	// run. A regression would show up as 120.
+	if busy := busyTicks(h, 120); busy != 0 {
+		t.Fatalf("the application asked for %d of 120 frames after a focused field was "+
+			"disabled. The field never heard gift.EventFocusLost, so it never called "+
+			"Animate(0), and the kiosk stays awake for the whole %v blink window with "+
+			"nothing on screen to show for it", busy, ui.CaretBlinkWindow)
 	}
+}
+
+// busyTicks drives n input-plus-paint cycles by hand and counts the ones in
+// which something still wanted to be drawn.
+//
+// It is by hand rather than through Harness.Advance because the question is
+// the value of NeedsPaint *between* the input phase and the paint: Paint
+// clears the flag as its last act, so asking afterwards reads false for an
+// application that never stops drawing.
+//
+// The harness clock is moved to where the loop left it at the end. Without
+// that, two calls in one test would both start from the same instant, the
+// second would replay the frames of the first at timestamps that had already
+// passed, and anything with a deadline would never expire — which presents as
+// a test that hangs rather than as a measurement that is wrong.
+func busyTicks(h *gifttest.Harness, n int) int {
+	const step = 16 * time.Millisecond
+	a := h.App()
+	now := h.Now()
+	busy := 0
+	for range n {
+		now += step
+		a.BeginInput(now)
+		if err := a.Update(h.Size()); err != nil {
+			panic(err)
+		}
+		if a.NeedsPaint() {
+			busy++
+		}
+		a.Paint()
+	}
+	h.Advance(time.Duration(n) * step)
+	return busy
 }

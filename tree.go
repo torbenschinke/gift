@@ -142,8 +142,13 @@ func (a *App) NodeDeviceBounds(r NodeRef) geom.Rect {
 // on screen at all" answered without a GPU. It is not an occlusion test: a
 // node covered by an opaque sibling is still visible by this definition, and
 // [App.HitTest] is the verb for that question.
+//
+// A node inside a subtree that declared [Element.Hidden] returns false. That
+// is the same question with the same answer: an inactive tab is mounted, keeps
+// its layout bounds — [App.NodeBounds] still reports them — and is not on the
+// screen.
 func (a *App) NodeVisibleBounds(r NodeRef) (geom.Rect, bool) {
-	if !a.store.Valid(r.h) {
+	if !a.store.Valid(r.h) || a.hiddenAbove(r.h) {
 		return geom.Rect{}, false
 	}
 	clip, m, ok := a.deviceSpace(r.h)

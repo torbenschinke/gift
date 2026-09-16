@@ -1026,9 +1026,19 @@ func (a *App) ScrollBy(r NodeRef, d float64) bool {
 // viewport and r together.
 //
 // It is a jump; see [App.ScrollTo] for why.
+//
+// A node inside a subtree that declared [Element.Hidden] is not revealed and
+// the answer is false. It is the same answer [App.NodeVisibleBounds] gives
+// about the same node, and the two used to disagree in the same frame: one
+// said "not on screen", the other said "done". Scrolling a container in an
+// inactive tab to show something nobody can see is work with no result, and
+// worse, it destroys the offset the tab was keeping — which is the whole
+// reason an inactive tab stays mounted. The case is ordinary rather than
+// exotic: ui.TextField calls [EventContext.ScrollIntoView] from its focus
+// handler, and an application may call this one from a background result.
 func (a *App) ScrollIntoView(r NodeRef) bool {
 	a.assertUIGoroutine("ScrollIntoView")
-	if !a.store.Valid(r.h) {
+	if !a.store.Valid(r.h) || a.hiddenAbove(r.h) {
 		return false
 	}
 	moved := false

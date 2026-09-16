@@ -292,6 +292,14 @@ func (p *PaintContext) Images() render.Images { return p.app.images }
 func (a *App) paintNode(h scene.Handle) {
 	n := a.store.Get(h)
 	nd := &n.Payload
+	// The whole of [Element.Hidden] on the paint side, and the reason that
+	// flag exists: gift has no paint culling, so a mounted node is a painted
+	// node unless something says otherwise. This is that something, and it is
+	// checked before the transform is pushed so that a hidden subtree costs
+	// one field read and nothing else.
+	if nd.hidden {
+		return
+	}
 	if a.paintDepth > scene.MaxDepth {
 		panic(fmt.Sprintf(
 			"gift: paint recursion deeper than %d levels; a painter is descending into a cycle or an unbounded tree",

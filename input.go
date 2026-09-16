@@ -695,6 +695,13 @@ type inputState struct {
 	// [App.focusNeighbour].
 	focusScan []scene.Handle
 
+	// notices are the notifications the core owes a node but could not
+	// deliver where they arose, because they arose during a build; see
+	// pending.go. noticeSpare is the slice flushNotices swapped out last
+	// time, kept so that the delivery allocates nothing after warmup.
+	notices     []notice
+	noticeSpare []notice
+
 	// repeat is the key gift is currently repeating, if any; see
 	// [KeyRepeatDelay].
 	repeat keyRepeat
@@ -1382,8 +1389,33 @@ func (a *App) markNeedsPaint(h scene.Handle) {
 // node is unmounted, so that a hover, a capture or the focus cannot survive
 // the node it pointed at.
 func (a *App) forgetNode(h scene.Handle) {
+	// Nothing can be told anything about a node that is gone. This is the one
+	// place a deferred notification is genuinely dropped rather than delayed,
+	// and it is the case in which there is no recipient; see pending.go.
+	a.forgetNotices(h)
 	if a.in.focus == h {
 		a.in.focus = scene.Handle{}
+		// The focused node was unmounted, so it never got its
+		// [EventFocusLost] and never withdrew its own request for an
+		// on-screen keyboard; see [EventContext.RequestSoftKeyboard], which
+		// is the only thing that ever sets that bit and is only ever called
+		// by the node that has the focus. Deferring the notification, which
+		// is what a node that merely stopped being focusable gets, is not
+		// available here: by the time the queue is flushed the node does not
+		// exist.
+		//
+		// Without this a navigation that replaces a screen while a text
+		// field on it is focused leaves a keyboard on a kiosk with nothing
+		// to type into: ui.OnScreenKeyboard keeps building itself, every
+		// drawn key delivers a rune that [App.deliverKey] drops on the
+		// floor, and there is no interaction that takes it away again.
+		//
+		// The caret enrolment and the field's own drag state need no
+		// equivalent: [App.tickAnimations] drops an enrolment whose node is
+		// no longer valid, and the drag mode dies with the node that held
+		// it. The soft keyboard request is the only piece of state a node
+		// can set that outlives the node.
+		a.requestSoftKeyboard(false)
 	}
 	if a.in.soft.obstruct == h {
 		// The keyboard was unmounted. What it covered is visible again, so

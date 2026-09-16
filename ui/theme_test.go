@@ -493,31 +493,29 @@ func describe(l *render.List) string {
 // never given a value in one of the two themes — a colour that would silently
 // come out transparent, which is the failure mode this package works hardest
 // to avoid elsewhere.
+//
+// The roles are *enumerated* rather than listed. The list this test used to
+// carry held eleven of the twelve roles, and the missing one was ColorDanger,
+// which every alert's destructive button is drawn in: setting it to fully
+// transparent in both themes left the whole suite green. A guard over an enum
+// has to be written in terms of the enum, or it stops guarding on the day the
+// enum grows and says nothing about it.
 func TestEverySemanticColourResolves(t *testing.T) {
-	named := map[string]ui.Color{
-		"ColorLabel":           ui.ColorLabel,
-		"ColorSecondaryLabel":  ui.ColorSecondaryLabel,
-		"ColorBackground":      ui.ColorBackground,
-		"ColorSurface":         ui.ColorSurface,
-		"ColorSeparator":       ui.ColorSeparator,
-		"ColorAccent":          ui.ColorAccent,
-		"ColorOnAccent":        ui.ColorOnAccent,
-		"ColorControl":         ui.ColorControl,
-		"ColorControlHover":    ui.ColorControlHover,
-		"ColorControlPressed":  ui.ColorControlPressed,
-		"ColorControlDisabled": ui.ColorControlDisabled,
+	roles := ui.SemanticColorsForTest()
+	if len(roles) < 12 {
+		t.Fatalf("the palette enumerated %d roles; the export hook is not seeing them all", len(roles))
 	}
 	for _, th := range []struct {
 		name string
 		t    ui.Theme
 	}{{"light", ui.LightTheme()}, {"dark", ui.DarkTheme()}} {
-		for name, c := range named {
-			got := th.t.Color(c)
+		for _, r := range roles {
+			got := th.t.Color(r.Color)
 			if ui.IsSemantic(got) {
-				t.Errorf("%s under the %s theme resolved to another semantic colour", name, th.name)
+				t.Errorf("%s under the %s theme resolved to another semantic colour", r.Name, th.name)
 			}
 			if got.IsTransparent() {
-				t.Errorf("%s under the %s theme is transparent; the role has no value", name, th.name)
+				t.Errorf("%s under the %s theme is transparent; the role has no value", r.Name, th.name)
 			}
 		}
 	}
@@ -717,6 +715,14 @@ func TestIsSemanticIsAnEqualityAndNotASignTest(t *testing.T) {
 // asks of a user interface component that is not text, which is what the
 // accent is when it draws a focus ring. A single number would have forced
 // either an accent nobody uses or a caption nobody can read.
+//
+// The *pairs* are a judgement and are written out; the *coverage* is not. The
+// list below used to be the whole test, and it held ten of the twelve roles.
+// One of the two it missed was ColorDanger, so an alert's Delete button could
+// be made unreadable — or invisible — with the suite still green. The loop
+// after the list walks the palette enum and insists that every role appears
+// somewhere, which turns adding a role into a question the author has to
+// answer rather than a hole nobody sees.
 func TestBothThemesAreLegible(t *testing.T) {
 	type pair struct {
 		name   string
@@ -734,6 +740,48 @@ func TestBothThemesAreLegible(t *testing.T) {
 		{"the accent on background", ui.ColorAccent, ui.ColorBackground, 3},
 		{"the accent on surface", ui.ColorAccent, ui.ColorSurface, 3},
 		{"a control against its background", ui.ColorControl, ui.ColorBackground, 1.1},
+		// The two remaining control faces are pinned by what is written on
+		// them rather than by how far they stand out from the background: a
+		// hover is meant to be a hint and a disabled face is meant to
+		// recede, so a floor on either against the background would be a
+		// number invented to have one. What must hold is that the caption
+		// stays readable in both states.
+		{"label on a hovered control", ui.ColorLabel, ui.ColorControlHover, 4.5},
+		// ColorControlDisabled is a translucent wash laid *over* the control
+		// face rather than a face of its own, so the pairing that means
+		// something is the wash against what it is laid over: a disabled
+		// control has to look different from an enabled one, and the floor
+		// is the smallest difference that is still visible.
+		{"the disabled wash over a control", ui.ColorControlDisabled, ui.ColorControl, 1.05},
+		// A hairline has no text on it, so the rule is the WCAG 2.1 one for
+		// a non-text component — except that a separator is not a component
+		// either, it is a boundary, and 1.2 is what the palette's own
+		// hairlines actually reach. It is a floor against a separator that
+		// was made invisible, not a target.
+		{"a separator against its background", ui.ColorSeparator, ui.ColorBackground, 1.2},
+		// The destructive button of an alert. An alert is a card in
+		// ColorSurface, so that is the background it has to be legible on,
+		// and it is text, so AA applies. Review gate 13 found this role
+		// outside both enforcement tests: setting it to fully transparent in
+		// both themes left the whole suite green, which is every Delete
+		// button in the application made invisible with nothing to notice it.
+		{"a destructive choice on surface", ui.ColorDanger, ui.ColorSurface, 4.5},
+	}
+	// Coverage, driven by the enum rather than by this list. A pairing is a
+	// judgement — which colour is drawn on which — and cannot be generated,
+	// but "every role appears in at least one pairing" can be enforced, and
+	// that is what makes the thirteenth role safe: it cannot be added without
+	// somebody deciding what it has to be legible against.
+	seen := map[ui.Color]bool{}
+	for _, p := range pairs {
+		seen[p.fg], seen[p.bg] = true, true
+	}
+	for _, r := range ui.SemanticColorsForTest() {
+		if !seen[r.Color] {
+			t.Errorf("%s is in no contrast pairing. Every semantic colour is drawn "+
+				"against something; add the pairing that says what, with the "+
+				"threshold it has to meet", r.Name)
+		}
 	}
 	for _, th := range []struct {
 		name string

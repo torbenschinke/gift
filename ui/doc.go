@@ -239,6 +239,31 @@
 // connects them is a handle with a generation, so that a texture the backend
 // evicted becomes a placeholder and never somebody else's picture.
 //
+// # Navigation
+//
+// [TabBar] is the primary navigation of a kiosk, [NavigationStack] is push and
+// pop within one of its tabs, and [Modal] presents an [Alert] — or any other
+// view — over the lot with a scrim and a focus trap under it.
+//
+//	ui.Modal(
+//		ui.TabBar(sel.Get(), sel.Set,
+//			ui.Tab("Home", outline.Home, home).SelectedIcon(solid.Home),
+//			ui.Tab("Settings", outline.Cog, settings),
+//		),
+//		alertOrNil,
+//	)
+//
+// None of the three owns any navigation state. The selected index and the list
+// of pushed screens are the application's, and the widgets report what the
+// user asked for; see [TabBarView] and [NavigationStackView].
+//
+// The decision worth knowing before using them: an inactive tab and a covered
+// screen stay **mounted** and are taken out of the frame with
+// [gift.Element.Hidden]. They keep their scroll offsets and their state, they
+// are not painted, not hit tested and not in the tab order, and the price is
+// memory plus a build and a layout when something writes state inside one.
+// [TabBarView] states the full argument and every cost.
+//
 // # Ownership of children
 //
 // ui.VStack(a, b, c) creates a fresh slice that gift keeps. ui.VStack(items...)

@@ -47,6 +47,13 @@ func (a *App) buildScope(sc *scope) {
 	}
 	prev := a.building
 	a.building = sc
+	// The inherited answer to "is any of this on screen", recomputed from the
+	// tree because this scope may be the root of its own build: a memoised
+	// component three levels inside an inactive tab is rebuilt on its own,
+	// with no enclosing applyElement to have carried the flag down. See
+	// [App.reconcileHidden].
+	prevHidden := a.reconcileHidden
+	a.reconcileHidden = a.hiddenAbove(sc.node)
 	a.clearDeps(sc)
 	// Cleared before the call, not after: a state write from inside the build
 	// must survive as a pending rebuild instead of being wiped by the build
@@ -56,6 +63,7 @@ func (a *App) buildScope(sc *scope) {
 	done := false
 	defer func() {
 		a.building = prev
+		a.reconcileHidden = prevHidden
 		if !done {
 			// Abnormal exit. Leave the scope dirty so that the next update
 			// retries it instead of treating a half applied build as current.
@@ -151,8 +159,19 @@ func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *
 	nd.focusable = desc.elem.Focusable && desc.elem.Interactor != nil
 	nd.disabled = desc.elem.Disabled
 	nd.clip = desc.elem.Clip
+	// Before the obstruction below, because that one asks whether this node
+	// is visible and the answer is written here.
+	a.applyHidden(h, nd, desc.elem.Hidden)
+	a.applyFocusTrap(h, nd, desc.elem.FocusTrap)
 	nd.obstructs = desc.elem.Obstructs
-	if nd.obstructs {
+	// "The last one built wins" is what [Element.Obstructs] promises, and the
+	// last one built is not necessarily one anybody can see: a
+	// ui.OnScreenKeyboard inside every tab of a ui.TabBar would otherwise
+	// register the *inactive* tab's keyboard, and [App.unobstructed] would
+	// then reveal a focused field around a rectangle that is not on the
+	// screen. So the rule is the last *unhidden* one.
+	hiddenHere := nd.hidden || a.reconcileHidden
+	if nd.obstructs && !hiddenHere {
 		a.setObstruction(h)
 	} else if a.in.soft.obstruct == h {
 		a.setObstruction(scene.Handle{})
@@ -189,11 +208,205 @@ func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *
 	checkOwnership(nd, desc.elem.Children)
 	nd.childViews = desc.elem.Children
 
+	// The children are reconciled before they are linked into the tree, so
+	// [App.hiddenAbove] cannot answer for them yet; this is the answer carried
+	// down by hand. See [App.reconcileHidden].
+	prevHidden := a.reconcileHidden
+	a.reconcileHidden = hiddenHere
 	a.reconcileChildren(h, nd, desc.elem.Children, owner)
+	a.reconcileHidden = prevHidden
 
 	n := a.store.Get(h)
 	n.Flags &^= scene.FlagNeedsBuild
 	a.markNeedsLayout(h)
+}
+
+// applyHidden writes [Element.Hidden] onto the node and takes the input state
+// that a hidden node must not keep away from it.
+//
+// Hiding is not unmounting, so [App.forgetNode] does not run and nothing else
+// would clean up after it. Four things have to go, and none of them is on the
+// node that carries the flag — that node is a ui.layer, which has no
+// interactor at all. Every one of them is on a *descendant*, and every one is
+// reachable without walking the subtree, because the dispatcher already holds
+// a handle to exactly the node concerned:
+//
+//   - the keyboard focus, [inputState.focus]. Left alone, the caret blinks
+//     where nothing is drawn and every keystroke disappears into it.
+//   - the pointer capture, [pointer.capture]. This is the one with teeth: a
+//     captured pointer is delivered to unconditionally, so a ui.Slider whose
+//     tab is hidden mid-drag goes on writing the application's value from a
+//     finger moving over a screen the control is not on, and commits it on
+//     release. Measured before this: 0.500 to 0.971.
+//   - the hover, [pointer.over], and
+//   - the press look, which lives on the captured node.
+//
+// Each of the three nodes is told, so that a widget holding a gesture of its
+// own — a slider's grab, a text field's selection drag — can let go of it. The
+// telling is deferred to the end of the build, because no application handler
+// may run inside a reconciliation; see pending.go.
+//
+// Nothing here is O(subtree). The focus question is answered by walking *up*
+// from the focused node, and the pointer questions by walking up from two
+// handles, so the whole of it is O(depth) with a constant of three.
+func (a *App) applyHidden(h scene.Handle, nd *nodeData, hidden bool) {
+	was := nd.hidden
+	nd.hidden = hidden
+	if !hidden || was {
+		return
+	}
+	if a.isAncestor(h, a.in.focus) {
+		a.setFocus(scene.Handle{})
+	}
+	if a.isAncestor(h, a.in.soft.obstruct) {
+		// The keyboard went with the tab. A reveal aimed at the rectangle it
+		// used to occupy would push a focused field up around nothing; see
+		// [App.unobstructed]. The rebuild of the subtree usually clears this
+		// on its own — see [App.applyElement] — but a memoised component is
+		// not re-applied, so the record is dropped here as well.
+		a.setObstruction(scene.Handle{})
+	}
+	// The three repaint enrolments, stopped rather than left to expire. Every
+	// one of them exists to keep drawing something, and a hidden subtree
+	// draws nothing; see [App.stopHiddenWork] for the measurements and
+	// [TabBarView] for what they are worth on a Pi.
+	a.stopHiddenWork(h)
+	for i := range a.in.pointers {
+		p := &a.in.pointers[i]
+		if !p.active {
+			continue
+		}
+		if a.store.Valid(p.over) && a.isAncestor(h, p.over) {
+			gone := p.over
+			p.over = scene.Handle{}
+			a.setHover(gone, false)
+			a.deferNotice(gone, noticePointerLeave, p.id)
+		}
+		if a.store.Valid(p.capture) && a.isAncestor(h, p.capture) {
+			gone := p.capture
+			// The capture goes first. Everything downstream of a hidden
+			// subtree — the move, the release, the long press — is keyed on
+			// this handle, and clearing it is what actually stops the drag;
+			// the notification below is so that the widget can stop
+			// believing it is being dragged.
+			p.capture = scene.Handle{}
+			p.insideCap = false
+			a.setPressed(gone, false)
+			a.deferNotice(gone, noticePointerCancel, p.id)
+		}
+	}
+}
+
+// applyFocusTrap writes [Element.FocusTrap] onto the node and, on the build
+// that installs one, pulls the focus out of everything the trap excludes.
+//
+// Clearing rather than moving. The first tab press inside the trap then lands
+// on its first focusable node, which is the alert's first button, and no
+// application handler runs during a reconciliation to get it there.
+func (a *App) applyFocusTrap(h scene.Handle, nd *nodeData, trap bool) {
+	was := nd.focusTrap
+	nd.focusTrap = trap
+	switch {
+	case trap && !was:
+		a.traps++
+	case !trap && was:
+		a.traps--
+		checkTrapCount(a)
+	default:
+		return
+	}
+	if !trap {
+		return
+	}
+	if a.store.Valid(a.in.focus) && !a.isAncestor(h, a.in.focus) {
+		a.setFocus(scene.Handle{})
+	}
+}
+
+// stopHiddenWork ends every repaint enrolment inside the subtree of h.
+//
+// This is the second half of "a hidden subtree costs nothing per frame", and
+// the first half — not painting it — turned out not to be enough. Three
+// mechanisms in this project keep [App.NeedsPaint] true from outside the
+// painter, so hiding the node does not stop them:
+//
+//   - [EventContext.Animate]. ui.Toggle and ui.SegmentedControl re-arm theirs
+//     from their *layouter*, and layout does not skip a hidden node: a toggle
+//     flipped by a background task while its tab was off screen held the
+//     device at full rate for 12 of 60 frames, and a caret enrolment survived
+//     for its whole ten second window.
+//   - the kinetic fling of [App.tickScrolls]. Measured: a fling in flight
+//     when its tab was hidden ran for 140 of 600 frames, 2.24 seconds, and
+//     moved the offset from 400 to 1395 document units — so the screen the
+//     user came back to was a thousand pixels past where they left it, which
+//     is the promise [ui.NavigationStackView] makes and this is what makes it
+//     true.
+//   - the scroll indicator linger of [App.tickIndicators], which is a fade
+//     nobody can see.
+//
+// All three are short reused slices in the input state, so this is O(enrolled)
+// with a walk up the tree per entry, and it runs only on the build in which a
+// subtree becomes hidden. An application with nothing animating pays three
+// length checks.
+//
+// What it deliberately does not do is *remember* the enrolments so that they
+// could be resumed when the subtree comes back. A fling that is resumed a
+// minute later is a screen that scrolls by itself the moment the user returns
+// to it, and an animation is a transition between two states that have both
+// already been decided: the toggle is drawn in its new position when the tab
+// is shown again, without the slide, which is exactly what a tab switch shows
+// for every other kind of change inside it.
+func (a *App) stopHiddenWork(h scene.Handle) {
+	if len(a.in.anims) > 0 {
+		out := a.in.anims[:0]
+		for _, an := range a.in.anims {
+			if !a.isAncestor(h, an.node) {
+				out = append(out, an)
+			}
+		}
+		a.in.anims = out
+	}
+	if len(a.in.flings) > 0 {
+		out := a.in.flings[:0]
+		for _, f := range a.in.flings {
+			if !a.isAncestor(h, f) {
+				out = append(out, f)
+				continue
+			}
+			// The velocity has to be cleared as well, not just the tick
+			// enrolment: [scrollState.flinging] is what a later
+			// [App.startFling] and the gesture code read, and a container
+			// that came back holding a velocity would carry on where it left
+			// off the next time anything ticked it.
+			if s := a.data(f).scroll; s != nil {
+				a.stopFling(s)
+			}
+		}
+		a.in.flings = out
+	}
+	if len(a.in.indicators) > 0 {
+		out := a.in.indicators[:0]
+		for _, ind := range a.in.indicators {
+			if !a.isAncestor(h, ind) {
+				out = append(out, ind)
+			}
+		}
+		a.in.indicators = out
+	}
+}
+
+// isAncestor reports whether anc is h or an ancestor of h.
+func (a *App) isAncestor(anc, h scene.Handle) bool {
+	for depth := 0; a.store.Valid(h); depth++ {
+		if h == anc {
+			return true
+		}
+		if depth > scene.MaxDepth {
+			return false
+		}
+		h = a.store.Get(h).Parent
+	}
+	return false
 }
 
 // updateChild applies desc to the existing node h, which the matcher has
@@ -318,6 +531,12 @@ func (a *App) destroyScopes(h scene.Handle, depth int) {
 		sc.cell = nil
 		sc.one[0] = nil
 		a.liveScopes--
+	}
+	if nd.focusTrap {
+		// The counter [App.focusRoot] consults. release() clears the flag but
+		// cannot maintain the count, because a node payload has no App.
+		a.traps--
+		checkTrapCount(a)
 	}
 	a.clearOverflow(nd)
 	nd.release()

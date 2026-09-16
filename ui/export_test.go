@@ -116,3 +116,35 @@ func ResetIconService() {
 	clear(icons.blank)
 	icons.rasterised, icons.uploads = 0, 0
 }
+
+// SemanticColorsForTest returns every declared semantic colour role paired
+// with its exported name, in declaration order.
+//
+// It exists so that the two enforcement tests of the palette —
+// TestEverySemanticColourResolves and TestBothThemesAreLegible — enumerate the
+// roles instead of repeating a hand written list of them. Review gate 13 found
+// ColorDanger, the twelfth role, outside both: making it fully transparent in
+// both themes left the whole suite green, which means every alert's Delete
+// button could have been made invisible unnoticed. A hand maintained list is a
+// guard that silently stops covering the thing it guards the moment somebody
+// adds to the enum, and a palette is an enum that grows.
+func SemanticColorsForTest() []struct {
+	Name  string
+	Color Color
+} {
+	out := make([]struct {
+		Name  string
+		Color Color
+	}, 0, numColorRoles)
+	// roleNone is not a colour and roleClear is the one role that is
+	// transparent on purpose in every theme; the palette proper starts after
+	// them. Everything else is enumerated, so a role added tomorrow is
+	// covered without anybody remembering to add it here.
+	for r := roleClear + 1; r < numColorRoles; r++ {
+		out = append(out, struct {
+			Name  string
+			Color Color
+		}{roleNames[r], semanticColor(r)})
+	}
+	return out
+}

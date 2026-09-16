@@ -267,7 +267,16 @@ func (s *imageService) state(id asset.ID, size int) *imageRequest {
 //
 // pass is [gift.LayoutContext.Pass]; it is the frame counter the retry is
 // rate limited by.
-func (s *imageService) request(src asset.Source, size int, pass uint64, notify func()) *imageRequest {
+//
+// prio is [asset.Visible] for a picture that is on the screen and
+// [asset.Prefetch] for one in a subtree that declared [gift.Element.Hidden].
+// The distinction is not cosmetic on the target device: [TabBarView] builds
+// and lays out *every* tab before the first frame, so a kiosk with four tabs
+// of pictures used to put all of them into the queue at the same priority as
+// the tab the user is looking at, and the pipeline has one core of decode
+// budget to spend. Prefetch is exactly the class asset already has for "fetch
+// it, but not before something that is on screen".
+func (s *imageService) request(src asset.Source, size int, pass uint64, prio asset.Priority, notify func()) *imageRequest {
 	id := src.Metadata().ID
 	r := s.state(id, size)
 	if notify != nil {
@@ -280,7 +289,7 @@ func (s *imageService) request(src asset.Source, size int, pass uint64, notify f
 	r.ticket = s.pipe.Request(asset.Request{
 		Source:   src,
 		Size:     size,
-		Priority: asset.Visible,
+		Priority: prio,
 		OnResult: func(res asset.Result) {
 			// On the UI executor: asset.Config.Deliver is gift.App.Post.
 			r.inFlight = false
@@ -620,7 +629,13 @@ func (n *imageNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Siz
 			want = 1
 		}
 	}
-	n.req = images.request(n.src, want, ctx.Pass(), ctx.Invalidator())
+	// A hidden tab's picture is fetched, and it is fetched behind everything
+	// the user can see; see [imageService.request].
+	prio := asset.Visible
+	if ctx.OffScreen() {
+		prio = asset.Prefetch
+	}
+	n.req = images.request(n.src, want, ctx.Pass(), prio, ctx.Invalidator())
 	ctx.ReportOverflow(geom.Size{})
 	return out
 }

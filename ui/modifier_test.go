@@ -89,6 +89,38 @@ var views = []struct {
 		why: controlWhy,
 	},
 	{
+		name: "ui.TabBar", set: setMinimal, v: ui.TabBar(0, nil, ui.Tab("a", ui.Symbol{}, ui.Box())),
+		why: navigationWhy,
+	},
+	{
+		name: "ui.NavigationStack", set: setMinimal, v: ui.NavigationStack(nil, ui.Screen("a", ui.Box())),
+		why: navigationWhy,
+	},
+	{
+		name: "ui.Modal", set: setMinimal, v: ui.Modal(ui.Box(), nil),
+		why: navigationWhy,
+	},
+	{
+		name: "ui.Alert", set: setMinimal, v: ui.Alert("a", "b"),
+		why: "an alert is a card with a fixed width, a fixed radius and the surface " +
+			"colour, because those three are what makes it recognisable as an alert " +
+			"rather than as a panel. A caller who wants a differently shaped card " +
+			"hands that card to ui.Modal directly; the presentation takes any view.",
+	},
+	{
+		name: "ui.layer", set: setInternal,
+		why: "the layer is one screen of a TabBar, a NavigationStack or a Modal. It has " +
+			"no exported constructor: what it carries is gift.Element.Hidden and " +
+			"gift.Element.FocusTrap, and neither is a knob an application should be " +
+			"able to put on an arbitrary view. See ui/layer.go.",
+	},
+	{
+		name: "ui.scrim", set: setInternal,
+		why: "the scrim is the input barrier ui.Modal puts between the content and the " +
+			"modal. It has no exported constructor and its only two settings, the wash " +
+			"colour and the dismiss action, are ModalView.Scrim and ModalView.OnDismiss.",
+	},
+	{
 		name: "ui.Spacer", set: setMinimal, v: ui.Spacer(),
 		why: "a Spacer draws nothing and has no bounds of its own; a Background it then " +
 			"ignored would be exactly the lie variant A exists to avoid. See SpacerView.",
@@ -98,6 +130,21 @@ var views = []struct {
 // minimalModifiers are required of every view type. The signature is given as
 // the argument types; the result is always the receiver's own concrete type,
 // which is the property variant A rests on and which is checked separately.
+// navigationWhy is why the three navigation containers carry the minimal set
+// only.
+//
+// They are not boxes. A TabBar and a NavigationStack *are* the window: their
+// geometry is "fill whatever you are given", and the bar, the hairline and the
+// surface behind them are what makes each of them recognisable as the thing it
+// is rather than as a stack somebody styled. A Padding on a tab bar would put
+// the bar's own background inside the padding and leave the window showing
+// through around it, and a Frame on one would be a tab bar that does not reach
+// the bottom of the screen — which is not a layout an application wants and is
+// two lines of VStack away for one that does. A Modal is transparent: it has
+// no bounds of its own beyond the ones its content takes.
+const navigationWhy = "a navigation container fills what it is given and draws its own chrome; " +
+	"see ui.TabBarView on why its metrics are constants rather than modifiers"
+
 var minimalModifiers = []struct {
 	name string
 	args []reflect.Type

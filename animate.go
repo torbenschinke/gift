@@ -64,26 +64,30 @@ type animation struct {
 // that has blinked for a minute has said everything it has to say and the
 // user is not looking.
 //
-// # The one way an enrolment outlives its reason
+// # An enrolment does not outlive its reason
 //
-// A node that is animating because it holds the focus, and that declares
-// itself [Disabled] in the very build in which it still holds it, is never
-// told [EventFocusLost]: [App.setFocus] drops the notification when it runs
-// during a build, because an application handler that reshaped the tree under
-// the reconciler is the worse failure of the two. The node therefore never
-// calls Animate(0), and its enrolment stands until the deadline it last asked
-// for. Measured with ui.TextField: 624 frames of a 700 frame run, ten seconds
-// of full rate wakeups, drawing no caret, because the field is disabled and
-// paints none.
+// It used to. A node that was animating because it held the focus, and that
+// declared itself [Disabled] or was hidden in the very build in which it still
+// held it, was never told [EventFocusLost]: [App.setFocus] dropped the
+// notification when it ran during a build. The node therefore never called
+// Animate(0), and its enrolment stood until the deadline it last asked for.
+// Measured with ui.TextField: hiding the tab of a focused field cost 100 of
+// 120 sampled ticks — the full ten second window at 60 Hz, drawing no caret —
+// where an ordinary blur of the same field cost none.
 //
-// It is bounded and that is the whole reason it is acceptable. The deadline is
-// mandatory — see above — so the cost is one window and not a kiosk that never
-// sleeps again, and it is paid only when an application disables a control
-// under the user's own focus. What must not happen is a later change that
-// turns "suppress the notification" into "suppress the state change": the node
-// would keep the focus flag as well, re-arm on its next event, and the bounded
-// leak would become an unbounded one. A regression test pins the bound; see
-// ui.TestDisablingAFocusedFieldLeaksAtMostOneBlinkWindow.
+// The notification is now deferred rather than dropped, and delivered at the
+// first point in the update where an application handler may run; see
+// pending.go. It reaches a disabled node too, through [App.notifyDirect],
+// because the node is the only thing in the process that can let go of what it
+// is holding. On top of that, [App.stopHiddenWork] ends every enrolment inside
+// a subtree that becomes hidden, and [App.animate] refuses a new one for a
+// node nobody can see — which is the half that matters for ui.Toggle, whose
+// enrolment is re-armed from its *layouter* and would otherwise come straight
+// back on the next pass.
+//
+// The deadline is still mandatory, and for the reason above rather than as a
+// backstop: a view that re-arms for ever from its own handler is still allowed
+// to, and the deadline is what bounds everything else.
 //
 // It allocates once per node that has ever animated, and nothing afterwards:
 // the enrolment list is a reused slice compacted in place, exactly like
@@ -118,14 +122,31 @@ func (a *App) animate(h scene.Handle, d time.Duration) {
 	if !a.store.Valid(h) {
 		return
 	}
+	// The cancelling call is honoured first and unconditionally. It is how a
+	// node that lost the focus stops asking, and the node it comes from is
+	// very often one that has just been hidden — that is the whole point of
+	// delivering [EventFocusLost] to it; see pending.go. Refusing the cancel
+	// because the node is hidden would leave the enrolment standing for
+	// exactly the case the refusal below exists to prevent.
+	if d <= 0 {
+		a.markNeedsPaint(h)
+		a.stopAnimating(h)
+		return
+	}
+	// A node nobody can see does not get to keep the device awake, and this
+	// is not merely the mirror of [App.stopHiddenWork] — it is the half that
+	// a layouter needs. ui.Toggle and ui.SegmentedControl call Animate from
+	// their *layouter*, and a hidden subtree is still laid out: without this,
+	// a state write into an inactive tab would enrol the control afresh on
+	// every layout pass, and stopping the enrolment at the moment of hiding
+	// would achieve nothing.
+	if a.hiddenAbove(h) {
+		return
+	}
 	// One repaint in every case, including the cancelling one: the frame that
 	// ends an animation has to be drawn, or the last state the animation was
 	// in stays on the screen until something unrelated happens.
 	a.markNeedsPaint(h)
-	if d <= 0 {
-		a.stopAnimating(h)
-		return
-	}
 	until := a.in.now + d
 	for i := range a.in.anims {
 		if a.in.anims[i].node == h {

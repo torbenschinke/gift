@@ -56,21 +56,28 @@ func (a *App) setFocus(h scene.Handle) {
 	// A key held down was being repeated into the node that is losing the
 	// focus; see [App.cancelKeyRepeat].
 	a.cancelKeyRepeat()
-	// Notification is suppressed during a build. The one path that gets here
-	// mid build is a node that just declared itself disabled while holding the
-	// focus, and running an application event handler in the middle of
-	// reconciliation would let it write state and reshape the tree underneath
-	// the reconciler. The state itself is still updated, so nothing draws a
-	// focus ring it no longer owns; only the courtesy notification is dropped.
+	// Notification during a build is deferred, not dropped. No application
+	// handler may run in the middle of a reconciliation — it would write
+	// state and reshape the tree under the reconciler — but a node that lost
+	// the focus has real work to do about it, and the one that does the most
+	// is ui.TextField: it cancels a ten second caret enrolment, ends a
+	// selection drag and withdraws the on-screen keyboard. So the event is
+	// queued and delivered at the first safe point in the same update; see
+	// pending.go and [App.settleNotices].
 	notify := a.building == nil
 	if a.store.Valid(prev) {
 		a.data(prev).ia.Focused = false
 		a.markNeedsPaint(prev)
 		if notify {
 			a.deliver(prev, Event{Kind: EventFocusLost, Time: a.in.now, Pointer: MousePointer}, true)
+		} else {
+			a.deferNotice(prev, noticeFocusLost, MousePointer)
 		}
 	}
 	if a.store.Valid(h) {
+		// The focus came back to a node that is still waiting to be told it
+		// lost it. Nothing was lost, so nothing is owed.
+		a.dropNotice(h, noticeFocusLost)
 		a.data(h).ia.Focused = true
 		a.markNeedsPaint(h)
 		if notify {
@@ -80,6 +87,16 @@ func (a *App) setFocus(h scene.Handle) {
 }
 
 // focusable reports whether h may hold the keyboard focus.
+//
+// It deliberately does *not* ask whether h is inside a subtree that declared
+// [Element.Hidden], although that would be a true thing to say about a node
+// nobody can see. The two routes into [App.setFocus] are already closed on
+// that side — [App.hitNode] does not return a hidden node to a press, and
+// [App.appendFocusable] does not put one in the tab order — and the focus that
+// is already *on* a node when its layer is hidden is taken away where the
+// hiding happens, in [App.applyHidden]. A third check here would be a guard no
+// test can enter, which this project treats as prose pretending to be code;
+// see ui.disabledIsTheCoresBusiness for the argument in full.
 func (a *App) focusable(h scene.Handle) bool {
 	nd := a.data(h)
 	return nd.focusable && !nd.disabled && nd.interactor != nil
@@ -105,7 +122,7 @@ func (a *App) focusNeighbour(from scene.Handle, forward bool) scene.Handle {
 		return scene.Handle{}
 	}
 	order := a.in.focusScan[:0]
-	order = a.appendFocusable(order, a.root.node, 0)
+	order = a.appendFocusable(order, a.focusRoot(), 0)
 	a.in.focusScan = order
 	if len(order) == 0 {
 		return scene.Handle{}
@@ -135,6 +152,12 @@ func (a *App) appendFocusable(dst []scene.Handle, h scene.Handle, depth int) []s
 		return dst
 	}
 	nd := a.data(h)
+	// [Element.Hidden]. A tab that is not on screen is not in the tab order,
+	// which is the third of the three things that flag turns off; the other
+	// two are in [App.paintNode] and [App.hitNode].
+	if nd.hidden {
+		return dst
+	}
 	if nd.focusable && !nd.disabled && nd.interactor != nil {
 		dst = append(dst, h)
 	}
@@ -142,4 +165,46 @@ func (a *App) appendFocusable(dst []scene.Handle, h scene.Handle, depth int) []s
 		dst = a.appendFocusable(dst, c, depth+1)
 	}
 	return dst
+}
+
+// focusRoot is the node the focus order is enumerated from: the last node in
+// document order that declared [Element.FocusTrap], or the root of the tree
+// when nothing did.
+//
+// "Last in pre order" is the whole rule, and it gives the two answers a modal
+// stack needs without a second concept. An alert presented over a sheet is a
+// later sibling, so it wins. A trap nested inside another trap comes after its
+// own parent, so the inner one wins. A hidden subtree is skipped, so a trap
+// inside an inactive tab is not a trap at all.
+//
+// It is one extra pre order walk per focus change. Tab is pressed at human
+// speed; the walk allocates nothing and is skipped entirely — the recursion
+// does not even start — when no node in the process ever declared a trap,
+// because [App.traps] is then zero.
+func (a *App) focusRoot() scene.Handle {
+	if a.traps == 0 {
+		return a.root.node
+	}
+	found := scene.Handle{}
+	a.findTrap(a.root.node, 0, &found)
+	if found.IsZero() {
+		return a.root.node
+	}
+	return found
+}
+
+func (a *App) findTrap(h scene.Handle, depth int, out *scene.Handle) {
+	if depth > scene.MaxDepth || !a.store.Valid(h) {
+		return
+	}
+	nd := a.data(h)
+	if nd.hidden {
+		return
+	}
+	if nd.focusTrap {
+		*out = h
+	}
+	for _, c := range nd.children {
+		a.findTrap(c, depth+1, out)
+	}
 }

@@ -45,6 +45,14 @@ type nodeData struct {
 	// this field only says whether this node is that one.
 	obstructs bool
 
+	// hidden is [Element.Hidden]: the subtree is mounted but is not painted,
+	// not hit tested and not in the focus order.
+	hidden bool
+
+	// focusTrap is [Element.FocusTrap]: while this node is mounted, the focus
+	// order is confined to its subtree. See [App.focusRoot].
+	focusTrap bool
+
 	// xform is [Element.Transform]. It is a pointer because the common case
 	// is the identity and a nil check is cheaper than comparing six floats.
 	xform *geom.Affine2D
@@ -148,6 +156,16 @@ func (nd *nodeData) release() {
 	nd.focusable = false
 	nd.disabled = false
 	nd.clip = false
+	// Both are refreshed from the element by [App.applyElement] — but a
+	// *component* node never goes through it: [App.mountChild] fills a
+	// component's payload by hand and then builds the scope. A component
+	// mounted into the recycled slot of a hidden navigation layer would
+	// therefore be born invisible, and one landing in the slot of a modal
+	// layer would be born holding the focus trap of an alert that is gone.
+	// This is the rule of the project plan, section 5: a payload field that
+	// is not refreshed on every build is cleared on unmount.
+	nd.hidden = false
+	nd.focusTrap = false
 	nd.xform = nil
 	nd.scroll = nil
 	// The store hands a freed slot back with its payload untouched, which is

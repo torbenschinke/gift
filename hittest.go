@@ -119,6 +119,12 @@ func (a *App) hitNode(h scene.Handle, p geom.Point, clip geom.Rect, m geom.Affin
 	}
 	n := a.store.Get(h)
 	nd := &n.Payload
+	// [Element.Hidden]. The input half of the check in [App.paintNode], in
+	// the same place and for the same reason: a subtree nobody can see must
+	// not answer a tap either.
+	if nd.hidden {
+		return scene.Handle{}
+	}
 
 	if nd.xform != nil {
 		m = nd.xform.Mul(m)
@@ -179,7 +185,7 @@ func (a *App) hits(h scene.Handle, p geom.Point) bool {
 		return false
 	}
 	n := a.store.Get(h)
-	if n.Payload.interactor == nil {
+	if n.Payload.interactor == nil || a.hiddenAbove(h) {
 		return false
 	}
 	clip, m, ok := a.deviceSpace(h)
@@ -187,6 +193,26 @@ func (a *App) hits(h scene.Handle, p geom.Point) bool {
 		return false
 	}
 	return m.TransformRect(n.Bounds).Contains(p) && clip.Contains(p)
+}
+
+// hiddenAbove reports whether h or any node above it declared
+// [Element.Hidden].
+//
+// [App.hitNode] does not need it — it descends and stops at the hidden node —
+// but the two questions that start from a node and look upwards do: whether a
+// captured pointer is still on its node, and whether a node is on the screen
+// at all. It walks the parent chain and allocates nothing.
+func (a *App) hiddenAbove(h scene.Handle) bool {
+	for depth := 0; a.store.Valid(h); depth++ {
+		if a.data(h).hidden {
+			return true
+		}
+		if depth > scene.MaxDepth {
+			return false
+		}
+		h = a.store.Get(h).Parent
+	}
+	return false
 }
 
 // deviceSpace returns the inherited clip and transform of h, by walking up to

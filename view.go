@@ -133,10 +133,19 @@ type Element struct {
 	//
 	// What it is not: it is not a safe area, not an inset system and not a
 	// general occlusion model. Exactly one node can be the obstruction at a
-	// time — the last one built wins — and the only reader is the reveal.
-	// Layout, hit testing and painting ignore it completely. gift has no
-	// second consumer for a larger idea and inventing one here would be
+	// time — the last *unhidden* one built wins — and the only reader is the
+	// reveal. Layout, hit testing and painting ignore it completely. gift has
+	// no second consumer for a larger idea and inventing one here would be
 	// inventing it in the wrong place.
+	//
+	// "Unhidden" rather than simply "last" because a [ui.OnScreenKeyboard]
+	// inside every tab of a [ui.TabBar] is an ordinary composition, and all
+	// of them are built: without the qualification the obstruction would be
+	// the keyboard of an *inactive* tab, and the reveal would push a focused
+	// field up around a rectangle that is not on the screen. A node that
+	// declares it and is inside a subtree that declared [Element.Hidden] is
+	// not the obstruction, and one that becomes hidden while holding the
+	// record gives it up; see [App.applyHidden].
 	Obstructs bool
 
 	// Clip confines this node's subtree to its bounds, for painting and for
@@ -196,6 +205,85 @@ type Element struct {
 	// view writing any gesture code. A nil Scroll, the default, is an
 	// ordinary node.
 	Scroll *ScrollSpec
+
+	// Hidden takes this node and its whole subtree out of the frame without
+	// taking it out of the tree.
+	//
+	// It is the mechanism navigation is built on. An inactive tab and a
+	// screen that has been pushed over stay mounted — so their state, their
+	// scroll offsets and their half typed text fields survive — and stop
+	// costing anything per frame:
+	//
+	//   - [App.paintNode] returns immediately, so nothing in the subtree is
+	//     drawn and no painter runs. gift has no paint culling of any kind,
+	//     which is why this flag has to exist at all: without it every
+	//     mounted node is painted every frame whether or not anybody can see
+	//     it.
+	//   - [App.hitNode] returns immediately, so nothing in the subtree is a
+	//     pointer target. That includes a pointer that captured a node in the
+	//     subtree *before* it was hidden: [App.applyHidden] drops the capture
+	//     and tells the node its gesture was cancelled, because a captured
+	//     pointer is otherwise delivered to unconditionally and a ui.Slider
+	//     would go on writing the application's value from a finger moving
+	//     over a screen it is not on.
+	//   - [App.appendFocusable] skips the subtree, so nothing in it is in the
+	//     tab order, and the focus is taken away from it in the build that
+	//     hides it; see [App.applyHidden]. The node that held the focus is
+	//     told so, after the build — not during it, because no application
+	//     handler may run inside a reconciliation, and not never, because the
+	//     handler is where a caret enrolment is cancelled. See pending.go.
+	//   - the hover and the press look go the same way, and for the same
+	//     reason they are on a descendant rather than on the node that
+	//     carries this flag.
+	//   - [App.ScrollIntoView] and [App.NodeVisibleBounds] both answer "not
+	//     on screen", which is one answer and not two.
+	//
+	// What it deliberately does *not* do is skip build and layout. A hidden
+	// subtree that nothing marked dirty is neither rebuilt nor measured
+	// anyway — that is the three level invalidation of the project plan,
+	// section 6 — and skipping the layout of one that *is* dirty would only
+	// move the work to the frame in which it becomes visible again, where it
+	// would be a hitch the user can see.
+	//
+	// The cost that is real and is not solved by this flag, only named: a
+	// state write inside a hidden subtree still rebuilds and re-lays it out.
+	// A background task writing into an inactive tab is the case; it costs a
+	// build and a layout and no paint. A layouter that schedules work for
+	// somebody else can ask [LayoutContext.OffScreen] and lower its priority
+	// accordingly, which is what ui.ImageView does with the asset pipeline.
+	//
+	// What used to be a second real cost is not one any more. Every "keep
+	// repainting" enrolment in this project — an [EventContext.Animate]
+	// window, a kinetic fling, a scroll indicator linger — is *ended* when
+	// the subtree is hidden rather than left to run to its deadline; see
+	// [App.stopHiddenWork] for what each of them was measured to cost and why
+	// none of them is resumed when the subtree comes back. An enrolment taken
+	// out from a layouter, which is how ui.Toggle animates, is refused while
+	// the node is hidden; see [App.animate].
+	Hidden bool
+
+	// FocusTrap confines the keyboard focus order to this node's subtree for
+	// as long as the node is mounted.
+	//
+	// It is what makes a modal modal on the keyboard side. A scrim stops a
+	// finger from reaching the button behind an alert; without this, tab
+	// would still walk straight into it.
+	//
+	// The rule is one sentence: the *last* node in document order that
+	// declares it wins, and [App.MoveFocus] then enumerates only that node's
+	// subtree. Last in pre order means an alert stacked on top of a sheet
+	// traps inside the alert, and a nested trap beats the one it is nested
+	// in, because a child comes after its parent. In addition, the build that
+	// applies a trap takes the focus away from anything outside it, so an
+	// alert that opens over a focused text field leaves the focus nowhere
+	// rather than on a field the user can no longer reach.
+	//
+	// What it is not: it does not stop a key event from *bubbling* out of the
+	// trap to an ancestor interactor, because bubbling follows the tree and
+	// not the focus order, and it does not block [EventContext.RequestFocus]
+	// from a node outside — nothing outside can be reached by a pointer under
+	// a scrim, so there is no caller.
+	FocusTrap bool
 }
 
 // BuildContext is passed to [View.Build].

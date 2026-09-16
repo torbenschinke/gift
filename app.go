@@ -93,6 +93,26 @@ type App struct {
 	diag       Diagnostics
 	pub        diagPublisher
 	liveScopes uint64
+
+	// traps is the number of mounted nodes that declare [Element.FocusTrap].
+	// It is a counter and not a flag because the whole point of the "last one
+	// in document order wins" rule is that there may be several; see
+	// [App.focusRoot], whose tree walk this number skips entirely in the
+	// overwhelmingly common case of an application with no modal on screen.
+	traps int
+
+	// reconcileHidden is the inherited [Element.Hidden] state of the node
+	// currently being applied: true when any ancestor of it, inside the part
+	// of the tree this reconciliation has already walked, declared the flag.
+	//
+	// It exists because [App.hiddenAbove] cannot answer during a mount. A
+	// freshly mounted node is linked to its parent *after* its element has
+	// been applied — see [App.mountChild] — so a walk up the parent chain
+	// from it reaches nothing. The flag is carried down the descent instead,
+	// and [App.buildScope] recomputes it from the tree at the top of every
+	// build, because a memoised component deep inside an inactive tab is
+	// rebuilt on its own with no enclosing descent to inherit from.
+	reconcileHidden bool
 }
 
 // New creates an App and mounts the root component. It does not build
@@ -183,6 +203,11 @@ func (a *App) Update(viewport geom.Size) error {
 
 	a.drainPosts()
 	a.runBuilds()
+	// The first point in the frame where an application handler may run
+	// again. Everything a build owed a node — the focus it took away, the
+	// capture and the hover it hid — is delivered here, and whatever that
+	// dirtied is rebuilt before the layout sees the tree; see pending.go.
+	a.settleNotices()
 
 	if a.needsLayout {
 		a.layoutPass++

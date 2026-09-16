@@ -692,7 +692,16 @@ func (n *textFieldNode) paintLine(ctx *gift.PaintContext, b geom.Rect, req text.
 // because on the target platform a touch *is* a mouse and the branch would
 // never be taken where it is needed.
 func (n *textFieldNode) HandleEvent(ctx *gift.EventContext, e gift.Event) bool {
-	if n.disabled {
+	if n.disabled && e.Kind != gift.EventFocusLost {
+		// A disabled field takes no input, and the core does not offer it
+		// any: see [gift.App.deliver]. The one thing it is still told is that
+		// the focus has gone, because a field that is disabled in the very
+		// build that takes the focus off it is still holding a ten second
+		// caret enrolment and possibly a request for the on-screen keyboard,
+		// and it is the only thing in the process that can let go of them.
+		// gift delivers that one through [gift.App.notifyDirect], which is
+		// the core telling a node about a transition the core made rather
+		// than input arriving at a control.
 		return false
 	}
 	switch e.Kind {

@@ -86,6 +86,26 @@ func (l *LayoutContext) Pass() uint64 { return l.app.layoutPass }
 // scheduled. See ui.ImageView.
 func (l *LayoutContext) Density() float32 { return l.app.density }
 
+// OffScreen reports whether the node being laid out is inside a subtree that
+// declared [Element.Hidden].
+//
+// A layouter is run for a hidden subtree — that is deliberate, see
+// [Element.Hidden] — so this is the question "is any of this going to be
+// looked at". It exists for exactly one kind of decision: the *priority* of
+// work a layouter schedules for somebody else.
+//
+// The case that forced it is ui.ImageView, which issues its request to the
+// asset pipeline from Layout. A ui.TabBar builds every tab before the first
+// frame, so without this every picture on every inactive tab competed at
+// asset.Visible priority with the pictures the user is actually looking at,
+// on a Pi 4 with one core of decode budget.
+//
+// It must not be used to measure anything. A layout that depended on it would
+// make a tab a different shape depending on whether it happens to be the
+// selected one, and the tab would then have to be re-measured on the frame it
+// becomes visible, which is a hitch on the one frame that must not have one.
+func (l *LayoutContext) OffScreen() bool { return l.app.hiddenAbove(l.node) }
+
 // ChildCount returns the number of children of the node being laid out.
 func (l *LayoutContext) ChildCount() int { return len(l.nd.children) }
 
