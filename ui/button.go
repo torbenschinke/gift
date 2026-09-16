@@ -402,6 +402,12 @@ func (n *buttonNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Si
 // so a hover is a repaint and nothing else: no view function runs and
 // [gift.Diagnostics.Builds] does not move.
 func (n *buttonNode) Paint(ctx *gift.PaintContext) {
+	// In front of the focus ring gate below and not behind it; see
+	// [assertResolved]. An unresolved colour is transparent, so the gate
+	// would drop the ring and a button that never shows where the keyboard
+	// is would be the only symptom.
+	assertResolvedBorder(n.focusRing, "the focus ring of a Button")
+
 	ia := ctx.Interaction()
 	st := n.styleFor(ia)
 	b := ctx.Bounds()
@@ -453,8 +459,12 @@ func styleOf(s ButtonStyle) styleSpec {
 //     which is where every desktop toolkit puts the activation of a button.
 //
 // A disabled button never sees any of this: gift does not deliver events to a
-// disabled node at all. The check below is belt and braces for a node that was
-// disabled between the press and the release.
+// disabled node at all, and the payload flag is written from the element in
+// the same pass that builds this node, so there is no window between the press
+// and the release in which it could be reached either. The check below is
+// therefore unreachable and is kept only because it predates that guarantee;
+// the controls in toggle.go, slider.go and segmented.go deliberately do not
+// have one, and [disabledIsTheCoresBusiness] says why.
 func (n *buttonNode) HandleEvent(ctx *gift.EventContext, e gift.Event) bool {
 	if n.disabled {
 		return false

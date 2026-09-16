@@ -59,6 +59,18 @@ type nodeData struct {
 	// source of the content transform; see [App.beginSubtree].
 	scroll *scrollState
 
+	// control is the retained gesture and animation state of a control; see
+	// [ControlState]. It is a value and not a pointer, because it is six
+	// words and a pointer would be an allocation per control node for the
+	// sake of saving them on every node that is not one.
+	//
+	// It is *not* refreshed from the element, exactly like ia below: a
+	// rebuild replaces the view and not the node, and the whole reason this
+	// field exists is that a control rebuilds itself on every step of its own
+	// gesture. It is dropped when the node is unmounted, like every other
+	// payload field that outlives a build; see [nodeData.release].
+	control ControlState
+
 	// ia is the interaction state gift owns for this node. It lives here and
 	// not in the view because that is what makes hover and press survive a
 	// rebuild and, more importantly, what makes them not cause one; see
@@ -138,6 +150,14 @@ func (nd *nodeData) release() {
 	nd.clip = false
 	nd.xform = nil
 	nd.scroll = nil
+	// The store hands a freed slot back with its payload untouched, which is
+	// what makes an unmount/remount cycle allocation free, so a field that is
+	// not refreshed from the element has to be dropped here or the next node
+	// in this slot inherits it. A control's gesture state is exactly such a
+	// field: without this a fresh control could be born Grabbed, holding the
+	// grab offset of the drag the node before it never finished, and would
+	// then move on the next bare pointer move without a press.
+	nd.control = ControlState{}
 	nd.ia = Interaction{}
 	nd.flex = 0
 	nd.childViews = nil

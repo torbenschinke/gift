@@ -1,5 +1,7 @@
 package gift
 
+import "github.com/torbenschinke/gift/internal/scene"
+
 // This file exposes a sliver of the pointer state machine to the external test
 // package. It is a _test.go file, so nothing here is part of the API.
 
@@ -28,3 +30,29 @@ func SetMouseDraggedForTest(a *App, v bool) {
 // would have kept the test green. A test of a constant that does not name the
 // constant only pins the order of magnitude.
 const MaxRepeatsPerTickForTest = maxRepeatsPerTick
+
+// NodeSlotForTest returns the storage slot index of the mounted node carrying
+// the given reconciliation key, and whether one was found.
+//
+// It exists so that a test about payload recycling can say which slot it is
+// talking about. The scene store hands a freed slot straight back on the next
+// mount, and a test that only checks "the new node is clean" passes just as
+// happily when the new node landed in a brand new slot and the recycled path
+// was never entered — which is how the first version of
+// TestAFreshlyMountedControlDoesNotInheritTheGestureOfTheOneBeforeIt managed
+// to guard nothing at all.
+func NodeSlotForTest(a *App, key string) (uint32, bool) {
+	var walk func(h scene.Handle) (uint32, bool)
+	walk = func(h scene.Handle) (uint32, bool) {
+		if a.store.Get(h).Key == key {
+			return h.Index(), true
+		}
+		for _, c := range a.data(h).children {
+			if idx, ok := walk(c); ok {
+				return idx, true
+			}
+		}
+		return 0, false
+	}
+	return walk(a.root.node)
+}

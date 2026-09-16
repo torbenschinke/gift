@@ -24,18 +24,36 @@ import (
 // from that table, and an absent case fails nothing — which is not a
 // hypothetical: ui.Image had exactly such a gate, unguarded and unenumerated,
 // from the day it was written until this work unit. So the table is paired
-// with a scan of the package's own source for the call that *is* the gate,
-// [Color.IsTransparent], and the scan fails when a function that did not
-// contain one starts to.
+// with a scan of the package's own source for the calls that *are* the gates,
+// and the scan fails when a function that did not contain one starts to.
 //
-// What it can and cannot see, stated rather than implied. It works on
-// functions and not on statements, so a new gate inside a function that
-// already has one — a fifth colour in paintContent — is invisible to it and
-// only the table would catch it. It is a source scan and not a proof: it says
-// "somebody has to think about this function", and the thinking is the entry
-// below. That is the cheap ninety percent of a checker, and an AST analysis
-// that tried to decide *which* colour a gate reads and whether an assertion
-// dominates it would be a static analyser living in a test file.
+// # What counts as a gate call
+//
+// [Color.IsTransparent] and [Border.IsVisible], and the same name on
+// [render.Shadow] and [render.Material]. The second form is the one this
+// checker was blind to for its first two work units, and the blindness was
+// total rather than partial: render.Border.IsVisible is
+// "b.Width > 0 && !b.Color.IsTransparent()", a real transparency gate that
+// lives in another package, so parser.ParseDir(".") cannot see through it and
+// a widget that gated its border, its knob outline or its focus ring named no
+// gate at all as far as this test was concerned. Five gates of the selection
+// controls, and seven pre-existing ones in button.go, textfield.go, style.go
+// and gallery.go, were invisible on that account.
+//
+// Matching on the method name and not on the receiver type is deliberate. A
+// name based matcher over-reports — [render.Material.IsVisible] reads a kind
+// and no colour at all — and over-reporting costs one line in the inventory
+// below saying so, while under-reporting costs a widget that draws nothing.
+//
+// # What it can and cannot see, stated rather than implied
+//
+// It works on functions and not on statements, so a new gate inside a function
+// that already has one — a fifth colour in paintContent — is invisible to it
+// and only the table would catch it. It is a source scan and not a proof: it
+// says "somebody has to think about this function", and the thinking is the
+// entry below. That is the cheap ninety percent of a checker, and an AST
+// analysis that tried to decide *which* colour a gate reads and whether an
+// assertion dominates it would be a static analyser living in a test file.
 func TestTheGateInventoryIsComplete(t *testing.T) {
 	// The inventory. Every function in this package that asks a colour
 	// whether it is transparent, and why that is safe.
@@ -46,6 +64,19 @@ func TestTheGateInventoryIsComplete(t *testing.T) {
 		"tileNode.Paint":             "guarded: assertResolved on TileStyle.Error and TileStyle.Provisional",
 		"imageNode.Paint":            "guarded: assertResolved on the placeholder colour of an Image",
 		"iconNode.Paint":             "guarded: assertResolved on the foreground of an Icon",
+		"buttonNode.Paint":           "guarded: assertResolvedBorder on the focus ring of a Button, the first statement",
+		"textFieldNode.Paint": "guarded: assertResolvedBorder on the focus ring of a TextField, the " +
+			"first statement",
+		"toggleNode.Paint": "guarded: five assertResolved calls, the first five statements of the " +
+			"function",
+		"sliderNode.Paint": "guarded: five assertResolved calls, the first five statements of the " +
+			"function",
+		"segmentedNode.Paint": "guarded: four assertResolved calls, the first four statements of the " +
+			"function",
+		"tileNode.paintTileState": "guarded: assertResolvedBorder on TileStyle.Selected and " +
+			"TileStyle.Cursor, the first two statements",
+		"paintBorder": "guarded: assertResolvedBorder on the border colour of a node, the first " +
+			"statement",
 		"keyboardNode.paintKeys": "guarded: five assertResolved calls, the first five statements of the " +
 			"function",
 		"styleSpec.needsPainter": "not a gate: it decides whether a painter is allocated at all, so an " +
@@ -78,7 +109,7 @@ func TestTheGateInventoryIsComplete(t *testing.T) {
 						return true
 					}
 					sel, ok := call.Fun.(*ast.SelectorExpr)
-					if !ok || sel.Sel.Name != "IsTransparent" {
+					if !ok || !isGateCall(sel.Sel.Name) {
 						return true
 					}
 					if seen[who] {
@@ -300,6 +331,115 @@ func TestEveryVisibilityGateIsGuarded(t *testing.T) {
 			want: "the placeholder colour of an Image",
 		},
 		{
+			name: "the button focus ring",
+			call: func() {
+				(&buttonNode{focusRing: Border{Width: 2, Color: ColorAccent}}).Paint(nil)
+			},
+			want: "the focus ring of a Button",
+		},
+		{
+			name: "the text field focus ring",
+			call: func() {
+				(&textFieldNode{
+					focusRing: Border{Width: 2, Color: ColorAccent},
+					ed:        NewTextEditor(""),
+				}).Paint(nil)
+			},
+			want: "the focus ring of a TextField",
+		},
+		{
+			name: "the toggle off track",
+			call: func() { (&toggleNode{off: ColorControl}).Paint(nil) },
+			want: "the off track of a Toggle",
+		},
+		{
+			name: "the toggle on track",
+			call: func() { (&toggleNode{onColor: ColorAccent}).Paint(nil) },
+			want: "the on track of a Toggle",
+		},
+		{
+			name: "the toggle knob",
+			call: func() { (&toggleNode{knob: ColorSurface}).Paint(nil) },
+			want: "the knob of a Toggle",
+		},
+		{
+			name: "the toggle knob border",
+			call: func() {
+				(&toggleNode{knobBorder: Border{Width: 1, Color: ColorSeparator}}).Paint(nil)
+			},
+			want: "the knob border of a Toggle",
+		},
+		{
+			name: "the toggle focus ring",
+			call: func() {
+				(&toggleNode{focusRing: Border{Width: 2, Color: ColorAccent}}).Paint(nil)
+			},
+			want: "the focus ring of a Toggle",
+		},
+		{
+			name: "the slider track",
+			call: func() { (&sliderNode{track: ColorControl}).Paint(nil) },
+			want: "the track of a Slider",
+		},
+		{
+			name: "the slider fill",
+			call: func() { (&sliderNode{fill: ColorAccent}).Paint(nil) },
+			want: "the filled part of a Slider",
+		},
+		{
+			name: "the slider knob",
+			call: func() { (&sliderNode{knob: ColorSurface}).Paint(nil) },
+			want: "the knob of a Slider",
+		},
+		{
+			name: "the slider knob border",
+			call: func() {
+				(&sliderNode{knobBorder: Border{Width: 1, Color: ColorSeparator}}).Paint(nil)
+			},
+			want: "the knob border of a Slider",
+		},
+		{
+			name: "the slider focus ring",
+			call: func() {
+				(&sliderNode{focusRing: Border{Width: 2, Color: ColorAccent}}).Paint(nil)
+			},
+			want: "the focus ring of a Slider",
+		},
+		{
+			name: "the segmented tray",
+			call: func() { (&segmentedNode{tray: ColorControl}).Paint(nil) },
+			want: "the tray of a SegmentedControl",
+		},
+		{
+			name: "the segmented indicator",
+			call: func() { (&segmentedNode{indicator: ColorSurface}).Paint(nil) },
+			want: "the indicator of a SegmentedControl",
+		},
+		{
+			name: "the segmented indicator border",
+			call: func() {
+				(&segmentedNode{border: Border{Width: 1, Color: ColorSeparator}}).Paint(nil)
+			},
+			want: "the indicator border of a SegmentedControl",
+		},
+		{
+			name: "the segmented focus ring",
+			call: func() {
+				(&segmentedNode{focusRing: Border{Width: 2, Color: ColorAccent}}).Paint(nil)
+			},
+			want: "the focus ring of a SegmentedControl",
+		},
+		{
+			name: "the progress track",
+			call: func() { (&progressNode{track: ColorControl}).Paint(nil) },
+			want: "the track of a ProgressBar",
+		},
+		{
+			name: "the progress fill",
+			call: func() { (&progressNode{fill: ColorAccent}).Paint(nil) },
+			want: "the fill of a ProgressBar",
+		},
+		{
 			name: "the tile error fill",
 			call: func() { assertResolved(ColorAccent, "TileStyle.Error") },
 			want: "TileStyle.Error",
@@ -339,4 +479,10 @@ func TestAResolvedColourPassesEveryGate(t *testing.T) {
 	// show, and everything after them dereferences the gallery and the slot
 	// that a nil context cannot supply. The gallery's own tests paint it for
 	// real; see gallery_test.go.
+}
+
+// isGateCall reports whether a method name is one of the forms a visibility
+// gate takes in this package.
+func isGateCall(name string) bool {
+	return name == "IsTransparent" || name == "IsVisible"
 }

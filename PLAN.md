@@ -264,6 +264,29 @@ ui.VStack(
   Sie sollen keinen fachlichen Root-Rebuild erzwingen.
 - Dauerhafte Galerieauswahl lebt beim Collection-Owner, nicht im recycelten Tile.
 
+Praesentationszustand, der einen Neuaufbau ueberleben muss, liegt in der
+Knoten-Nutzlast und nicht im View, im Layouter oder im Painter: diese drei
+werden bei jedem Aufbau neu erzeugt. Fuer das Scrollen ist das
+`ScrollIndicatorState`, fuer Steuerelemente `ControlState` — Griffpunkt einer
+laufenden Geste, Ausgangswert und Startzeitpunkt einer laufenden Animation.
+Geschrieben wird er aus dem Interactor und aus dem Layouter; der Layoutdurchlauf
+ist die einzige Stelle, an der ein Knoten bemerken kann, dass ein *Aufbau*
+seinen Wert veraendert hat. Der Painter liest ihn und schreibt ihn nie.
+
+Zwei Regeln dazu, beide aus Review-Gate 12 und beide teuer erkauft. Erstens:
+ein Nutzlastfeld, das nicht bei jedem Aufbau aus dem Element aufgefrischt wird,
+wird beim **Unmount** in `nodeData.release()` geleert, neben `scroll`, `ia` und
+`xform` — nicht beim Mount. Der Unterschied ist sichtbar, weil die Nutzlast
+recycelt wird: ein Test, der einen Knoten in *einem* Update austauscht, trifft
+den recycelten Platz nie, weil der Abgleich erst alle neuen Kinder mountet und
+danach die uebrig gebliebenen abraeumt. Ein solcher Test ist gruen, auch wenn
+das Leeren ganz fehlt. Zweitens: gift stellt einem deaktivierten Knoten keine
+Ereignisse zu. Ein Steuerelement, das waehrend einer Geste deaktiviert wird,
+bekommt sein Loslassen also nie und kann sich nicht selbst aufraeumen. Die
+Geste wird dort beendet, wo die Deaktivierung angewandt wird. Ein Wachposten
+im Widget selbst ist dort unerreichbar und darum kein zusaetzlicher Schutz,
+sondern eine irrefuehrende Behauptung.
+
 Noch kein allgemeiner Signal-/Effect-Graph, keine implizite Goroutine-Sicherheit
 fuer State und keine magische Erkennung von In-place-Mutationen an Maps/Slices.
 
@@ -1358,6 +1381,14 @@ Ganzzahlige Faktoren sind zugesagt. Gebrochene Faktoren bleiben nach
 Abschnitt 14 ausgeschlossen; trifft gift einen solchen, rundet es und
 dokumentiert das Ergebnis, statt Genauigkeit zu behaupten, die es nicht hat.
 
+Ein Steuerelement, das nur aus Rechtecken mit Radius besteht, rechnet selbst
+**nicht** mit der Dichte. Die Skalierung steht in genau einem Transform an der
+Wurzel der Display-Liste, und der Shader backt Radius, Strichbreite und
+AA-Rand daraus. Ein Widget, das zusaetzlich runden wuerde, rundet zweimal.
+Die Dichte betrifft nur, was gerastert wird: Glyphen, Icons und die
+Bildleiter. Auch Layout und Zeigereingabe bleiben durchgehend logisch — eine
+Trefferflaeche von 44 Pixeln ist bei jeder Dichte dieselbe Flaeche.
+
 ## 19. Texteingabe, Zwischenablage und Bildschirmtastatur
 
 ### Der Rune-Kanal ist die Voraussetzung
@@ -1654,8 +1685,38 @@ Bildschirmtastatur im Kioskmodus.
 
 ### Schritt 9: Komponenten
 
-Auswahl nach den Human Interface Guidelines, Navigation ueber eine TabBar,
-Kitchen-Sink-Demo.
+Auswahl nach den Human Interface Guidelines: `ui.Toggle`, `ui.Slider`,
+`ui.SegmentedControl` und `ui.ProgressBar`, jeweils nach dem Muster von
+`ui.Button`. Navigation ueber eine TabBar, Kitchen-Sink-Demo.
+
+Verbindlich fuer jedes dieser Steuerelemente:
+
+- Die Trefferflaeche ist von der gezeichneten Groesse unabhaengig und misst
+  mindestens 44 logische Pixel auf jeder Achse. Der Zielbildschirm ist ein
+  Touchpanel; ein 31 Pixel hoher Schalter ist der richtige *Anblick* und ein
+  schlechtes *Ziel*. Umgekehrt zeichnet ein Steuerelement nie ausserhalb seiner
+  eigenen Grenzen: sichtbar, wo man nicht hinfassen kann, ist der gleiche
+  Fehler andersherum.
+- Ein ziehbarer Teil nimmt die Zeigererfassung und **konsumiert
+  `EventPointerMove`**, sonst nimmt ihm ein umschliessender Viewport den Zug
+  wieder ab — dieselbe Regel, die Schritt 6 fuer den Scrollbalken aufstellt.
+- Der Ursprung einer Zieh-Geste wird **einmal beim Druck** festgehalten und nie
+  aus dem aktuellen Wert neu berechnet. Ein Regler baut sich bei jeder
+  Wertaenderung neu auf; die Inversion, die Review-Gate 7 im Scrollbalken
+  gefunden hat, waere hier der Normalfall und kein Grenzfall.
+- Eine Auswahl faellt an der **Position des Loslassens** und nicht an der des
+  Drucks, und ein gezogenes Loslassen wird nicht abgelehnt. `DragSlop` sind
+  8 logische Pixel, auf dem Zielpanel etwa 1,3 Millimeter: ein Finger, der
+  beim Abheben abrollt, verliert die Auswahl sonst ganz. Umschliessende
+  Scrollflaechen leiden nicht darunter, weil ein Scroller den Zeiger schon
+  bei der Bewegung an sich nimmt und der Entzug das Steuerelement abbricht.
+- Jede Animation hat eine Frist und endet. Die einzige Ausnahme ist die
+  unbestimmte Fortschrittsanzeige, die sich aus ihrem eigenen Painter
+  erneuert. Ihr Preis gehoert in die Dokumentation der Komponente, und zwar
+  richtig formuliert: gift verwirft beim Zeichnen nichts, was ausserhalb des
+  Sichtfelds liegt. Die Anzeige haelt das Geraet wach, solange sie
+  **gemountet** ist — Wegscrollen aendert daran nichts, nur das Entfernen
+  aus dem Baum.
 
 ### Schritt 10: Beispiele
 

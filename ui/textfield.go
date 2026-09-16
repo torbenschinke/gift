@@ -539,6 +539,10 @@ func (n *textFieldNode) clampScroll() {
 // node is its glyphs and not its children, so [gift.PaintContext.PaintChildren],
 // where gift would apply [gift.Element.Clip], is never reached.
 func (n *textFieldNode) Paint(ctx *gift.PaintContext) {
+	// In front of the focus ring gate below; see [assertResolved] and
+	// [buttonNode.Paint], which has the same gate for the same reason.
+	assertResolvedBorder(n.focusRing, "the focus ring of a TextField")
+
 	ia := ctx.Interaction()
 	st := n.st
 	if ia.Disabled {

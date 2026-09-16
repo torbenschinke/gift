@@ -73,6 +73,22 @@ var views = []struct {
 			"per tile modifier would have nowhere to be written.",
 	},
 	{
+		name: "ui.Toggle", set: setMinimal, v: ui.Toggle(false, nil),
+		why: controlWhy,
+	},
+	{
+		name: "ui.Slider", set: setMinimal, v: ui.Slider(0, nil),
+		why: controlWhy,
+	},
+	{
+		name: "ui.SegmentedControl", set: setMinimal, v: ui.SegmentedControl(0, []string{"a"}, nil),
+		why: controlWhy,
+	},
+	{
+		name: "ui.ProgressBar", set: setMinimal, v: ui.ProgressBar(0),
+		why: controlWhy,
+	},
+	{
 		name: "ui.Spacer", set: setMinimal, v: ui.Spacer(),
 		why: "a Spacer draws nothing and has no bounds of its own; a Background it then " +
 			"ignored would be exactly the lie variant A exists to avoid. See SpacerView.",
@@ -218,5 +234,58 @@ func TestEveryViewIsAView(t *testing.T) {
 		if _, ok := v.v.(gift.View); !ok {
 			t.Errorf("%T is in views but does not implement gift.View", v.v)
 		}
+	}
+}
+
+// controlWhy is the reason the four selection and indication controls carry
+// the minimal modifier set rather than the styled one.
+//
+// It is one string because the argument is one argument, and repeating it four
+// times in slightly different words is how four widgets drift apart.
+const controlWhy = "a Toggle, a Slider, a SegmentedControl and a ProgressBar are not boxes with " +
+	"content in them: their whole appearance is the control, and a Background, a Border or a " +
+	"CornerRadius behind it would be a second, invisible way of describing a shape the widget " +
+	"already owns — a switch with a square corner radius is not a switch. What a caller may " +
+	"change is the size of the hit area, with .Frame, and, on the three that have an accent " +
+	"coloured part, that accent with .Tint. SegmentedControl deliberately has no .Tint: its " +
+	"indicator is ColorSurface and not ColorAccent on purpose, because a view switch whose " +
+	"current tab wore the accent would compete with the accent used for the actions on the " +
+	"screen it selects, so there is no accent in it to tint. The rest is the theme's. See " +
+	"ui.ControlHitTarget and ui.SegmentedControlView."
+
+// TestOnlyTheControlsThatHaveAnAccentCarryATint is the test [controlWhy] did
+// not have, and its absence is why that string spent a work unit telling
+// callers to reach for a modifier one of the four widgets it names does not
+// have.
+//
+// The asymmetry is deliberate and is argued in [ui.SegmentedControlView]: the
+// sliding indicator is ColorSurface and not ColorAccent, because a view switch
+// whose current tab wore the accent would compete with the accent used for the
+// actions on the screen it selects. There is therefore no accent in a
+// segmented control for a Tint to change, and adding one would invite exactly
+// the design that documentation argues against.
+func TestOnlyTheControlsThatHaveAnAccentCarryATint(t *testing.T) {
+	for _, tc := range []struct {
+		v    any
+		want bool
+	}{
+		{ui.Toggle(false, nil), true},
+		{ui.Slider(0, nil), true},
+		{ui.ProgressBar(0), true},
+		{ui.SegmentedControl(0, []string{"a"}, nil), false},
+	} {
+		typ := reflect.TypeOf(tc.v)
+		_, got := typ.MethodByName("Tint")
+		if got == tc.want {
+			continue
+		}
+		if tc.want {
+			t.Errorf("%s has no Tint, but controlWhy tells callers to change its accent with "+
+				"one. Add the modifier or rewrite that string", typ.Name())
+			continue
+		}
+		t.Errorf("%s has grown a Tint. controlWhy says it deliberately has none, and "+
+			"SegmentedControlView argues at length why its indicator must not be the accent; "+
+			"if that argument has been overturned, overturn it in the prose too", typ.Name())
 	}
 }

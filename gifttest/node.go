@@ -612,6 +612,30 @@ func (h *Harness) ClickAt(p geom.Point) {
 	h.Settle()
 }
 
+// TapAt is a touch at a device space point: a finger goes down there and comes
+// straight up again.
+//
+// It is the touch counterpart of [Harness.ClickAt] and exists for the same
+// reason: [Node.Tap] aims at the centre of the nearest *interactive* node,
+// which for a control made of several regions — a segment of a
+// [ui.SegmentedControl], a point on a slider's track — is not the place the
+// test means. A coordinate is the subject here, so there is no aim check; see
+// [Node.aim].
+//
+// It does not move the mouse cursor: h.mouse is left where it was, so a later
+// [Harness.Release] or [Harness.Tap] still refers to the last *mouse* position
+// and not to p. That is correct rather than an omission — a finger that has
+// lifted is nowhere, and a touchscreen has no cursor to leave behind — but it
+// means a test cannot mix TapAt with the mouse verbs and expect them to share
+// a position.
+func (h *Harness) TapAt(p geom.Point) {
+	h.t.Helper()
+	h.beginInput()
+	h.app.PointerDown(touchID, gift.PointerTouch, p)
+	h.app.PointerUp(touchID, gift.PointerTouch, p)
+	h.Settle()
+}
+
 // CancelPointer ends the current mouse press without a release, as the window
 // manager does when the window loses focus. A control that treats it as an
 // activation is broken, and this is how a test says so.

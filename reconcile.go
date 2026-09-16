@@ -162,6 +162,25 @@ func (a *App) applyElement(h scene.Handle, nd *nodeData, desc childDesc, owner *
 	nd.ia.Disabled = desc.elem.Disabled
 	if nd.disabled || nd.interactor == nil {
 		nd.ia.Hover, nd.ia.Pressed = false, false
+		// And the gesture, for the same reason with a sharper edge. A
+		// disabled node is not delivered to at all — see [App.deliver] — so
+		// the EventPointerUp that would have ended a drag in progress never
+		// arrives, and a control disabled while the finger is still down
+		// would stay [ControlState.Grabbed] for the rest of its life. The
+		// next bare hover over it then reaches a handler that believes it is
+		// being dragged and rewrites the application's value from the cursor
+		// position. The widget cannot clean that up itself, precisely
+		// because the core has stopped talking to it, so the core does it.
+		//
+		// The trigger is ordinary rather than exotic: a drag fires a request,
+		// the request sets a busy flag, the flag disables the panel, and the
+		// finger is still down.
+		//
+		// Only the gesture is dropped. The animation fields are left alone,
+		// because a control disabled halfway through a transition should
+		// finish it rather than jump, and clearing Armed would make it
+		// animate up from zero when it is enabled again.
+		nd.control.Grabbed, nd.control.Grab = false, 0
 	}
 	if a.in.focus == h && !a.focusable(h) {
 		a.setFocus(scene.Handle{})

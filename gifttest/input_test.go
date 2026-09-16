@@ -411,3 +411,27 @@ func TestFocusChangeStopsTheRepeat(t *testing.T) {
 		t.Fatalf("the held key kept deleting after the focus moved: %q became %q", before, first)
 	}
 }
+
+// TestTapAtLeavesTheMouseCursorWhereItWas is the clause the documentation of
+// [gifttest.Harness.TapAt] now carries, and it is worth pinning because it is
+// the one way TapAt differs from [gifttest.Harness.ClickAt] other than the
+// pointer kind.
+//
+// A finger that has lifted is nowhere, so a tap must not move the cursor the
+// mouse verbs track. The observable consequence: a mouse press taken before
+// the tap is still remembered at its own point, and [gifttest.Harness.Release]
+// — which releases "wherever the mouse currently is" — still lands on the
+// button and activates it. If TapAt moved the cursor, that release would
+// happen somewhere else and the button would not count.
+func TestTapAtLeavesTheMouseCursorWhereItWas(t *testing.T) {
+	h := gifttest.New(t, gifttest.Options{Root: counter})
+
+	plus := h.Find(gifttest.ByKey("plus"))
+	plus.Press()
+
+	// A tap somewhere far away, on the other pointer.
+	h.TapAt(pt(700, 500))
+
+	h.Release()
+	h.Find(gifttest.ByKey("count")).AssertText("1")
+}
