@@ -77,6 +77,10 @@ func TestTheGateInventoryIsComplete(t *testing.T) {
 			"TileStyle.Cursor, the first two statements",
 		"paintBorder": "guarded: assertResolvedBorder on the border colour of a node, the first " +
 			"statement",
+		"listNode.Paint": "guarded: assertResolved on the separator colour of a List, the first " +
+			"statement. Unlike dividerNode.Paint this one is gated, because a list emits one " +
+			"fill per separator and SeparatorColor(ColorClear) is the documented way to switch " +
+			"them off; see the function.",
 		"keyboardNode.paintKeys": "guarded: five assertResolved calls, the first five statements of the " +
 			"function",
 		"styleSpec.needsPainter": "not a gate: it decides whether a painter is allocated at all, so an " +
@@ -438,6 +442,11 @@ func TestEveryVisibilityGateIsGuarded(t *testing.T) {
 			name: "the progress fill",
 			call: func() { (&progressNode{fill: ColorAccent}).Paint(nil) },
 			want: "the fill of a ProgressBar",
+		},
+		{
+			name: "the list separator",
+			call: func() { (&listNode{sep: ColorSeparator, nsep: 1}).Paint(nil) },
+			want: "the separator colour of a List",
 		},
 		{
 			name: "the tile error fill",

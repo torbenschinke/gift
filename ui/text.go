@@ -70,6 +70,30 @@ const DefaultFontSize = 14
 // [SetDefaultFont] otherwise; with neither, building it panics with an
 // explanation rather than rendering nothing. See [SetDefaultFont] and
 // [RegisterFont].
+//
+// # The one cost of text that is not local to this view
+//
+// Shaping a string is cached, and the cache is one process wide budget of a
+// mebibyte shared by every TextView, every [RowView] label, every button
+// caption and every glyph the backend draws. It holds on the order of fifteen
+// hundred short paragraphs.
+//
+// gift culls no paint, so every *visible* paragraph asks the shaper for its
+// layout on every frame. Below the budget that is a hit and costs nothing. One
+// paragraph past it and the least recently used entry being evicted is one
+// that the same frame is about to ask for again, so the whole scene misses,
+// every frame, whether or not anything changed — measured at 48,800
+// allocations in a single idle frame of a scene with 1600 distinct labels, in
+// a frame path the project plan, section 11, requires to allocate nothing.
+//
+// This is a property of the scene and not of any one widget, which is why it
+// is documented here and in internal/text rather than on the first component
+// that happened to be able to walk off it. Nothing reports it; the only
+// symptom is that the device is slow. A screen with more than about a thousand
+// distinct strings on it at once is the shape to be careful with, whatever
+// arrangement of views produces it. See the package documentation of
+// internal/text for the measurement and the remedies, and [ListView] for the
+// form this takes in a long list.
 type TextView struct {
 	base
 	s        string

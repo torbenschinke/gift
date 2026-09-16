@@ -5,6 +5,7 @@ package clipboard
 import (
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -172,5 +173,96 @@ func TestPasteboardHandlesTheEmptyString(t *testing.T) {
 	}
 	if !ok || got != "" {
 		t.Fatalf("after copying the empty string the pasteboard reports %q, %v; want \"\", true", got, ok)
+	}
+}
+
+// --- the thread the pool is drained on ---------------------------------------
+
+// TestTheAutoreleasePoolIsCreatedAndDrainedOnOneOSThread is the regression test
+// for the segmentation fault review gate 14 root-caused.
+//
+// An NSAutoreleasePool is pushed onto the calling thread's pool stack by init
+// and popped off the same stack by drain. A goroutine may be moved to another
+// OS thread at any preemption point, and the purego calls inside the closure
+// are such points, so without [runtime.LockOSThread] in [macPlatform.pool] the
+// two ends occasionally run on different threads and libobjc faults with the
+// drain as the program counter.
+//
+// # What this test observes
+//
+// It observes the cause directly, because Objective-C hands out a thread
+// identity: [NSThread currentThread] returns the per-thread object, so the
+// closure can record it at its first instruction and at its last and the two
+// must be the same object.
+//
+// The fixture makes the migration likely rather than merely possible. Enough
+// runnable goroutines to keep every P busy, and a closure that yields between
+// Objective-C calls, so that each yield is a real opportunity for the
+// scheduler to resume this goroutine on another M.
+//
+// It turned out to provoke the crash as well, which was not the intention and
+// is the stronger result. With the lock removed from [macPlatform.pool] this
+// test does not report a mismatched thread; it dies before it can, with
+//
+//	SIGSEGV: segmentation violation
+//	PC=0x183103c60 m=14 sigcode=2 addr=0x10
+//	signal arrived during cgo execution
+//	...
+//	clipboard.(*macPlatform).pool.deferwrap1()
+//		clipboard_darwin.go:173
+//
+// — the deferred drain, which is the program counter of every one of the
+// "ghost" crashes this project recorded over the last three work units. With
+// the lock in place it is quiet, including under -count=3 and -race.
+func TestTheAutoreleasePoolIsCreatedAndDrainedOnOneOSThread(t *testing.T) {
+	m, err := newMacPlatform()
+	if err != nil {
+		t.Skipf("no AppKit on this machine: %v", err)
+	}
+	threadClass := objc.GetClass("NSThread")
+	currentThread := objc.RegisterName("currentThread")
+	if threadClass == 0 {
+		t.Skip("NSThread is not available")
+	}
+	here := func() objc.ID { return objc.ID(threadClass).Send(currentThread) }
+
+	// Keep every processor busy, so that a yield inside the closure really
+	// does hand the M to somebody else.
+	stop := make(chan struct{})
+	for range runtime.GOMAXPROCS(0) * 4 {
+		go func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					runtime.Gosched()
+				}
+			}
+		}()
+	}
+	defer close(stop)
+
+	const rounds = 2000
+	for i := range rounds {
+		var first, last objc.ID
+		m.pool(func() {
+			first = here()
+			for range 8 {
+				runtime.Gosched()
+				// A real Objective-C call between the yields, because those
+				// are the preemption points the production path has.
+				_ = objc.ID(m.pasteboardClass).Send(m.generalPasteboard)
+			}
+			last = here()
+		})
+		if first != last {
+			t.Fatalf("round %d ran on NSThread %v at the start of the pooled closure and on "+
+				"NSThread %v at its end. An NSAutoreleasePool is drained on the thread that "+
+				"created it; a goroutine that migrates between the two ends pops a pool stack "+
+				"it was never pushed onto, and libobjc faults inside drain. "+
+				"macPlatform.pool must hold runtime.LockOSThread for its whole body.",
+				i, first, last)
+		}
 	}
 }

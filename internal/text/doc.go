@@ -73,6 +73,44 @@
 // A caller that needs a guaranteed hit warms the cache outside the frame path
 // with the same [Request] it will use inside it.
 //
+// # The budget is scene wide, and falling off it is a cliff
+//
+// [Default] is the shaper every package in gift measures and draws through, so
+// [DefaultMaxBytes] is one budget for everything on the screen at once. It is
+// not a per widget, per window or per component allowance, and nothing divides
+// it up or reports that it is under pressure.
+//
+// gift culls no paint. A mounted, visible node is painted every frame, so
+// every painted paragraph asks the shaper for its layout every frame. While
+// the distinct paragraphs of a scene fit in the budget that is a hit per ask
+// and costs nothing at all. One paragraph past the budget and the LRU starts
+// evicting entries that are about to be asked for again on the same frame, so
+// the scene misses on *all* of them, every frame, whether or not anything
+// changed. The cost does not degrade gracefully: it is the flat cost of a hit
+// on one side and the full cost of shaping the entire scene on the other.
+//
+// Measured with gift's ui package, two short labels per row in a list of rows,
+// every string new to the process: 600 rows — 1200 paragraphs — are free, and
+// 800 rows allocate 48,800 times in a frame that the project plan, section 11,
+// requires to allocate nothing. The budget held 1484 short paragraphs in that
+// fixture. The number of *paragraphs* is what matters, not the number of
+// widgets: a stack of labels, a log view, a table and a long list all reach it
+// the same way, and text that repeats — a status out of a fixed vocabulary —
+// does not count against it at all, because the cache is keyed on the string.
+//
+// It also does not scale with the machine. A faster CPU shapes the same text
+// faster and still shapes all of it, so this is the one text cost a Raspberry
+// Pi and a workstation pay in the same proportion of their frame budget.
+//
+// The remedies, in the order they are worth trying: fewer distinct strings; a
+// scene that paints less, which today means not mounting what nobody is
+// looking at, because gift has no paint culling; and a larger [Config.MaxBytes]
+// on a shaper of the caller's own, which trades resident memory for it. What
+// there is no remedy for inside this package is a scene that genuinely has
+// thousands of distinct visible paragraphs; that wants a virtualised container
+// above it, and ui.ListView documents the version of this limit that applies
+// to a long list.
+//
 // # No logging
 //
 // Nothing in this package logs, not even behind a level check, because all of

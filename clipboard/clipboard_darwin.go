@@ -5,6 +5,7 @@ package clipboard
 import (
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -133,7 +134,7 @@ func newMacPlatform() (*macPlatform, error) {
 // the same name.
 const utiUTF8PlainText = "public.utf8-plain-text"
 
-// pool runs f inside an NSAutoreleasePool.
+// pool runs f inside an NSAutoreleasePool, on one OS thread.
 //
 // Every one of these calls returns an autoreleased object — the pasteboard
 // itself, the string that comes back from stringForType:. On the main thread
@@ -141,9 +142,34 @@ const utiUTF8PlainText = "public.utf8-plain-text"
 // would catch them, but gift's UI goroutine is not guaranteed to be on a
 // thread that has one, and an autoreleased object with no pool is a leak plus
 // a warning on stderr that the application did not write. So this file brings
-// its own, one per call, which is what an Objective-C program would do in a
-// worker thread.
+// its own, one per call.
+//
+// # Why the thread is locked, and why leaving it unlocked crashed
+//
+// An NSAutoreleasePool is not an object that happens to live on a thread: it
+// is pushed onto the *calling thread's* pool stack by init and popped off the
+// same stack by drain. Draining it on a different thread pops a stack it was
+// never on, and the result is a segmentation fault inside libobjc with the
+// drain as the program counter.
+//
+// A goroutine is not a thread. It may be moved to another OS thread at any
+// preemption point, and the purego calls inside f are exactly such points. So
+// without [runtime.LockOSThread] the init above and the drain below are only
+// *usually* on the same thread, and the failure is a rare, unreproducible
+// crash rather than an error — one in about thirty runs of this package's
+// tests, which is what review gate 14 finally root-caused after two units of
+// "ghost" segmentation faults with an identical program counter.
+//
+// The lock is therefore a correctness requirement and not a performance
+// tuning. It is the same requirement the X11 half of this package states at
+// the head of clipboard_x11.go, for a different reason: there the thread is
+// locked because it parks in XNextEvent, here because Objective-C counted on
+// it staying put. gift's own UI goroutine is unaffected — the lock is released
+// before pool returns, and a copy or a paste is a keystroke, not a frame.
 func (m *macPlatform) pool(f func()) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	p := objc.ID(m.poolClass).Send(m.alloc).Send(m.initSel)
 	defer p.Send(m.drain)
 	f()

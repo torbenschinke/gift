@@ -125,6 +125,47 @@ var views = []struct {
 		why: "a Spacer draws nothing and has no bounds of its own; a Background it then " +
 			"ignored would be exactly the lie variant A exists to avoid. See SpacerView.",
 	},
+	{name: "ui.List", set: setStyled, v: ui.List()},
+	{
+		name: "ui.Row", set: setMinimal, v: ui.Row("x"),
+		why: "a row is the standard row of a ui.List, and its height, its horizontal inset " +
+			"and its face in each interaction state are the convention that makes a list " +
+			"look like one list. A Padding on a row would move its content out from under " +
+			"the separator that is inset to match it, and a Background would be a face " +
+			"that the pressed state then replaces. A differently shaped row is an " +
+			"ordinary HStack handed to ui.List, which takes any view at all.",
+	},
+	{
+		name: "ui.Section", set: setMinimal, v: ui.Section("x"),
+		why: "a section header is one caption with the inset and the type size that make " +
+			"it read as a header; it is also the value ui.List recognises when it decides " +
+			"where a separator goes, so a header that could be restyled into something " +
+			"else would be a header that no longer marks a boundary. See ui.ListView.",
+	},
+	{
+		name: "ui.Divider", set: setMinimal, v: ui.Divider(),
+		why: "a divider is a hairline. Its three properties are its thickness, its colour " +
+			"and how far it is inset, and each has a modifier of its own; the box " +
+			"modifiers have nothing to apply to, because the line *is* the node. A " +
+			"Padding would be indistinguishable from an Inset and a Background from a " +
+			"Color.",
+	},
+	{
+		name: "ui.Badge", set: setMinimal, v: ui.Badge("1"),
+		why: "a badge is a capsule of a fixed height, which is what makes a column of " +
+			"badges line up and what makes its corner radius exactly half its height. A " +
+			"Frame or a CornerRadius would break one or the other, and the two things a " +
+			"design does want to change, the fill and the text colour, are Color and " +
+			"Foreground.",
+	},
+	{
+		name: "ui.Card", set: setMinimal, v: ui.Card(),
+		why: "a card is the themed face, the corner radius and the hairline that make a " +
+			"panel recognisable as raised above the window; a card whose background and " +
+			"radius were modifiers would be a ui.VStack with extra steps. What is a " +
+			"decision of the call site — how far the content is inset and how far apart " +
+			"the children sit — is Padding, PaddingInsets and Gap, which it has.",
+	},
 }
 
 // minimalModifiers are required of every view type. The signature is given as

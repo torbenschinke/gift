@@ -311,6 +311,25 @@ wenn er deaktiviert ist. Sonst gibt er seine Anmeldungen nie frei. Eine
 Zustellung, die waehrend der Rekonziliation nicht laufen darf, wird
 **aufgeschoben** und im selben Update nachgeholt, nicht verworfen.
 
+Eine Abhaengigkeit gehoert dem Scope, der sie gelesen hat. `ctx.Read`
+registriert sie auf dem Component-Scope, in dem es aufgerufen wurde; `Get`
+registriert nichts und ist das, was ein Eventhandler benutzt. Eine Wurzel, die
+alle Zustands-Slots liest, ist eine Wurzel, die von allem invalidiert wird —
+und ein Wurzel-Rebuild baut auch jeden verborgenen Tab neu auf, denn ein
+verborgener Teilbaum wird nach der Regel oben absichtlich gebaut und
+layoutet. Jeder Schirm bekommt deshalb eine eigene `gift.Component` und liest
+dort nur die Slots, die er zeigt.
+
+Beide Fehlerrichtungen sind lautlos, und das ist der Grund, warum das hier
+steht: zu wenige `Read` und ein Schreibvorgang invalidiert nichts — der Wert
+stimmt, der Handler laeuft, der Schirm bewegt sich nicht. Zu viele, und ein
+Schreibvorgang baut Schirme neu auf, die von ihm nicht abhaengen; dann sieht
+alles richtig aus und das Geraet ist langsam. Gemessen an
+`cmd/example-kitchensink`, ein Tipp auf eine Zeile der Einstellungen: vorher
+702 µs und 6255 Allokationen — ein voller Wurzel-Rebuild —, nachher 70 µs und
+485. Auf einem Pi 4 sind das 42 Prozent gegen 4 Prozent des Frame-Budgets, pro
+Tipp, und bei einem Regler pro Frame der Geste.
+
 Noch kein allgemeiner Signal-/Effect-Graph, keine implizite Goroutine-Sicherheit
 fuer State und keine magische Erkennung von In-place-Mutationen an Maps/Slices.
 
@@ -844,6 +863,28 @@ sondern getrennt gemessen:
   stattdessen ueber `Gallery.Bindings` abfragbar. Sobald Kacheltitel dazukommen
   - sei es in Schritt 4 oder spaeter - muss die Messung zusammen mit ihnen
   kommen und nicht danach.
+
+  **Stand nach WU-AK: das Messszenario hat einen Gegenstand, und der Befund
+  ist schaerfer als die Praezisierung oben.** `ui.List` ist die erste
+  Komponente, die genug verschiedene Absaetze gleichzeitig zeichnet, um das
+  Budget des prozessweiten Shapers zu ueberschreiten
+  (`internal/text.DefaultMaxBytes`, ein Mebibyte, rund 1500 kurze Absaetze).
+  Der Vertrag faellt dann nicht je Aenderung aus, sondern ganz: gift verwirft
+  beim Zeichnen nichts, also fragt jeder sichtbare Absatz in jedem Frame den
+  Shaper. Ein Absatz zu viel, und die LRU verdraengt Eintraege, die derselbe
+  Frame gleich wieder braucht — die Szene verfehlt den Cache danach bei
+  **allen** Absaetzen, in **jedem** Frame, auch wenn sich nichts geaendert
+  hat. Gemessen: 600 Zeilen mit je zwei eigenen Beschriftungen kosten 0
+  Allokationen je Ruheframe, 800 Zeilen 48 800.
+
+  Drei Eigenschaften machen das gefaehrlicher als eine Komponentengrenze.
+  Es ist eine Eigenschaft der **Szene** und nicht eines Widgets, betrifft
+  also jeden kuenftigen Stapel von Beschriftungen, jede Tabelle und jede
+  Protokollansicht. Es **skaliert nicht mit der CPU**, ein schnelleres Geraet
+  verschiebt die Kante also nicht. Und **nichts meldet es**: das einzige
+  Symptom ist ein langsames Geraet. Die Erklaerung gehoert deshalb nach
+  `internal/text` und zu `ui.TextView`, wo ein Anwendungsautor sie findet,
+  und nicht in die Godoc der Komponente, an der sie zufaellig auffiel.
 
 Kein globales GC-Abschalten, keine unsafe-Arena als Ausgangspunkt.
 
@@ -1448,7 +1489,19 @@ bereits indirekte Abhaengigkeit ueber Ebitengine. purego fuehrt Linux auf
 amd64 und arm64 als Tier 1 und bringt fuer `!cgo` einen eigenen
 dlopen-Pfad mit; auf Darwin liegt ein vollstaendiger ObjC-Runtime bei.
 
-- macOS: `NSPasteboard` ueber den ObjC-Runtime. Kein Eventloop.
+- macOS: `NSPasteboard` ueber den ObjC-Runtime. Kein Eventloop, aber ein
+  eigener OS-Thread-Zwang aus einem anderen Grund: `NSAutoreleasePool` ist
+  thread-gebunden. `init` legt den Pool auf den Pool-Stack des **aufrufenden**
+  Threads, `drain` nimmt ihn von demselben Stack. Eine Goroutine ist kein
+  Thread und darf an jedem Preemption-Punkt wandern — und die purego-Aufrufe
+  dazwischen sind solche Punkte. Ohne `runtime.LockOSThread` ist das ein
+  seltener Speicherzugriffsfehler in libobjc mit `drain` als Program Counter.
+  Beide Plattformhaelften sperren den Thread also, aus verschiedenen Gruenden:
+  X11 wegen des blockierenden `XNextEvent`, macOS wegen dieser Bindung. Der
+  Fehler trat vor der Behebung in etwa drei Prozent der Laeufe von
+  `go test ./clipboard/ -count=3` auf und sah dadurch lange wie ein Gespenst
+  aus; der Regressionstest erzwingt die Wanderung und macht daraus einen
+  sicheren Fehlschlag.
 - Linux/X11: `libX11.so.6` per dlopen, mit einer **eigenen**
   Display-Verbindung und einem unsichtbaren Fenster auf einem eigenen
   OS-Thread. Das ist keine Umstaendlichkeit, sondern X11: wer kopiert, wird
@@ -1731,6 +1784,29 @@ unbegrenzten Achse wird abgewiesen, statt still zu schrumpfen. Ein Abdunkler
 der Groesse null unter einem normal gezeichneten Dialog ist ein
 Bestaetigungsdialog, der unbemerkt zur Dekoration wird, und das ist die
 schlimmste Fehlerklasse dieses Projekts.
+
+**Listenkomponenten.** `ui.List`, `ui.Row`, `ui.Card`, `ui.Divider` und
+`ui.Badge`, dazu `cmd/example-kitchensink` als erster Schirm, der die ganze
+zweite Lieferung gleichzeitig zeigt. `ui.List` **virtualisiert nicht**: jede
+Zeile wird gebaut, gemessen und gezeichnet. Das ist eine Entscheidung und
+keine fehlende Mechanik — `ui.Gallery` recycelt Kacheln und beweist, dass der
+Mechanismus existiert —, und sie gilt nur unterhalb zweier gemessener
+Grenzen, die in der Godoc der Komponente stehen muessen:
+
+1. Ein Rebuild kostet linear etwa 2,8 µs je Zeile auf der Entwicklungs-
+   maschine. Mit dem **angenommenen** Faktor zehn fuer den Pi 4 und einem
+   halben Frame Budget sind das rund 280 Zeilen. Der Faktor ist eine Annahme
+   und auf der Zielhardware nachzumessen.
+2. Die Shaping-Grenze aus Abschnitt 11, in Zeilen ausgedrueckt rund 750.
+
+Beide Zahlen gelten fuer den Ruhezustand ebenso wie fuer den Rebuild, und
+beide werden derated angegeben oder gar nicht. Eine Kennzahl, die in einem
+Dokument ohne Umrechnung steht, in dem alles andere umgerechnet ist, ist
+schlimmer als keine — sie sieht um den Faktor zehn billiger aus, als sie ist.
+
+**Die schmalste gepruefte Breite ist 360 logische Pixel**, bei den Dichten 1,
+1,5 und 2. Eine Pruefung, die nur bis 480 reicht, prueft die Aussage nicht,
+die das Beispiel ueber sich selbst macht.
 
 Verbindlich fuer jedes dieser Steuerelemente:
 

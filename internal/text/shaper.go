@@ -62,6 +62,12 @@ type Config struct {
 const (
 	// DefaultMaxBytes is one mebibyte, which holds several thousand short
 	// labels or a few dozen wrapped paragraphs.
+	//
+	// It is the budget of the process wide shaper returned by [Default], so
+	// it is a budget for the *whole scene* and not for one widget. A scene
+	// that paints more distinct paragraphs than fit in it misses on all of
+	// them on every frame; see "The budget is scene wide, and falling off it
+	// is a cliff" in the package documentation.
 	DefaultMaxBytes = 1 << 20
 	// DefaultMaxAge is 600 ticks, ten seconds at sixty frames per second.
 	DefaultMaxAge = 600
