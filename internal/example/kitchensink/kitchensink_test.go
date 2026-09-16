@@ -1,4 +1,4 @@
-package main
+package kitchensink
 
 import (
 	"testing"
@@ -18,7 +18,8 @@ import (
 // them: a replica drifts, and the first thing it drifts away from is whatever
 // made the real screen interesting.
 //
-// They are in package main, which is unusual and is the point.
+// They are in the same package as the views, which is what lets them call
+// the real view functions instead of a copy.
 
 func TestMain(m *testing.M) { gifttest.Main(m) }
 
@@ -30,20 +31,42 @@ func TestMain(m *testing.M) { gifttest.Main(m) }
 // behaves differently the second time it runs.
 func mount(t *testing.T, size geom.Size) *gifttest.Harness {
 	t.Helper()
+	return mountTheme(t, size, ui.LightTheme())
+}
+
+// mountTheme is [mount] with the theme named rather than assumed. Every golden
+// below uses it, because a golden of an application built on semantic colours
+// is a golden of whichever theme the process happens to have installed.
+func mountTheme(t *testing.T, size geom.Size, theme ui.Theme) *gifttest.Harness {
+	t.Helper()
+	return gifttest.New(t, mountOptions(t, size, theme))
+}
+
+// mountOptions is what mountTheme hands the harness, separated out for the one
+// test that has to change a field of it.
+//
+// [gifttest.Options.Background] is the colour behind everything the
+// application paints, and this demo paints no window background of its own, so
+// it is the colour of every gap between its cards. It is named here as the
+// window colour of the theme under test rather than left to default to white,
+// which would put a dark screen on a white sheet.
+func mountOptions(t *testing.T, size geom.Size, theme ui.Theme) gifttest.Options {
+	t.Helper()
 	var err error
-	if pictures, err = samples(t.TempDir()); err != nil {
+	if Pictures, err = Samples(t.TempDir()); err != nil {
 		t.Fatalf("generating the sample pictures: %v", err)
 	}
-	t.Cleanup(func() { pictures = nil })
-	return gifttest.New(t, gifttest.Options{
-		Theme: ui.LightTheme(),
+	t.Cleanup(func() { Pictures = nil })
+	return gifttest.Options{
+		Theme: theme,
 		// The same typeface example.LoadFont installs in main, named here
 		// rather than inherited, so that these tests do not depend on what
 		// some other test in the process left as the default.
-		Font: ui.MustFont(ui.FontQuery{Family: inter.Family}),
-		Size: size,
-		Root: screen,
-	})
+		Font:       ui.MustFont(ui.FontQuery{Family: inter.Family}),
+		Size:       size,
+		Background: ui.ColorBackground,
+		Root:       Screen,
+	}
 }
 
 // TestTheDemoComesUpAndSettles is the smallest thing worth asserting about a
@@ -308,7 +331,7 @@ func TestTheFirstScreenFillsInItsIconsWithinTheUploadBudget(t *testing.T) {
 	// image operations too, so they are taken out of the way first: this test
 	// is about the icon budget, and a thumbnail arriving on frame five would
 	// otherwise look like an icon that took five frames.
-	pictures = nil
+	Pictures = nil
 	h.App().Invalidate()
 	h.Settle()
 
@@ -446,7 +469,7 @@ func TestTheDemoHasNoOverflowAtASmallerWindow(t *testing.T) {
 	// [gift.App] belongs to the goroutine that created it, so no t.Run.
 	for _, d := range []float64{1, 1.5, 2} {
 		var err error
-		if pictures, err = samples(t.TempDir()); err != nil {
+		if Pictures, err = Samples(t.TempDir()); err != nil {
 			t.Fatalf("generating the sample pictures: %v", err)
 		}
 		h := gifttest.New(t, gifttest.Options{
@@ -454,7 +477,7 @@ func TestTheDemoHasNoOverflowAtASmallerWindow(t *testing.T) {
 			Font:    ui.MustFont(ui.FontQuery{Family: inter.Family}),
 			Size:    geom.Sz(900, 760),
 			Density: d,
-			Root:    screen,
+			Root:    Screen,
 		})
 		for _, s := range sizes {
 			h.Resize(s)
@@ -468,50 +491,157 @@ func TestTheDemoHasNoOverflowAtASmallerWindow(t *testing.T) {
 			}
 		}
 	}
-	pictures = nil
+	Pictures = nil
 }
 
-// TestTheThemeSwitchRepaintsTheWholeWindow is the section 20 demonstration
-// this program carries, and the assertion is the one that matters: the same
-// view functions produce both appearances, and the switch reaches every one of
-// them.
-func TestTheThemeSwitchRepaintsTheWholeWindow(t *testing.T) {
-	// The harness restores whatever theme it found, so installing one here is
-	// confined to this test.
-	h := mount(t, geom.Sz(900, 760))
-	app = h.App()
-	t.Cleanup(func() { app = nil })
+// goldenSize is the viewport every golden in this file is taken at. It is the
+// window the demo opens, so a reviewer comparing a golden with the running
+// program compares the same picture.
+var goldenSize = geom.Sz(900, 760)
 
-	light := backgroundCount(h, ui.LightTheme().Color(ui.ColorSurface))
-	if light == 0 {
-		t.Fatal("no surface coloured fill in the light theme; the fixture is wrong")
+// warm renders a few throwaway frames before a golden is taken.
+//
+// The texture upload budget of the project plan, section 21, is per *drawn*
+// frame and this screen needs more than one budget's worth of icon masks — the
+// measurement is in TestTheFirstScreenFillsInItsIconsWithinTheUploadBudget
+// above. A golden taken on the first frame would therefore be a golden of a
+// screen with twenty symbols missing, and it would pass for ever.
+func warm(h *gifttest.Harness) {
+	for range 6 {
+		h.Warm()
 	}
-	h.First(gifttest.ByText("Dark")).Click()
-
-	if got := backgroundCount(h, ui.LightTheme().Color(ui.ColorSurface)); got != 0 {
-		t.Errorf("%d fills are still in the light theme's surface colour after the switch", got)
-	}
-	if got := backgroundCount(h, ui.DarkTheme().Color(ui.ColorSurface)); got != light {
-		t.Errorf("%d fills are in the dark theme's surface colour, want the %d the light theme had",
-			got, light)
-	}
-	// And back, so that the process is left in the state the harness expects
-	// to restore.
-	h.First(gifttest.ByText("Light")).Click()
 }
 
-func backgroundCount(h *gifttest.Harness, c render.Color) int {
-	n := 0
-	for _, op := range h.Ops() {
-		if (op.Kind == render.OpFillRect || op.Kind == render.OpFillRoundRect) && op.Color == c {
-			n++
+// TestEveryTabLooksTheWayItLooks is the regression that three defects got past
+// because it did not exist.
+//
+// # Why a golden and not an assertion
+//
+// Every one of the three defects a person found on a real screen in two
+// minutes is a statement about where a pixel is and what colour it has: a
+// theme switch that left memoised subtrees in the old palette, a nested list
+// whose separators were painted three hundred pixels above its rows and
+// through the page header, and a slider that drew no knob. Fourteen review
+// gates and a full structural test suite saw none of them, and that is not
+// because those gates were careless — it is because a structural assertion
+// cannot see any of it. Nothing in steps 9a, 9b or 9c ever rendered a pixel.
+//
+// So: four tabs, two themes, eight files that a reviewer can open. The
+// structural tests above still say what is *required*; this says what it looks
+// like, which is the only thing that would have caught any of the three.
+func TestEveryTabLooksTheWayItLooks(t *testing.T) {
+	for _, theme := range []struct {
+		name string
+		t    ui.Theme
+	}{{"light", ui.LightTheme()}, {"dark", ui.DarkTheme()}} {
+		// One flat loop and no t.Run, for the reason
+		// TestEveryTabOfTheDemoBuildsAndTheHiddenOnesAreNotDrawn gives: a
+		// gift.App belongs to the goroutine that created it.
+		h := mountTheme(t, goldenSize, theme.t)
+		for _, tab := range []string{"Home", "Settings", "List", "Form"} {
+			tabButton(h, tab).Click()
+			warm(h)
+			h.AssertGolden("kitchensink-" + tab + "-" + theme.name)
 		}
 	}
-	return n
+}
+
+// TestTheThemeSwitchRebuildsEveryColourOnTheScreen replaces a test that
+// counted fills by colour, and it is worth recording why that one was not good
+// enough, because its own author said so in his report before the defect it
+// missed reached a user: counting fills "is a proxy that would pass if the
+// surface colour were applied to the wrong nodes".
+//
+// This compares the whole frame after a switch made at run time, on the tab
+// the switch is on and on a tab that was built before it.
+//
+// # Why it is not compared against the born-light golden next door
+//
+// That was the first shape of this test, and it is the stronger claim — "a
+// theme changed at run time is indistinguishable from the theme having been
+// there all along" — but the two frames differ for a reason that has nothing
+// to do with colour: hover and focus are part of the picture, the harness
+// clicks by pressing at a coordinate and leaves the pointer and the focus
+// there, and the two tests arrive here by different routes. Equalising that
+// needs another click, and another click rebuilds the root — which is the very
+// thing this test must not do afterwards, because a root rebuild repaints
+// every colour and would hide the defect.
+//
+// So this has goldens of its own, and the claim that the *mechanism* reaches a
+// subtree behind a rebuild boundary is made where it can be made without a
+// window full of interaction state:
+// TestAMemoisedSubtreeIsRepaintedByAThemeSwitch in the ui package.
+func TestTheThemeSwitchRebuildsEveryColourOnTheScreen(t *testing.T) {
+	opts := mountOptions(t, goldenSize, ui.DarkTheme())
+	// The clear colour of the *end* state, as a literal, and the one thing in
+	// this test that has to be said out loud. gifttest clears the frame once,
+	// at mount, and this demo paints no window background of its own — so the
+	// pixels between its cards are the harness's clear colour and nothing the
+	// theme switch can reach. Leaving it at the dark theme's would make this
+	// comparison fail for a reason that has nothing to do with the claim.
+	// (That the demo has no background of its own is a defect in the demo and
+	// is reported rather than fixed here; on a real window those gaps are
+	// whatever Ebitengine cleared to.)
+	opts.Background = ui.LightTheme().Color(ui.ColorBackground)
+	h := gifttest.New(t, opts)
+	App = h.App()
+	t.Cleanup(func() { App = nil })
+
+	// The switch offers the theme it would move to, so in the dark theme it
+	// says "Light".
+	h.First(gifttest.ByText("Light")).Click()
+	if ui.CurrentTheme().IsDark() {
+		t.Fatal("pressing the switch did not install the light theme; the fixture is wrong")
+	}
+	warm(h)
+	h.AssertGolden("kitchensink-after-switch-Home")
+
+	// And the same for a tab that was built before the switch and is not the
+	// one the switch is on.
+	tabButton(h, "Settings").Click()
+	warm(h)
+	h.AssertGolden("kitchensink-after-switch-Settings")
+}
+
+// TestTheAlertLooksLikeAnAlert is the modal, which has no golden anywhere else
+// in the repository and is the one composition where the scrim, the card and
+// the two buttons have to be looked at together.
+func TestTheAlertLooksLikeAnAlert(t *testing.T) {
+	h := mountTheme(t, goldenSize, ui.LightTheme())
+	h.First(gifttest.ByText("Reset everything")).Click()
+	h.AssertExists(gifttest.ByText("Reset everything?"))
+	warm(h)
+	h.AssertGolden("kitchensink-alert")
+}
+
+// TestTheKeyboardLooksLikeAKeyboard is the kiosk case of step 8: a focused
+// text field with gift's own on-screen keyboard up, which is the one screen in
+// this program that is composed of three overlapping layers.
+func TestTheKeyboardLooksLikeAKeyboard(t *testing.T) {
+	// The on-screen keyboard is a process wide policy, so it is installed for
+	// the duration of this test and restored afterwards, exactly as main
+	// installs it for the duration of the program.
+	prev := ui.OnScreenKeyboardEnabled()
+	ui.SetOnScreenKeyboard(nil, true)
+	t.Cleanup(func() { ui.SetOnScreenKeyboard(nil, prev) })
+
+	h := mountTheme(t, goldenSize, ui.LightTheme())
+	tabButton(h, "Form").Click()
+	h.Find(gifttest.ByKey("name")).Click()
+	h.AssertFocus(gifttest.ByKey("name"))
+	// The keyboard collapses to nothing at all while no field has the focus,
+	// so a positive height is the evidence that it came up. The keys
+	// themselves are painted by the node and are not nodes of their own,
+	// which is why this is a height and not a selector.
+	if kb := h.Find(gifttest.ByType("ui.OnScreenKeyboard")).Bounds(); !(kb.Height() > 0) {
+		t.Fatalf("the field took the focus and the keyboard is %v tall; the fixture is wrong", kb)
+	}
+	warm(h)
+	h.AssertGolden("kitchensink-keyboard")
 }
 
 // TestATapOnASettingsRowDoesNotRebuildTheOtherThreeTabs is the scoping
-// property the root of this program is arranged around; see [screen].
+// property the root of this program is arranged around; see [Screen].
 //
 // # Why this is a rebuild measurement and not an idle one
 //
@@ -533,20 +663,24 @@ func backgroundCount(h *gifttest.Harness, c render.Color) int {
 //   - a tap on the inert "Volume" row next to it, which writes nothing.
 //
 // The third is the subtraction, and it is not a fudge. A tap through the
-// harness costs a fixed amount that has nothing to do with this program:
-// locating the node, the pointer down and up, the hover and press bookkeeping
-// and the repaint they enrol. Measured here that constant is about 1400
-// allocations, against the 485 the rebuild itself costs, so a test that did not
-// subtract it would be dominated by it and would still pass with the tabs
-// wrongly scoped. What is left after the subtraction is the rebuild the write
-// caused, and that is the number this program is responsible for.
+// harness costs a fixed amount that has nothing to do with this program: the
+// pointer down and up, the hover and press bookkeeping and the repaint they
+// enrol. What is left after the subtraction is the rebuild the write caused,
+// and that is the number this program is responsible for.
+//
+// Both taps are aimed at a coordinate taken once, before the measurement, so
+// that neither pays for a selector run inside the loop; see the note on
+// tapInert for the second reason that matters here. The constant is
+// consequently small — it used to be about 1400 allocations of node lookup,
+// and is now close to nothing — which makes the subtraction less important
+// than it was and the comparison sharper.
 //
 // Observed at 900x760:
 //
-//	full root rebuild                6255 allocations   702 µs
-//	tap on the inert Volume row      1438                57 µs
-//	tap on the Nudge row             1923                127 µs
-//	                                  485 of rebuild      70 µs
+//	full root rebuild                6255 allocations
+//	tap on the inert Volume row         0
+//	tap on the Nudge row              485
+//	                                  485 of rebuild
 //
 // Moving the six Read calls of the Settings tab back to the root scope — which
 // is exactly the regression this guards, and is what this file used to do —
@@ -563,10 +697,21 @@ func TestATapOnASettingsRowDoesNotRebuildTheOtherThreeTabs(t *testing.T) {
 		}
 		a.Paint()
 	}
-	tapNudge := func() { h.Find(gifttest.ByKey("nudge")).Click() }
+	nudgeAt := h.Find(gifttest.ByKey("nudge")).Center()
+	tapNudge := func() { h.ClickAt(nudgeAt) }
 	// The Volume row has no OnTap, so this is the harness constant and
 	// nothing else; see above.
-	tapInert := func() { h.Find(gifttest.ByKey("volume")).Click() }
+	//
+	// It is [gifttest.Harness.ClickAt] and not Node.Click, and the reason is
+	// worth recording. A row with no action is not interactive, so Click aims
+	// at the nearest interactive ancestor — which is the whole scroll
+	// container — and then refuses, correctly, because the centre of the
+	// container is covered by whatever row happens to lie there. That made
+	// this measurement depend on the vertical layout of the Settings tab: it
+	// started failing the moment the volume slider stopped being zero pixels
+	// tall. The coordinate of the row itself is the thing this test means.
+	volumeAt := h.Find(gifttest.ByKey("volume")).Center()
+	tapInert := func() { h.ClickAt(volumeAt) }
 
 	// Warm every path: the first rebuild of anything grows scratch buffers and
 	// shapes strings, and neither is the steady state being measured.
@@ -596,6 +741,6 @@ func TestATapOnASettingsRowDoesNotRebuildTheOtherThreeTabs(t *testing.T) {
 			"the %.0f of a full rebuild of all four tabs. That row writes one float that only "+
 			"the Settings tab shows, so it must not cost a rebuild of the whole window. Check "+
 			"that the Read calls in state.tabComponent have not migrated back to the root "+
-			"scope in screen.", rebuild, root)
+			"scope in Screen.", rebuild, root)
 	}
 }

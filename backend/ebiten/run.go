@@ -263,6 +263,13 @@ func Run(app *gift.App, cfg Config) error {
 		g.input = nil
 	}
 
+	// Before the window opens and on this goroutine, which is the UI
+	// executor: the seam has to hold the App before the first update can
+	// deliver anything to it. Compiled away without the giftauto tag.
+	if autoEnabled {
+		autoStart(app)
+	}
+
 	eb.SetWindowTitle(cfg.Title)
 	eb.SetWindowSize(w, h)
 	eb.SetWindowResizingMode(eb.WindowResizingModeEnabled)
@@ -315,6 +322,10 @@ type game struct {
 
 	w, h     int
 	lastDraw time.Time
+
+	// shot is the read-back buffer of [game.capture]. It stays nil, and the
+	// field itself is unreachable, without the giftauto build tag.
+	shot []byte
 
 	// scale reads the device scale factor of the monitor. It is a field for
 	// the same reason [inputBridge.keyPressed] and [inputBridge.appendChars]
@@ -577,9 +588,37 @@ func (g *game) Draw(screen *eb.Image) {
 	g.r.Submit(g.app.Paint())
 	g.r.EndFrame()
 
+	// The automation seam of the project plan's debugging tooling, and the
+	// only place a screenshot of the *real* framebuffer can be taken: this is
+	// the image the window presents. autoEnabled is a compile time constant
+	// false without the giftauto build tag, so without it neither the branch
+	// nor the read-back buffer exists. See automation_giftauto.go.
+	if autoEnabled && autoWantsFrame() {
+		autoFrame(g.capture(screen))
+	}
+
 	if metrics.Enabled() {
 		g.rec.RecordDraw(time.Since(start))
 	}
+}
+
+// capture reads the framebuffer back into the reusable buffer and returns it
+// as a [Frame].
+//
+// The buffer is kept between captures because a 1920x1080 read-back is 8 MiB
+// and a driver script takes screenshots in a loop. It is handed out to the
+// seam, which copies what it needs before returning; the seam is called
+// synchronously from Draw for exactly that reason.
+func (g *game) capture(screen *eb.Image) Frame {
+	b := screen.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if n := w * h * 4; cap(g.shot) < n {
+		g.shot = make([]byte, n)
+	} else {
+		g.shot = g.shot[:n]
+	}
+	screen.ReadPixels(g.shot)
+	return Frame{Width: w, Height: h, Pix: g.shot, Count: g.r.Stats().Frames}
 }
 
 // rendererMetrics converts the backend's own counters into the plain struct

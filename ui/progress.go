@@ -181,13 +181,20 @@ type progressNode struct {
 }
 
 // Layout takes the width it is offered and the thickness of a bar.
-func (n *progressNode) Layout(_ *gift.LayoutContext, c geom.Constraints) geom.Size {
+func (n *progressNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 	cc := n.fr.apply(c)
 	w := progressDefaultWidth
 	if cc.HasBoundedWidth() {
 		w = cc.Max.W
 	}
-	return cc.Constrain(geom.Sz(w, progressHeight))
+	// The floor is one logical pixel and not [progressHeight], which is the
+	// one place where the rule of [controlSize] is not simply "the size it
+	// draws at". A bar is a capsule that fills its bounds, so it is still a
+	// bar at any positive thickness — `.Frame(90, 3)` is a legitimate dense
+	// row and must not be silently fattened to six. What is not a bar is a
+	// bar of no height, which draws nothing at all; that is what this
+	// excludes, and the overflow it reports says so.
+	return controlSize(ctx, cc, geom.Sz(w, progressHeight), geom.Sz(1, 1))
 }
 
 // Paint draws the track and then whichever fill the mode calls for.

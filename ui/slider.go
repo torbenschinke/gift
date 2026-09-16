@@ -196,7 +196,14 @@ type sliderNode struct {
 // Layout gives the slider the width it is offered, or [sliderDefaultWidth]
 // when the axis is unbounded, and the finger sized height of
 // [ControlHitTarget].
-func (n *sliderNode) Layout(_ *gift.LayoutContext, c geom.Constraints) geom.Size {
+//
+// It never returns less than the knob on either axis, whatever
+// [SliderView.Frame] asked for, and reports the difference as an overflow; see
+// [controlSize]. A slider framed to a height of zero — which is a thing an
+// application writes, and which cmd/example-kitchensink wrote — would
+// otherwise have a knob clamped to nothing and would be a track a finger can
+// find and cannot move.
+func (n *sliderNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
 	cc := n.fr.apply(c)
 	w := sliderDefaultWidth
 	if cc.HasBoundedWidth() {
@@ -206,7 +213,7 @@ func (n *sliderNode) Layout(_ *gift.LayoutContext, c geom.Constraints) geom.Size
 	if h < sliderKnobSize {
 		h = sliderKnobSize
 	}
-	return cc.Constrain(geom.Sz(w, h))
+	return controlSize(ctx, cc, geom.Sz(w, h), geom.Sz(sliderKnobSize, sliderKnobSize))
 }
 
 // --- geometry ----------------------------------------------------------------

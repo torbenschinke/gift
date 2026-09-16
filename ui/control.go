@@ -196,6 +196,63 @@ func fillRounded(ctx *gift.PaintContext, r geom.Rect, radius float32, c Color) {
 	})
 }
 
+// controlSize is what every control in this file returns from its layouter:
+// the size it wants, constrained, but never smaller than the size at which it
+// can still draw what it is.
+//
+// # The rule, and why it is a floor and not a panic
+//
+// A control that is framed smaller than it can usefully be is a mistake, and
+// there are three possible answers to it. Draw it anyway and let it spill out
+// of its own bounds — which is what [SliderView] did until review gate 12
+// found a 28 pixel knob nine pixels above and below a ten pixel hit area, and
+// which makes a control visible where it cannot be touched. Clamp the drawing
+// into the bounds — which is what replaced it, and which turns
+// `.Frame(geom.Unbounded(), 0)` into a slider with *no knob at all* and no
+// diagnosis: the demo of this very project shipped that way and the defect was
+// found by a person looking at a screen, not by any of fourteen review gates.
+// Or refuse to be that small, which is this.
+//
+// The floor is the honest answer for two reasons. [ControlHitTarget] already
+// promises that a control offers a finger at least forty four logical pixels
+// "independent of the drawn size", so a control that laid itself out ten
+// pixels tall was breaking a documented promise before it drew anything. And
+// the overflow model of the project plan, section 7, already has a verb for
+// "the content does not fit": the container keeps its honest size and the
+// excess is *reported* rather than swallowed, which is what the
+// [gift.LayoutContext.ReportOverflow] below does. A control that is too small
+// is the same situation one level down, and answering it the same way means a
+// misframed control shows up in [gift.Diagnostics.OverflowNodes], is named by
+// the giftdebug overflow log, and fails
+// TestTheDemoHasNoOverflowAtASmallerWindow-shaped tests that already exist.
+//
+// A panic — the answer [layoutLayer] gives to a constraint it cannot satisfy —
+// was considered and rejected. That one guards an *impossible* situation with
+// no defensible output; this one has a perfectly defensible output, and the
+// target of this project is a kiosk, where the difference between a slightly
+// too tall row and a process that dies is the difference between a blemish and
+// an outage.
+//
+// # What the caller has to know
+//
+// A control may therefore be *larger* than [SliderView.Frame] asked for, and
+// the stack around it makes room. The frame is a request, not a clamp; the
+// same is already true of a [frameSpec] whose minimum a child cannot meet.
+func controlSize(ctx *gift.LayoutContext, cc geom.Constraints, want, min geom.Size) geom.Size {
+	out := cc.Constrain(want)
+	var over geom.Size
+	if out.W < min.W {
+		over.W = min.W - out.W
+		out.W = min.W
+	}
+	if out.H < min.H {
+		over.H = min.H - out.H
+		out.H = min.H
+	}
+	ctx.ReportOverflow(over)
+	return out
+}
+
 // centeredRect returns a rectangle of size w by h in the middle of outer,
 // clamped so that it never leaves outer on either axis.
 //

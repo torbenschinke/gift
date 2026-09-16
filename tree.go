@@ -178,3 +178,24 @@ func (a *App) NodeScroller(r NodeRef) (NodeRef, bool) {
 	}
 	return NodeRef{}, false
 }
+
+// NodeOverflow returns by how much the content of r exceeds the size r
+// reported, and whether it overflows at all.
+//
+// It is the per node half of [Diagnostics.OverflowNodes] and
+// [Diagnostics.OverflowExtent]: those two say how much overflow the tree
+// carries, this says which node carries it. Without it the counters are a
+// smoke alarm without a room number, and the only way to get the room number
+// was a build with the giftdebug tag reading a log line — which an automation
+// client on the far end of an HTTP connection cannot do.
+//
+// Like the counters it describes the retained tree and not the last pass: a
+// node that overflowed and was then skipped by the layout cache still reports
+// its overflow. A stale reference reports no overflow.
+func (a *App) NodeOverflow(r NodeRef) (geom.Size, bool) {
+	if !a.store.Valid(r.h) {
+		return geom.Size{}, false
+	}
+	over := a.data(r.h).overflow
+	return over, over != geom.Size{}
+}

@@ -220,7 +220,11 @@ func (n *toggleNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Si
 	if w < ControlHitTarget {
 		w = ControlHitTarget
 	}
-	return cc.Constrain(geom.Sz(w, h))
+	// Never smaller than the track it draws; see [controlSize]. A switch
+	// clamped into a zero sized frame draws neither track nor knob, which is
+	// the failure mode [SliderView] shipped with.
+	return controlSize(ctx, cc, geom.Sz(w, h),
+		geom.Sz(toggleTrackWidth, toggleTrackHeight))
 }
 
 // Paint draws the track, the knob and, when the switch has the focus, the ring.

@@ -378,3 +378,55 @@ func TestTextureCacheRejectsMalformedPixels(t *testing.T) {
 		t.Errorf("Malformed = %d, want 3", n)
 	}
 }
+
+// TestAHandleFromOneCacheIsStaleInAnother is the regression for a defect that
+// draws the wrong picture and moves no counter.
+//
+// # What went wrong
+//
+// A [render.ImageHandle] is a slot index and a generation, and [TextureCache.Resolve]
+// compares the generation so that a handle to an evicted texture reports stale
+// rather than pointing at whatever landed in the slot afterwards. That is
+// exactly right within one cache and used to say nothing at all between two of
+// them: every cache started at slot 1, generation 0, so a handle minted by one
+// resolved cheerfully in another — to an unrelated picture, with Resolves
+// going up and Stale staying where it was.
+//
+// It is not a hypothetical, and the reason is structural rather than unlucky.
+// ui's icon mask cache is process wide and keyed on the symbol and its device
+// size, while a [Renderer] and its texture cache belong to a window — and to a
+// [gifttest.Harness]. Two golden tests in one package therefore share the mask
+// cache and not the textures. Observed while writing exactly such a test: the
+// second scene drew a bell where a chevron belonged.
+//
+// The assertion below is the whole of the rule: a handle is meaningful to the
+// cache that minted it and to no other.
+func TestAHandleFromOneCacheIsStaleInAnother(t *testing.T) {
+	a := NewTextureCache(TextureConfig{})
+	b := NewTextureCache(TextureConfig{})
+	a.BeginFrame()
+	b.BeginFrame()
+
+	h, ok := a.Acquire(pixels(8))
+	if !ok {
+		t.Fatal("the first cache refused an eight by eight upload; the fixture is wrong")
+	}
+	if _, ok := a.Resolve(h); !ok {
+		t.Fatal("a handle does not resolve in the cache that minted it")
+	}
+	// The other cache has a texture in the same slot, so a resolution that
+	// only compared the index would succeed and would hand back a picture that
+	// has nothing to do with the one the caller asked for.
+	if _, ok := b.Acquire(pixels(8)); !ok {
+		t.Fatal("the second cache refused an eight by eight upload; the fixture is wrong")
+	}
+	before := b.Stats().Stale
+	if id, ok := b.Resolve(h); ok {
+		t.Fatalf("a handle minted by one texture cache resolved in another, to texture %d. "+
+			"The consumer gets a picture it never asked for and nothing anywhere says so.", id)
+	}
+	if got := b.Stats().Stale; got != before+1 {
+		t.Errorf("the foreign handle was rejected without being counted as stale: "+
+			"Stale went from %d to %d", before, got)
+	}
+}

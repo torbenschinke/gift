@@ -3,6 +3,7 @@ package ebiten
 import (
 	"image"
 	"math"
+	"sync/atomic"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
 	"github.com/torbenschinke/gift/render"
@@ -184,6 +185,11 @@ type TextureCache struct {
 
 	stats TextureStats
 
+	// epoch makes the generations of this cache disjoint from those of every
+	// other cache in the process; see [textureEpoch]. Every slot this cache
+	// ever hands out starts its generation here.
+	epoch uint32
+
 	// onDeallocate, if non nil, is called with the image immediately before
 	// it is deallocated. It exists so that a test can assert the explicit
 	// release actually happens rather than merely being claimed in a comment,
@@ -211,7 +217,42 @@ func NewTextureCache(cfg TextureConfig) *TextureCache {
 		cfg.MaxAge = DefaultTextureMaxAge
 	}
 	// One dead slot so that id 0 is invalid.
-	return &TextureCache{cfg: cfg, recs: make([]texRecord, 1, 64)}
+	return &TextureCache{cfg: cfg, epoch: textureEpoch(), recs: make([]texRecord, 1, 64)}
+}
+
+// textureEpochCounter numbers the texture caches created in this process.
+var textureEpochCounter atomic.Uint32
+
+// textureEpoch returns the generation every slot of a freshly created cache
+// starts at.
+//
+// # The defect this exists for
+//
+// A [render.ImageHandle] carries a slot index and a generation, and
+// [TextureCache.Resolve] compares the generation so that a handle to an evicted
+// texture reports stale rather than pointing at whatever landed in the slot
+// afterwards. That is exactly right *within* one cache and says nothing at all
+// between two of them: both used to start at slot 1, generation 0, so a handle
+// minted by one cache resolved in another — to a completely unrelated picture,
+// with no counter moving and no diagnosis anywhere.
+//
+// That is not a hypothetical. ui's icon mask cache is process wide and keyed
+// on the symbol and the size, while a [Renderer] and its texture cache are
+// created per window — and per [gifttest.Harness]. Two golden tests in one
+// package therefore shared the mask cache and not the textures, and the second
+// one drew a bell where a chevron belonged: observed, in
+// TestEveryComponentLooksTheWayItLooks, before this function existed.
+//
+// The epoch is the cache's ordinal times a large odd constant, so the
+// generations of two caches are far apart rather than merely different, and a
+// cache would have to evict one slot about four billion times to walk into the
+// range of another. The alternative — a cache identity field in
+// [render.ImageHandle] — is the more complete answer and costs four bytes in a
+// struct that is copied per drawn picture; this costs nothing per frame and
+// closes the same hole.
+func textureEpoch() uint32 {
+	const stride = 0x9E3779B9 // the golden ratio in 32 bits, odd, well spread
+	return textureEpochCounter.Add(1) * stride
 }
 
 // BeginFrame resets the per drawn frame upload budget. The renderer calls it
@@ -421,7 +462,7 @@ func (t *TextureCache) alloc() uint32 {
 		t.free = t.free[:n-1]
 		return i
 	}
-	t.recs = append(t.recs, texRecord{})
+	t.recs = append(t.recs, texRecord{gen: t.epoch})
 	return uint32(len(t.recs) - 1)
 }
 

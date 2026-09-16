@@ -12,6 +12,16 @@ import "sync"
 type Diagnostics struct {
 	// Frames counts the calls to App.Paint.
 	Frames uint64
+	// Updates counts the calls to App.Update.
+	//
+	// It exists because Frames alone cannot tell "the application is wedged"
+	// from "nobody is looking at it". Ebitengine calls Update for a window
+	// that is not visible and does not call Draw for one, so a program
+	// launched into the background has Updates climbing at the tick rate
+	// while Frames stands still — which looks exactly like a frozen frame
+	// path if Frames is the only number on the table. Every automation
+	// answer therefore carries both; see the gift/auto package.
+	Updates uint64
 	// Builds counts the component scopes that were rebuilt.
 	Builds uint64
 	// Layouts counts the nodes whose layouter actually ran. A node that was

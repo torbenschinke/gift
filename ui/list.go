@@ -593,6 +593,26 @@ func (n *listNode) Paint(ctx *gift.PaintContext) {
 // The device top edge of the list is taken once, outside the loop: it is the
 // same for every hairline and asking for it per separator would multiply a
 // matrix per row for no gain.
+//
+// # The origin, which was wrong for a whole work unit
+//
+// [listNode.Layout] records a hairline's position in the node's *local* space
+// — the same space [gift.LayoutContext.Place] takes, counted from the node's
+// own top left — while [gift.PaintContext.Bounds] is the node's rectangle in
+// the space the operations are emitted in. The two are the same number only
+// when the list happens to sit at the top of its parent, which is exactly what
+// a list placed directly in a [ScrollView] does. Nested one level deeper — in
+// a [CardView] in a scroller, which is the ordinary shape of a grouped list —
+// they differ by however far down the list starts, and the separators were
+// emitted that far *above* the rows they belong to: measured on
+// cmd/example-kitchensink at 900x760, rows at y=342, 395 and 448 with their
+// hairlines at y=52 and y=105, drawn through the page header and the theme
+// switch. The origin has to be added, and this is the line that adds it.
+//
+// The local top edge passed to [snapHairline] stays b.Min.Y for the same
+// reason it always was: that function measures the offset of the band from the
+// node's own edge in order to convert it into device space, and both of its
+// arguments must therefore be in one space.
 func (n *listNode) paintSeparators(ctx *gift.PaintContext, b geom.Rect, deviceTop float32) {
 	if n.nsep == 0 {
 		return
@@ -603,7 +623,7 @@ func (n *listNode) paintSeparators(ctx *gift.PaintContext, b geom.Rect, deviceTo
 		return
 	}
 	for i := range n.nsep {
-		top, th := snapHairline(n.sepY[i], n.thickness, b.Min.Y, deviceTop, n.density)
+		top, th := snapHairline(b.Min.Y+n.sepY[i], n.thickness, b.Min.Y, deviceTop, n.density)
 		ctx.Add(render.Op{
 			Kind:   render.OpFillRect,
 			Bounds: geom.Rc(x0, top, x1, top+th),

@@ -580,34 +580,66 @@ func TestASliderThatIsNotDisabledMidDragStillDragsAndStillLetsGo(t *testing.T) {
 	}
 }
 
-// TestASliderWithAShortFrameKeepsItsKnobInsideItsOwnHitArea.
+// TestASliderFramedShorterThanItsKnobIsFlooredAtTheKnobAndStillDrawsIt is the
+// rule of [ui.ControlHitTarget] and of controlSize, in the one shape in which
+// getting it wrong is invisible.
 //
-// [ui.ControlHitTarget] promises that a control draws its visible parts
-// centred inside its bounds, and says why in as many words: a control must not
-// be visible where it cannot be touched. [ui.ToggleView] has honoured that
-// since it was written; the slider did not, and a slider given a thin frame
-// painted a 28 pixel knob over a 10 pixel live area — nine pixels of knob
-// above and nine below, both of them dead to a finger.
-func TestASliderWithAShortFrameKeepsItsKnobInsideItsOwnHitArea(t *testing.T) {
+// The history is worth two sentences, because this test has now been wrong in
+// both directions. A slider given a thin frame used to paint a 28 pixel knob
+// over a 10 pixel live area — nine pixels of knob above and nine below, both
+// dead to a finger — and review gate 12 fixed that by clamping the knob into
+// the bounds. The clamp is correct and it is not sufficient: with a frame of
+// zero height, which cmd/example-kitchensink actually wrote, the clamp
+// produces a knob of no size, so the control drew a track a finger could find
+// and could not move, and nothing said a word. This test now pins the third
+// answer: the control refuses to be smaller than the thing it draws, and
+// reports the shortfall as an overflow.
+//
+// Three properties, and each one fails a different mistake:
+//
+//   - the height is the knob and not the ten the frame asked for, which fails
+//     if the floor is removed;
+//   - a full sized knob is actually emitted, which fails for the clamp-only
+//     answer that shipped;
+//   - nothing is drawn outside the bounds, which fails for the overflow-anyway
+//     answer that preceded it.
+func TestASliderFramedShorterThanItsKnobIsFlooredAtTheKnobAndStillDrawsIt(t *testing.T) {
 	for _, f := range []float64{0, 0.5, 1} {
-		h := gifttest.New(t, gifttest.Options{
-			View: ui.VStack(ui.Slider(f, nil).Key("sl").Frame(200, 10)).Padding(20),
-			Size: geom.Sz(300, 200),
-		})
-		b := h.Find(gifttest.ByKey("sl")).Bounds()
-		if b.Height() != 10 {
-			t.Fatalf("the slider is %v tall, not the 10 the frame asked for, so this test is "+
-				"not about the case it names", b.Height())
-		}
-		for _, op := range h.Ops() {
-			if op.Kind != render.OpFillRoundRect && op.Kind != render.OpStrokeRoundRect {
-				continue
+		for _, framed := range []float32{0, 10} {
+			h := gifttest.New(t, gifttest.Options{
+				View: ui.VStack(ui.Slider(f, nil).Key("sl").Frame(200, framed)).Padding(20),
+				Size: geom.Sz(300, 200),
+			})
+			b := h.Find(gifttest.ByKey("sl")).Bounds()
+			if b.Height() != 28 {
+				t.Fatalf("a slider framed %v tall is %v tall; it must be floored at the 28 "+
+					"pixel knob it draws", framed, b.Height())
 			}
-			r := op.Bounds
-			if r.Min.Y < b.Min.Y || r.Max.Y > b.Max.Y {
-				t.Fatalf("at fraction %v the slider drew %v, which leaves its own bounds %v. "+
-					"Those pixels are visible and cannot be touched.\n%s",
-					f, r, b, formatOpsForTest(h))
+			// The shortfall is reported and not swallowed; the overflow model
+			// of the project plan, section 7, is the same one level down.
+			if dg := h.Diagnostics(); dg.OverflowNodes == 0 {
+				t.Errorf("a slider framed %v tall reports no overflow; a control that quietly "+
+					"ignores its frame is a layout nobody can debug", framed)
+			}
+			var knob geom.Rect
+			for _, op := range h.Ops() {
+				if op.Kind != render.OpFillRoundRect && op.Kind != render.OpStrokeRoundRect {
+					continue
+				}
+				r := op.Bounds
+				if r.Min.Y < b.Min.Y || r.Max.Y > b.Max.Y {
+					t.Fatalf("at fraction %v the slider drew %v, which leaves its own bounds %v. "+
+						"Those pixels are visible and cannot be touched.\n%s",
+						f, r, b, formatOpsForTest(h))
+				}
+				if op.Kind == render.OpFillRoundRect && r.Width() == r.Height() {
+					knob = r
+				}
+			}
+			if knob.Height() != 28 {
+				t.Fatalf("at fraction %v in a %v tall frame the slider drew no full sized knob "+
+					"(found %v); a slider without a handle cannot be dragged.\n%s",
+					f, framed, knob, formatOpsForTest(h))
 			}
 		}
 	}

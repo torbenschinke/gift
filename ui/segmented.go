@@ -277,7 +277,12 @@ func (n *segmentedNode) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom
 	if h < ControlHitTarget {
 		h = ControlHitTarget
 	}
-	size := cc.Constrain(geom.Sz(w, h))
+	// Never smaller than the tray plus its labels; see [controlSize]. A
+	// segmented control squeezed to nothing is the same defect a zero height
+	// slider was: a tray with no card and no text in it, which is not a
+	// control at all.
+	size := controlSize(ctx, cc, geom.Sz(w, h),
+		geom.Sz(float32(max(k, 1))*2*segmentedInset, tallest+2*segmentedInset))
 
 	col := size.W / float32(max(k, 1))
 	for i := range k {

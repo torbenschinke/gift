@@ -106,6 +106,68 @@ func TestASectionBoundaryHasNoHairlineOnEitherSideOfIt(t *testing.T) {
 	}
 }
 
+// TestANestedListPutsItsSeparatorsBetweenItsOwnRows is the regression for a
+// defect that reached a user's screen, and it is worth stating exactly what
+// went wrong because every other separator test in this file passed while it
+// did.
+//
+// [listNode.Layout] records the position of a hairline in the node's *local*
+// space, counted from the node's own top left, which is the space
+// [gift.LayoutContext.Place] takes. [gift.PaintContext.Bounds] is the node's
+// rectangle in the space the operations are emitted in. The painter used the
+// first as if it were the second, and the two agree precisely when the list
+// sits at the top of its parent — which is what a list placed directly in a
+// [ui.ScrollView] does, which is what every test in this file did, and which
+// is why nothing noticed.
+//
+// Nested one level deeper, in a card in a scroller, the hairlines were emitted
+// as far *above* the rows as the list started below its parent. Measured on
+// cmd/example-kitchensink at 900x760: rows at y=342, 395 and 448, hairlines at
+// y=52 and y=105 — drawn through the page header and the theme switch, which
+// is the "line cutting into the theme switcher" the defect was reported as.
+//
+// The fixture is therefore deliberately *not* a bare list: it is a list in a
+// card in a stack with a padding, so that the node's own origin is a long way
+// from the origin of the space it paints into. The assertion is the one that
+// fails by three hundred pixels: every hairline lies in the gap between the
+// two rows it belongs to.
+func TestANestedListPutsItsSeparatorsBetweenItsOwnRows(t *testing.T) {
+	h := listHarness(t, ui.VStack(
+		ui.Box().Frame(geom.Unbounded(), 120).Key("spacer"),
+		ui.Card(
+			ui.List(
+				ui.Row("a").Key("a"),
+				ui.Row("b").Key("b"),
+				ui.Row("c").Key("c"),
+			).Key("list"),
+		).Padding(0).Header("Nested").Key("card"),
+	).Gap(24).Padding(16), geom.Sz(360, 600))
+
+	got := separatorOps(t, h, sepColor())
+	if len(got) != 2 {
+		t.Fatalf("three rows in a card produced %d separators, want 2.\n%s", len(got), h.Dump())
+	}
+	rows := []geom.Rect{
+		h.Find(gifttest.ByKey("a")).Bounds(),
+		h.Find(gifttest.ByKey("b")).Bounds(),
+		h.Find(gifttest.ByKey("c")).Bounds(),
+	}
+	if !(rows[0].Min.Y > 140) {
+		t.Fatalf("the first row is at y=%v; this fixture only means something when the list "+
+			"is a long way down its parent", rows[0].Min.Y)
+	}
+	for i, op := range got {
+		above, below := rows[i], rows[i+1]
+		y := op.Bounds.Min.Y
+		if y < above.Max.Y-1 || y > below.Min.Y+1 {
+			t.Errorf("the hairline between row %d and row %d is at y=%v, and the gap between "+
+				"them is %v..%v. A separator emitted in the wrong origin is drawn over whatever "+
+				"is that far above the list.\n%s",
+				i, i+1, y, above.Max.Y, below.Min.Y, h.Dump())
+		}
+	}
+}
+
 // TestAHeaderAtTheTopAndAtTheBottomProducesNoSeparatorAtAll covers the two
 // degenerate placements a header can have. It is here because the rule is
 // stated over *pairs*, and a pair at the edge of the slice is where an index

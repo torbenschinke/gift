@@ -194,6 +194,7 @@ func (a *App) Update(viewport geom.Size) error {
 		panic("gift: App.Update called during App.Update")
 	}
 	a.updating = true
+	a.diag.Updates++
 	defer a.endUpdate()
 
 	if viewport != a.viewport {
@@ -359,6 +360,79 @@ func (a *App) Invalidate() {
 	a.markNeedsLayout(a.root.node)
 }
 
+// InvalidateAll forces a rebuild of *every* mounted component instance in the
+// next update, not only of the root.
+//
+// # Why [App.Invalidate] is not enough, and when that matters
+//
+// Invalidate marks the root scope. A plain [Component] has no rebuild boundary
+// — its props live in a closure gift cannot compare — so a root rebuild does
+// reach every plain component under it. A [Memo] is exactly the thing that
+// stops it: [App.updateChild] returns without calling the component function
+// when the props are equal and no state the instance read has fired, which is
+// the boundary section 6 of the project plan asks for. A change that is
+// neither a prop nor a state, but which nevertheless decides what the subtree
+// looks like, therefore does not reach it.
+//
+// The change that is like that today is the colour theme. Colours are resolved
+// during build and stored literally in the retained node — that is what keeps
+// the frame path free of theme lookups — so a subtree which is not rebuilt
+// keeps the palette it was built with. The result on a screen is not subtle:
+// the background turns light while every memoised card stays dark, and the
+// text on it becomes unreadable. [ui.SetTheme] calls this method for that
+// reason.
+//
+// # The cost, stated plainly
+//
+// One walk of the retained tree, which is O(nodes) and allocates nothing, plus
+// a rebuild of every component instance in the next update — which is the most
+// expensive update the application can have, and is exactly what "every colour
+// on the screen is resolved again" means. It is the right price for a theme
+// switch, which happens when a person presses a button, and it would be the
+// wrong price for anything per frame. Nothing in gift calls it from the frame
+// path, and nothing should.
+//
+// The blunter alternatives were weighed and rejected. Making the theme a
+// [State] that every widget reads would put a dependency registration on every
+// colour lookup, in ui, which has no [Context] to register against; a
+// generation counter compared during reconciliation would have to be consulted
+// for every node in the tree, once per update, to save work in the one update
+// per hour where a theme changes. This is the cheap version of the honest
+// answer: a change nobody can attribute invalidates everything that could have
+// consumed it.
+//
+// Like [App.Invalidate] it asserts under the giftdebug tag that it was called
+// from the UI goroutine, and for the same reason.
+func (a *App) InvalidateAll() {
+	a.assertUIGoroutine("InvalidateAll")
+	if a.root == nil || !a.store.Valid(a.root.node) {
+		return
+	}
+	a.invalidateScopesIn(a.root.node, 0)
+	a.markNeedsLayout(a.root.node)
+}
+
+// invalidateScopesIn marks every scope at or below h as needing a build.
+//
+// It walks the children rather than the dirty queue, because the queue is the
+// set of scopes that *asked* for a rebuild and the point here is the ones that
+// did not. The depth guard is the one every recursive walk in this file
+// carries; a tree deeper than [scene.MaxDepth] is a component building an
+// unbounded tree, and a stack overflow is a worse diagnosis than a panic that
+// says so.
+func (a *App) invalidateScopesIn(h scene.Handle, depth int) {
+	if depth > scene.MaxDepth {
+		panic(fmt.Sprintf("gift: tree deeper than %d levels while invalidating every scope", scene.MaxDepth))
+	}
+	nd := a.data(h)
+	if sc := nd.scope; sc != nil {
+		a.markNeedsBuild(sc)
+	}
+	for _, c := range nd.children {
+		a.invalidateScopesIn(c, depth+1)
+	}
+}
+
 // NeedsPaint reports whether the tree changed since the last Paint.
 //
 // It is informational. gift redraws the whole screen every frame anyway,
@@ -366,6 +440,18 @@ func (a *App) Invalidate() {
 // exists so that the three invalidation levels stay distinct and observable,
 // not so that frames can be skipped.
 func (a *App) NeedsPaint() bool { return a.needsPaint }
+
+// Viewport returns the logical size the application was last laid out at,
+// that is the size handed to the most recent [App.Update].
+//
+// It is the denominator of every coordinate this package hands out: node
+// bounds, hit test points and pointer positions are all in this space, and a
+// caller outside the frame loop — a diagnostic dump or the automation
+// interface of the gift/auto package — otherwise has no way to relate them to
+// the pixels of a framebuffer, which are this times [App.Density].
+//
+// It reports the zero size before the first update.
+func (a *App) Viewport() geom.Size { return a.viewport }
 
 // Logger returns the logger passed in [Options], or nil. It is never
 // slog.Default.

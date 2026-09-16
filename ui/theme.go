@@ -412,8 +412,8 @@ func newThemeSlot(t Theme) *atomic.Pointer[Theme] {
 // CurrentTheme returns the theme in force. The default is [LightTheme].
 func CurrentTheme() Theme { return *theme.Load() }
 
-// SetTheme installs t as the process wide theme and asks app to rebuild, which
-// is what puts the new colours on the screen.
+// SetTheme installs t as the process wide theme and asks app to rebuild
+// everything, which is what puts the new colours on the screen.
 //
 // # Why the app is an argument
 //
@@ -422,9 +422,24 @@ func CurrentTheme() Theme { return *theme.Load() }
 // the literal colour it was built with, which is what keeps the frame path
 // free of theme lookups and of allocations — so nothing at all changes until
 // the views are built again. The project plan, section 20, names the mechanism:
-// a theme change triggers a rebuild through [gift.App.Invalidate]. Making the
-// caller remember that separately would be a two line ritual whose second line
-// is easy to forget and whose symptom is a window that ignores the switch.
+// a theme change triggers a rebuild. Making the caller remember that
+// separately would be a two line ritual whose second line is easy to forget
+// and whose symptom is a window that ignores the switch.
+//
+// # Why it is [gift.App.InvalidateAll] and not [gift.App.Invalidate]
+//
+// Because Invalidate marks the *root* scope, and a root rebuild stops at the
+// first rebuild boundary below it. A [gift.Memo] whose props did not change is
+// not rebuilt, keeps the palette it was built with, and the screen ends up
+// half in each theme: a light background with dark cards on it and text that
+// cannot be read. A theme is not a prop and not a state, so nothing about the
+// memo's own inputs changed — which is precisely why the invalidation has to
+// come from outside the dependency graph.
+//
+// The cost is a rebuild of every component instance in the process, and it is
+// the honest one: section 20's promise is that the switch rebuilds every
+// colour on the screen, and every colour on the screen is resolved in a build.
+// See [gift.App.InvalidateAll] for what that is worth per switch.
 //
 // app may be nil, which sets the theme and repaints nothing. That is for a
 // call before the application exists — the usual place, in main, next to
@@ -440,24 +455,24 @@ func CurrentTheme() Theme { return *theme.Load() }
 // "set before the first frame"; a theme is different in kind, because
 // switching it *at runtime* is the feature.
 //
-// [gift.App.Invalidate] is not concurrency safe, however, and nothing here can
-// make it so. A goroutine that is not the UI goroutine — one watching the
+// [gift.App.InvalidateAll] is not concurrency safe, however, and nothing here
+// can make it so. A goroutine that is not the UI goroutine — one watching the
 // desktop appearance, say — therefore posts the switch:
 //
 //	app.Post(func() { ui.SetTheme(app, ui.DarkTheme()) })
 //
 // Calling it with a non nil app from another goroutine is a defect. Under the
-// giftdebug tag [gift.App.Invalidate] catches it directly and panics naming
-// both goroutines. Without the tag it is a data race on the tree's dirty
-// flags, which -race reports when it observes the two accesses — which is to
-// say when the UI goroutine is genuinely building or laying out at that
-// moment, not merely because the call came from elsewhere. That is the usual
-// property of the race detector and the reason the giftdebug check exists next
-// to it rather than instead of it.
+// giftdebug tag the invalidation catches it directly and panics naming both
+// goroutines. Without the tag it is a data race on the tree's dirty flags,
+// which -race reports when it observes the two accesses — which is to say when
+// the UI goroutine is genuinely building or laying out at that moment, not
+// merely because the call came from elsewhere. That is the usual property of
+// the race detector and the reason the giftdebug check exists next to it
+// rather than instead of it.
 func SetTheme(app *gift.App, t Theme) {
 	theme.Store(&t)
 	if app != nil {
-		app.Invalidate()
+		app.InvalidateAll()
 	}
 }
 
