@@ -9,8 +9,8 @@
 //
 // This is the shape of font/inter and it is chosen for the same reason: a
 // binary that does not import this package pays nothing for it — no purego, no
-// dlopen, no thread, no libX11 on the machine. The measured cost of importing
-// it is in "What it costs" below.
+// dlopen, no thread, no libX11 on the machine. What importing it costs, in
+// bytes and on which platform, is measured in "What it costs" below.
 //
 // The side effect is the whole of the public surface that an application
 // needs. [New] exists for the one thing the import cannot do, which is hand
@@ -45,6 +45,28 @@
 //     list it as a target; see "Windows" below.
 //
 // # What it costs
+//
+// First, binary size, because the package documentation above promises a
+// number and until WU-AH there was none. Measured with two programs that
+// differ only in this package's blank import, both of which build a [ui.Text],
+// compared with `go build` and `stat`, Go 1.27:
+//
+//   - CGO_ENABLED=0 GOOS=linux GOARCH=arm64, the Raspberry Pi target of
+//     section 1: **+1 310 927 bytes**, 1.25 MiB.
+//   - darwin/arm64: **+627 424 bytes**, 613 KiB.
+//
+// Most of that is not the clipboard. It is log/slog and what slog pulls in —
+// reflect and encoding/json — for a binary that did not already use it, plus
+// purego and the runtime callback machinery [purego.NewCallback] requires. An
+// application that already hands [gift.Options] an *slog.Logger, which is what
+// section 15 of the project plan expects of one, has paid most of it already:
+// against a baseline that logs, the same measurement gives **+195 527 bytes**
+// on linux/arm64 and **+503 776 bytes** on darwin/arm64, and the remaining
+// darwin figure is the Objective-C runtime binding. Both pairs are quoted
+// because an application is one or the other and the difference between them
+// is larger than the package.
+//
+// Second, allocations.
 //
 // A call is a user action — Ctrl+C, Ctrl+V — and never happens on the frame
 // path, so the zero allocation contract of section 11 is untouched by
@@ -100,6 +122,7 @@ package clipboard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"unicode/utf8"
@@ -149,10 +172,13 @@ var ErrUnsupported = errors.New("gift/clipboard: no system clipboard on this pla
 // so a keyboard held down on Ctrl+V cannot turn one missing library into a
 // dlopen per keystroke.
 //
-// The result implements [ui.Clipboard] and nothing more. It has no Close: the
-// documentation of [ui.Clipboard] explains why there is no shutdown hook, and
-// the X11 implementation explains what that means for the content at process
-// exit.
+// The result implements [ui.Clipboard] and, additionally,
+// [ui.CheckedClipboard], so that a cut can find out that its copy failed
+// before it deletes anything. That is an assertion the caller makes and not a
+// wider return type, because the interface a clipboard is installed under is
+// still [ui.Clipboard]. It has no Close: the documentation of [ui.Clipboard]
+// explains why there is no shutdown hook, and the X11 implementation explains
+// what that means for the content at process exit.
 func New(log *slog.Logger) ui.Clipboard {
 	return newClipboard(openPlatform, log)
 }
@@ -261,24 +287,35 @@ func (c *clipboard) Text() (string, bool) {
 	return s, true
 }
 
-// SetText implements [ui.Clipboard].
+// SetText implements [ui.Clipboard]. It is [clipboard.SetTextErr] with the
+// error already logged and then dropped, and not a second code path.
+func (c *clipboard) SetText(s string) {
+	_ = c.SetTextErr(s)
+}
+
+// SetTextErr implements [ui.CheckedClipboard].
 //
 // Over-long text is truncated at a rune boundary and the truncation is
-// reported as a log line and in no other way, because the interface has no way
-// to report it. See the package documentation, "The size cap".
+// reported as a log line and in no other way, not as an error: the cap is
+// documented, the first [MaxBytes] did arrive, and a cut whose text was merely
+// shortened must still delete. See the package documentation, "The size cap".
 //
 // Text that is not valid UTF-8 cannot arrive here from a gift text field,
 // which builds its strings from runes, but can arrive from an application that
 // calls [ui.CurrentClipboard] itself. It is refused rather than handed to a
 // platform whose transfer types all promise UTF-8.
-func (c *clipboard) SetText(s string) {
+//
+// The errors are returned as well as logged because the caller that asks for
+// them can act: [ui.CheckedClipboard] exists so that a cut does not delete the
+// text it failed to copy.
+func (c *clipboard) SetTextErr(s string) error {
 	p := c.impl()
 	if p == nil {
-		return
+		return fmt.Errorf("%w: there is no platform clipboard, the failure was logged when it was first opened", ErrUnsupported)
 	}
 	if !utf8.ValidString(s) {
 		c.logf(slog.LevelError, "refusing to copy text that is not valid UTF-8", "bytes", len(s))
-		return
+		return fmt.Errorf("gift/clipboard: refusing to copy %d bytes that are not valid UTF-8", len(s))
 	}
 	if capped, cut := capText(s); cut {
 		c.logf(slog.LevelWarn, "copying more than this package transfers, truncating",
@@ -287,7 +324,9 @@ func (c *clipboard) SetText(s string) {
 	}
 	if err := p.setText(s); err != nil {
 		c.logf(slog.LevelError, "writing the clipboard failed", "error", err)
+		return err
 	}
+	return nil
 }
 
 // logf is the one place this package logs. A nil logger is silence, per

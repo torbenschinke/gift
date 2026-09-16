@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/torbenschinke/gift/ui"
 )
 
 // What this file does and does not prove, because that distinction is the
@@ -242,6 +244,48 @@ func TestANilLoggerIsSilenceAndNotAPanic(t *testing.T) {
 	c.SetText(strings.Repeat("a", MaxBytes+1)) // would log a truncation
 	if _, ok := c.Text(); ok {                 // would log an error
 		t.Fatal("a failing read reported success")
+	}
+}
+
+// TestSetTextErrReportsWhatSetTextSwallows is the extension a cut needs:
+// [ui.CheckedClipboard]. The three outcomes that must be distinguishable are
+// a platform that never opened, a platform that refused the write, and a write
+// that only had to be truncated — the last one is a success, because the text
+// did arrive and a cut whose text was merely shortened must still cut.
+func TestSetTextErrReportsWhatSetTextSwallows(t *testing.T) {
+	boom := errors.New("the owner never answered")
+	p := &fakePlatform{writeErr: boom}
+	c, _ := newTestClipboard(t, p)
+	if err := c.SetTextErr("x"); !errors.Is(err, boom) {
+		t.Fatalf("a refused write returned %v, want the platform's error", err)
+	}
+
+	p.writeErr = nil
+	if err := c.SetTextErr("x"); err != nil {
+		t.Fatalf("a good write returned %v", err)
+	}
+	if err := c.SetTextErr(strings.Repeat("a", MaxBytes+10)); err != nil {
+		t.Fatalf("a truncated write returned %v; truncation is documented and is not a failure", err)
+	}
+	if err := c.SetTextErr("\xff"); err == nil {
+		t.Fatal("invalid UTF-8 was accepted")
+	}
+
+	dead := newClipboard(func(*slog.Logger) (platform, error) { return nil, ErrUnsupported }, nil)
+	if err := dead.SetTextErr("x"); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("a clipboard with no platform returned %v, want ErrUnsupported", err)
+	}
+}
+
+// TestTheClipboardSatisfiesTheCheckedInterface pins the assertion the text
+// field makes. It is a compile time question asked at run time, because the
+// field reaches this type through [ui.Clipboard] and a rename of the method
+// would otherwise only show up as a cut that silently stopped being safe.
+func TestTheClipboardSatisfiesTheCheckedInterface(t *testing.T) {
+	if _, ok := New(nil).(ui.CheckedClipboard); !ok {
+		t.Fatal("the clipboard installed by this package is not a ui.CheckedClipboard, " +
+			"so ui.textFieldNode.copy cannot tell a failed copy from a good one and a cut " +
+			"will delete text it never copied")
 	}
 }
 

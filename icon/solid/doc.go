@@ -25,21 +25,33 @@
 //
 // The geometry of all 239 icons is one embedded blob of 56 607 bytes, and each
 // variable is a window into it. Measured the same way as
-// [github.com/torbenschinke/gift/icon/outline]: 104 159 bytes of symbols and
-// 57 216 bytes of whole binary growth. Importing both sets is additive at the
-// symbol level — 196 861 bytes — which is the measurement that decided they
-// stay two packages: there is no shared table to amortise, so a binary that
-// wants one style pays for one style.
+// [github.com/torbenschinke/gift/icon/outline], which writes the method out,
+// and re-measured in WU-AH: 104 159 bytes of symbols, and 132 224 bytes of
+// whole binary growth on darwin/arm64, 100 240 on linux/arm64. The previous
+// figure here, 57 216 bytes, was wrong in the same way as the outline one and
+// for the same reason; see that package.
+//
+// Importing both sets is additive at the symbol level — 92 702 + 104 159 =
+// 196 861 bytes — which is the measurement that decided they stay two
+// packages: there is no shared table to amortise, so a binary that wants one
+// style pays for one style. At the whole binary level it is slightly worse
+// than additive, 284 576 bytes on darwin/arm64 against 268 096 for the two
+// deltas added up, which is segment padding and is also why this set appears
+// to cost *less* than the outline one despite having more symbols. A whole
+// binary figure is not additive arithmetic and should not be treated as any.
 //
 // # Two knockouts and one stroke, stated because they are surprising
 //
 // The set is not quite uniformly "filled shapes in currentColor".
-// solid/circle-plus.svg is filled *and* stroked, and is emitted as two figures
-// in that order. solid/visa.svg draws a card in currentColor and the lettering
-// in a literal #ffffff on top; a gift icon is monochrome, so the lettering is
-// emitted as a knockout — see internal/icon.PaintErase — and the icon renders
-// as a card with the letters punched out of it in whatever colour it is
-// tinted. That is what the artwork means; it is not what the artwork says.
+// solid/npm.svg is filled *and* stroked, and is emitted as two figures in that
+// order, fill first. (This paragraph named circle-plus.svg until WU-AH, which
+// re-scanned the corpus and pinned the answer in a test; circle-plus is a
+// plain even-odd fill with no stroke at all.) solid/visa.svg draws a card in
+// currentColor and the lettering in a literal #ffffff on top; a gift icon is
+// monochrome, so the lettering is emitted as a knockout — see
+// internal/icon.PaintErase — and the icon renders as a card with the letters
+// punched out of it in whatever colour it is tinted. That is what the artwork
+// means; it is not what the artwork says.
 //
 // 211 of its paths declare fill-rule="evenodd", and 45 of those genuinely
 // paint a different area under the nonzero rule that

@@ -125,6 +125,28 @@ type iconKey struct {
 // issues two hundred image operations that cannot batch. Text cannot afford
 // that and icons can — there are tens of them on a screen, not thousands.
 //
+// # The qualification the generation needs
+//
+// "Detectable rather than wrong" holds for *one* [render.Images]. This cache
+// is a package variable and the service is whichever one the current
+// [gift.PaintContext] carries, so a handle minted against one App's texture
+// cache and resolved against another's is neither stale nor right: the
+// generations belong to different counters and a match between them means
+// nothing. Two Apps in one process would therefore draw each other's pictures.
+//
+// It is left that way, deliberately and with the same reasoning the project
+// plan, section 13, applies to the process wide shaper: gift supports one
+// window and one App, nothing else in the package is arranged for a second
+// one — [imageService] in image.go has exactly this shape, [SetDefaultFont],
+// [SetTheme] and [SetClipboard] are process wide by design — and the fix is
+// not a lock or a key of two parts. It is a service per App, and that is a
+// change to the layout and paint contracts, which hand a layouter a
+// *LayoutContext and a painter a *PaintContext and no application handle. The
+// trigger to do it is the same one section 13 names: the first time a second
+// App is really wanted. Until then this comment is the honest statement of
+// what the generation does and does not promise, and a silent qualification
+// would have been the defect.
+//
 // It belongs to the UI executor and is not safe for concurrent use, like
 // [imageService] next to it and with the same caveat about t.Parallel that the
 // project plan, section 13, already records.

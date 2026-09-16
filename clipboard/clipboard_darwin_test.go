@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/ebitengine/purego/objc"
 )
 
 // This test talks to the real pasteboard of the machine it runs on, so it is
@@ -21,8 +23,8 @@ import (
 //
 // It is gated at all because the pasteboard is a shared resource of a logged-in
 // human. A test that overwrites it is a test that loses whatever the person
-// running it had copied — which is why this one reads the old contents first
-// and puts them back, and why it still refuses to run without being asked.
+// running it had copied — which is why every test here calls
+// [preservePasteboard], and why it still refuses to run without being asked.
 
 func requirePasteboard(t *testing.T) *macPlatform {
 	t.Helper()
@@ -33,7 +35,74 @@ func requirePasteboard(t *testing.T) *macPlatform {
 	if err != nil {
 		t.Fatalf("opening NSPasteboard: %v", err)
 	}
+	preservePasteboard(t, m)
 	return m
+}
+
+// preservePasteboard saves the pasteboard and puts it back when the test ends.
+//
+// The obvious version — remember the text, write it back if there was one — is
+// what these tests used to do, and it is wrong in both of the cases where the
+// answer is not a string. WU-AH found both:
+//
+//   - The pasteboard was *empty*. "There was no text, so restore nothing"
+//     leaves this test's own string on the machine's clipboard for ever. The
+//     restoration for that case is a clearContents, which is what the else
+//     branch below does.
+//   - The pasteboard held something that is not text — a picture, a file
+//     reference, rich text with no plain fallback. That cannot be saved and
+//     put back through a string-shaped seam at all, so the test skips instead
+//     of destroying it. Copying some text first makes it run.
+func preservePasteboard(t *testing.T, m *macPlatform) {
+	t.Helper()
+	before, had, err := m.text()
+	if err != nil {
+		t.Fatalf("reading the pasteboard before the test: %v", err)
+	}
+	if !had && pasteboardTypeCount(m) > 0 {
+		t.Skip("the pasteboard holds something that is not text; this test would destroy it and " +
+			"cannot put it back. Copy some text, or empty the clipboard, and run it again")
+	}
+	t.Cleanup(func() {
+		if had {
+			if err := m.setText(before); err != nil {
+				t.Errorf("putting the clipboard back: %v", err)
+			}
+			return
+		}
+		// It was empty, so leaving this test's text on it would be a change
+		// the person who ran the test did not ask for.
+		clearPasteboard(m)
+	})
+}
+
+// pasteboardTypeCount is [[[NSPasteboard generalPasteboard] types] count]. It
+// is the one question the platform layer does not need to ask and the test
+// does: "is the pasteboard empty, or does it hold something I cannot read?"
+func pasteboardTypeCount(m *macPlatform) uint64 {
+	var n uint64
+	m.pool(func() {
+		pb := objc.ID(m.pasteboardClass).Send(m.generalPasteboard)
+		if pb == 0 {
+			return
+		}
+		types := pb.Send(objc.RegisterName("types"))
+		if types == 0 {
+			return
+		}
+		n = uint64(types.Send(objc.RegisterName("count")))
+	})
+	return n
+}
+
+// clearPasteboard is [[NSPasteboard generalPasteboard] clearContents], which is
+// how an empty pasteboard is restored to being empty.
+func clearPasteboard(m *macPlatform) {
+	m.pool(func() {
+		if pb := objc.ID(m.pasteboardClass).Send(m.generalPasteboard); pb != 0 {
+			pb.Send(m.clearContents)
+		}
+	})
 }
 
 // TestPasteboardRoundTripsThroughAnotherProcess is the real verification: the
@@ -43,16 +112,6 @@ func requirePasteboard(t *testing.T) *macPlatform {
 // Objective-C calls only appeared to work.
 func TestPasteboardRoundTripsThroughAnotherProcess(t *testing.T) {
 	m := requirePasteboard(t)
-
-	before, hadBefore, err := m.text()
-	if err != nil {
-		t.Fatalf("reading the pasteboard before the test: %v", err)
-	}
-	t.Cleanup(func() {
-		if hadBefore {
-			_ = m.setText(before)
-		}
-	})
 
 	const written = "gift clipboard test: Grüße, 日本語, and a \t tab"
 	if err := m.setText(written); err != nil {
@@ -87,13 +146,6 @@ func TestPasteboardRoundTripsThroughAnotherProcess(t *testing.T) {
 // gets the stale one.
 func TestPasteboardClearsBeforeWriting(t *testing.T) {
 	m := requirePasteboard(t)
-	before, hadBefore, _ := m.text()
-	t.Cleanup(func() {
-		if hadBefore {
-			_ = m.setText(before)
-		}
-	})
-
 	if err := m.setText("first"); err != nil {
 		t.Fatal(err)
 	}
@@ -111,13 +163,6 @@ func TestPasteboardClearsBeforeWriting(t *testing.T) {
 // there is no &b[0] of an empty slice.
 func TestPasteboardHandlesTheEmptyString(t *testing.T) {
 	m := requirePasteboard(t)
-	before, hadBefore, _ := m.text()
-	t.Cleanup(func() {
-		if hadBefore {
-			_ = m.setText(before)
-		}
-	})
-
 	if err := m.setText(""); err != nil {
 		t.Fatalf("setText(\"\"): %v", err)
 	}

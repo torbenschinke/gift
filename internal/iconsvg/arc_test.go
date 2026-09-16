@@ -100,26 +100,37 @@ func TestACircularArcStaysOnItsCircle(t *testing.T) {
 
 // TestTheArcFlagsSelectTheRightOneOfTheFourArcs is the other half, and it is
 // the half a radius check cannot do: four different arcs join the same two
-// points on the same circle, and large-arc-flag and sweep-flag are what pick
+// points with the same radius, and large-arc-flag and sweep-flag are what pick
 // one. Getting the sign of either wrong gives an arc that is still perfectly
-// on the circle and is still the wrong picture — a chevron pointing the other
-// way, which is a large fraction of what this corpus draws.
+// on a circle of the right radius and is still the wrong picture — a chevron
+// pointing the other way, which is a large fraction of what this corpus draws.
 //
-// The discriminator is the midpoint of the traced arc: for the four
-// combinations of the flags on a chord from (4,12) to (20,12) it must be
-// above, below, below and above the chord respectively, and the arc must be a
-// half circle in each case, so the midpoint is exactly at distance r from the
-// chord.
+// The chord is deliberately **not** a diameter. Until WU-AH it was: the four
+// cases all ran from (4,12) to (20,12) on a circle of radius 8 centred on
+// (12,12), which is a diameter, so both arcs were semicircles and the
+// large-arc flag could not change anything. The test's own comments said so
+// while its name promised four arcs, and the proof that it was only testing
+// two is that inverting `if large == sweep` in [arcToCubics] left it passing.
+// It does not now.
+//
+// The geometry, so that the numbers below are checkable rather than magic: the
+// chord from (8,12) to (16,12) is 8 long and the radius is 5, so the centre
+// sits 3 off the midpoint (12,12) on either side — at (12,9) or (12,15). Each
+// centre gives a minor and a major arc, and the midpoint of each of the four
+// is on the line x=12 at distance 5 from its centre. That is four distinct y
+// values, one per flag combination, and no two of them are within 4 of each
+// other.
 func TestTheArcFlagsSelectTheRightOneOfTheFourArcs(t *testing.T) {
 	for _, tc := range []struct {
 		d      string
 		wantY  float64
+		cy     float64
 		reason string
 	}{
-		{"M4 12A8 8 0 0 1 20 12", 4, "sweep 1 is clockwise in SVG's y-down space, so it goes over the top"},
-		{"M4 12A8 8 0 0 0 20 12", 20, "sweep 0 is anticlockwise, so it goes under the bottom"},
-		{"M4 12A8 8 0 1 1 20 12", 4, "the two halves are the same size, so large-arc cannot change the choice"},
-		{"M4 12A8 8 0 1 0 20 12", 20, "likewise"},
+		{"M8 12A5 5 0 0 1 16 12", 10, 15, "sweep 1 is clockwise in SVG's y-down space, so the minor arc bulges upwards"},
+		{"M8 12A5 5 0 0 0 16 12", 14, 9, "sweep 0 is anticlockwise, so the minor arc bulges downwards"},
+		{"M8 12A5 5 0 1 1 16 12", 4, 9, "same direction as the first, but the long way round, so it bulges further up"},
+		{"M8 12A5 5 0 1 0 16 12", 20, 15, "same direction as the second, the long way round"},
 	} {
 		pts := evalPath(t, tc.d, 64)
 		mid := pts[len(pts)/2]
@@ -129,6 +140,19 @@ func TestTheArcFlagsSelectTheRightOneOfTheFourArcs(t *testing.T) {
 		if math.Abs(mid[1]-tc.wantY) > 0.05 {
 			t.Errorf("%s: the arc passes through y=%v at its midpoint, want %v — %s",
 				tc.d, mid[1], tc.wantY, tc.reason)
+		}
+		// Every point is on a circle of radius 5 around the centre the flags
+		// chose, which is the half the midpoint alone would not catch: a
+		// midpoint in the right place can still sit on a bent arc. The centre
+		// is on the far side of the chord from the bulge, which is why cy is
+		// 15 for the two arcs that pass above it.
+		for _, p := range pts {
+			d := math.Hypot(p[0]-12, p[1]-tc.cy)
+			if math.Abs(d-5) > 0.01 {
+				t.Errorf("%s: a point of the arc is %v from the centre (12,%v) the flags chose, want 5",
+					tc.d, d, tc.cy)
+				break
+			}
 		}
 	}
 }

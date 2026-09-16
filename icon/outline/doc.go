@@ -26,19 +26,42 @@
 // # What it costs
 //
 // The geometry of all 282 icons is one embedded blob of 36 398 bytes, and each
-// variable is a window into it rather than a slice of its own. Measured on
-// darwin/arm64 with Go 1.27, against a binary that imports gift/ui and draws a
-// [ui.Text]:
+// variable is a window into it rather than a slice of its own.
+//
+// The method, written out because the number was wrong before and an
+// application budgets against it. Two programs, identical except for one
+// import: both import gift and gift/ui, both build `ui.HStack(ui.Text("hello"),
+// ui.Icon(...))`, and the one that does not import this package passes
+// ui.Symbol{} to ui.Icon so that the icon view, the mask cache and every other
+// line in ui is in *both* binaries and the difference is this package and
+// nothing else. Built with `CGO_ENABLED=0 go build`, no linker flags, Go 1.27,
+// and compared with `stat`; the symbol figure is
+// `go tool nm -size` summed over every symbol whose name contains this
+// package's import path. Re-measured in WU-AH.
 //
 //   - this package contributes 92 702 bytes of symbols — the 36 398 byte blob,
 //     282 Symbol values, their initialisation and their names;
-//   - the whole binary grows by 60 240 bytes, because the linker and the
-//     segment alignment recover some of that.
+//   - the whole binary grows by 135 872 bytes on darwin/arm64 and by 107 329
+//     bytes on linux/arm64, which is the Raspberry Pi target of section 1;
+//   - with `-ldflags="-s -w"` the growth is 99 088 bytes.
 //
-// A binary that does not import it pays 624 bytes, which is what the icon view
-// and the mask cache cost inside ui when nothing ever calls them. That is the
-// whole reason this is a package of its own and not a table inside ui;
-// gift/font/inter makes the same argument about a typeface.
+// The whole binary therefore grows by *more* than the symbols, not less. The
+// previous version of this paragraph claimed 60 240 bytes "because the linker
+// and the segment alignment recover some of that", which is both the wrong
+// number and the mechanism backwards: on top of the symbols themselves the
+// linker emits the symbol name table, the pclntab entries and — in a default
+// build — the DWARF that describes 282 more package level variables, and then
+// pads the segments. Nothing is recovered. The difference between the default
+// and the stripped build above is exactly that debug information, and it is
+// the reason the whole binary figure is quoted per platform and per build mode
+// while the symbol figure is quoted once: the symbols are a property of this
+// package, the binary growth is a property of a build.
+//
+// A binary that imports gift/ui and never names an icon keeps four bytes of
+// this machinery — the registered type id of the icon view — and the linker
+// eliminates the rest. That is the whole reason this is a package of its own
+// and not a table inside ui; gift/font/inter makes the same argument about a
+// typeface.
 //
 // Nothing is rasterised at init. A [ui.Symbol] is pre-parsed outlines, and the
 // coverage mask is produced on the first frame that draws it at a given size

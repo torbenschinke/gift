@@ -389,6 +389,7 @@ func (v KeyboardView) ViewType() gift.TypeID { return keyboardType }
 func (v KeyboardView) Build(bc *gift.BuildContext) gift.Element {
 	if !onScreenKeyboard.Load() || !bc.SoftKeyboardRequested() {
 		kbState.reset()
+		kbLive = nil
 		return gift.Element{Key: v.key, Flex: v.flex, Layouter: kbHidden{}}
 	}
 
@@ -466,7 +467,17 @@ func (v KeyboardView) hasPadding() bool { return !v.pad.IsZero() }
 type kbHidden struct{}
 
 // Layout implements gift.Layouter.
+//
+// It clears [kbLive], which is the other half of setting it in
+// [keyboardNode.Layout]. Without this, [KeyRectForTest] kept answering with the
+// geometry of the last keyboard that was on screen after the keyboard had gone
+// away: a user's kiosk test would tap a believable point, hit the form behind
+// it, and get no input and no diagnosis. A nil store per frame is not an
+// allocation and the keyboard is not on the frame path when it is hidden
+// anyway; the alternative, clearing it in [KeyboardView.Build], would miss the
+// case where nothing rebuilds after the keyboard goes down.
 func (kbHidden) Layout(ctx *gift.LayoutContext, c geom.Constraints) geom.Size {
+	kbLive = nil
 	ctx.ReportOverflow(geom.Size{})
 	return c.Constrain(geom.Size{})
 }
@@ -798,7 +809,9 @@ func (n *keyboardNode) keyAt(ctx *gift.EventContext, p geom.Point) int {
 
 // KeyRectForTest returns the rectangle of the key labelled label on the page
 // that is showing, in the local space of the keyboard node, and whether there
-// is such a key. Add the origin of the keyboard node's bounds to it to get a
+// is such a key. It reports false while no keyboard is up, which is the answer
+// a test needs: a rectangle from the last keyboard would send a tap into the
+// form behind it. Add the origin of the keyboard node's bounds to it to get a
 // point to press.
 //
 // It exists because a key is not a node: there is nothing for a gifttest

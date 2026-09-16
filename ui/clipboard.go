@@ -89,6 +89,43 @@ type Clipboard interface {
 	SetText(s string)
 }
 
+// CheckedClipboard is the optional extension of [Clipboard] for a write whose
+// failure the caller has to know about.
+//
+// There is exactly one such caller and it is the reason this exists: a *cut*
+// copies and then deletes, and a cut whose copy failed and deleted anyway
+// destroys text that is now in no clipboard and in no undo buffer — the text
+// field has none, by the decision recorded in textfield.go. Every other use of
+// a clipboard can shrug a failure off, which is why [Clipboard.SetText] still
+// returns nothing and why this is a separate interface rather than a third
+// method: an implementation that does not care keeps implementing two methods,
+// and [MemoryClipboard] below deliberately does not implement this one, so the
+// fallback path is exercised by the tests of this package on every run.
+//
+// A caller reaches it by type assertion and treats a plain [Clipboard] as "the
+// write succeeded", because that is all such an implementation can promise:
+//
+//	if w, ok := CurrentClipboard().(CheckedClipboard); ok {
+//		err = w.SetTextErr(s)
+//	} else {
+//		CurrentClipboard().SetText(s)
+//	}
+//
+// An implementation of both methods must make them agree: SetText is
+// SetTextErr with the error logged and dropped, and not a second code path.
+// gift/clipboard is written that way.
+type CheckedClipboard interface {
+	Clipboard
+
+	// SetTextErr is [Clipboard.SetText] and reports why it did not happen.
+	//
+	// A nil error means the text reached the platform clipboard. A non-nil
+	// one means it did not, and the caller must behave as though no copy had
+	// taken place. A truncation is not an error: the implementation's cap is
+	// documented and the first part of the text did arrive.
+	SetTextErr(s string) error
+}
+
 // clipboard is the process wide clipboard, as an atomic pointer to an
 // interface value so that [SetClipboard] from an init function races with
 // nothing.

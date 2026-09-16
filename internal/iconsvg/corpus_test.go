@@ -75,6 +75,57 @@ func TestEverySvgOfTheCorpusParses(t *testing.T) {
 	t.Logf("%d SVG files parsed", total)
 }
 
+// TestOnlyOneElementOfTheCorpusIsBothFilledAndStroked names the exception that
+// [iconsvg.ParseFile] exists for.
+//
+// It is a test and not a comment because the comment was *wrong*: it named
+// solid/circle-plus.svg, which is a plain even-odd fill with no stroke at all,
+// and so did the documentation of gift/icon/solid. A named exception that
+// nothing checks drifts from the corpus it describes, and the next reader
+// looks at circle-plus.svg, sees no stroke, and has to re-derive the rule.
+func TestOnlyOneElementOfTheCorpusIsBothFilledAndStroked(t *testing.T) {
+	var found []string
+	for _, c := range corpusDirs {
+		files, _ := filepath.Glob(filepath.Join(c.dir, "*.svg"))
+		for _, f := range files {
+			src, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Parse, not ParseFile: ParseFile is the function that resolves
+			// this case, so it is the raw parser that reports it.
+			if _, err := iconsvg.Parse(filepath.Base(f), string(src)); err != nil {
+				found = append(found, filepath.Base(f)+": "+err.Error())
+			}
+		}
+	}
+	if len(found) != 1 || !strings.HasPrefix(found[0], "npm.svg:") {
+		t.Errorf("the elements the plain parser refuses are %q; want exactly one, npm.svg, "+
+			"which is filled and stroked at once. If the corpus changed, update this test and "+
+			"the comments on iconsvg.ParseFile and on gift/icon/solid, which name the file",
+			found)
+	}
+	// And the resolution: two figures, the fill before the stroke.
+	src, err := os.ReadFile("testdata/flowbite/solid/npm.svg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := iconsvg.ParseFile("npm.svg", string(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Figures) != 2 || doc.Figures[0].Stroke || !doc.Figures[1].Stroke {
+		t.Errorf("npm.svg parsed to %d figures with stroke flags %v; want two, fill first",
+			len(doc.Figures), func() []bool {
+				var v []bool
+				for _, f := range doc.Figures {
+					v = append(v, f.Stroke)
+				}
+				return v
+			}())
+	}
+}
+
 // TestTheCorpusIsTheSubsetThisParserClaims re-measures the facts the design of
 // this package rests on, so that a later corpus that quietly stops matching
 // them is a failure here rather than a wrong icon somewhere else.

@@ -621,6 +621,43 @@ func TestTheKeyboardInAColumnShrinksTheFormInsteadOfCoveringIt(t *testing.T) {
 	}
 }
 
+// TestKeyRectForTestReportsNothingWhileNoKeyboardIsUp is a test of a testing
+// aid, which is worth having precisely because the aid is exported for
+// *users*: a kiosk application's own test asks where the "a" key is, adds the
+// keyboard's origin and taps there.
+//
+// Before WU-AH the function kept answering after the keyboard had gone down,
+// because the live node was stored during layout and never cleared. The tap
+// then landed on the form behind the keyboard, nothing was typed, and the
+// failure the user saw was "my text field ignores input" rather than "there is
+// no keyboard".
+func TestKeyRectForTestReportsNothingWhileNoKeyboardIsUp(t *testing.T) {
+	f := newKeyboard(t, true)
+	if _, ok := ui.KeyRectForTest("a"); ok {
+		t.Fatal("a key rectangle before any keyboard was ever shown")
+	}
+
+	f.field().Focus()
+	if !f.keyboardIsShowing() {
+		t.Fatal("no keyboard to measure")
+	}
+	r, ok := ui.KeyRectForTest("a")
+	if !ok || r.Width() <= 0 || r.Height() <= 0 {
+		t.Fatalf("with the keyboard up the a key is %v, %v; want a real rectangle", r, ok)
+	}
+
+	// Down again, the same way a kiosk does it: the focus moves to something
+	// that is not a text field.
+	f.h.Find(gifttest.ByKey("done")).Focus()
+	if f.keyboardIsShowing() {
+		t.Fatal("the keyboard stayed up")
+	}
+	if got, ok := ui.KeyRectForTest("a"); ok {
+		t.Fatalf("the keyboard is gone and the a key is still reported at %v; a test would tap "+
+			"a believable point, hit the form behind it and silently get no input", got)
+	}
+}
+
 // --- cost ---------------------------------------------------------------------
 
 // TestAShownKeyboardAllocatesNothingPerFrame is the frame path contract of
@@ -683,6 +720,13 @@ func BenchmarkOnScreenKeyboardFrame(b *testing.B) {
 			}
 			for range 32 {
 				f.h.Frame()
+			}
+			// The guard the allocation tests have and this one did not. A
+			// "shown" case that is not showing measures the hidden case
+			// twice and reports the difference between them as zero, which
+			// is a benchmark that cannot fail and therefore says nothing.
+			if f.keyboardIsShowing() != tc.focused {
+				b.Fatalf("the %q case has keyboardIsShowing() == %v", tc.name, !tc.focused)
 			}
 			b.ReportAllocs()
 			b.ResetTimer()

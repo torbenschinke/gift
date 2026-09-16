@@ -2,9 +2,11 @@ package ui_test
 
 import (
 	"math"
+	"strconv"
 	"testing"
 
 	"github.com/torbenschinke/gift"
+	"github.com/torbenschinke/gift/backend/ebiten"
 	"github.com/torbenschinke/gift/geom"
 	"github.com/torbenschinke/gift/gifttest"
 	"github.com/torbenschinke/gift/icon/outline"
@@ -353,6 +355,105 @@ func TestAnUploadRefusedByTheBudgetIsRetried(t *testing.T) {
 	if n != 1 {
 		t.Errorf("%d image operations on the frame after the budget opened up, want one. A "+
 			"refused upload that latched would leave the icon invisible for good", n)
+	}
+}
+
+// twentyIcons are twenty distinct symbols, which is the point: twenty *copies*
+// of one icon are one mask and one upload and would say nothing about a per
+// frame budget.
+var twentyIcons = []ui.Symbol{
+	outline.AddressBook, outline.AdjustmentsHorizontal, outline.AdjustmentsVertical,
+	outline.AlignCenter, outline.AngleDown, outline.AngleLeft, outline.AngleRight,
+	outline.AngleUp, outline.Annotation, outline.ArchiveArrowDown,
+	outline.Archive, outline.ArrowDownToBracket, outline.ArrowDown,
+	outline.ArrowLeftToBracket, outline.ArrowLeft, outline.ArrowRightAlt,
+	outline.ArrowRightToBracket, outline.ArrowRight, outline.ArrowSortLetters,
+	outline.ArrowUpDown,
+}
+
+// TestAScreenfulOfIconsFillsInOverSeveralFramesAtTheDefaultBudget is the
+// number the project plan, section 21, quotes: "acht pro Frame, also drei
+// Frames fuer zwanzig Icons".
+//
+// It drives the icon cache through the *real* [ebiten.TextureCache] with the
+// default configuration, because the number belongs to
+// [ebiten.DefaultUploadsPerFrame] and a fake budget in the test would only pin
+// the test's own constant. Nothing here needs a GPU: a texture is allocated
+// and written to, and Ebitengine defers both until there is a graphics driver,
+// which never happens in a headless run.
+//
+// It matters beyond the documentation. Step 9's kitchen sink has far more than
+// eight icons on one screen, so this is the ordinary case and not an edge one,
+// and the property that has to hold is that a screen *completes*: an icon
+// whose upload was refused must draw nothing and ask again, and must never
+// latch into permanent invisibility. That half is
+// [TestAnUploadRefusedByTheBudgetIsRetried]; this one is the arithmetic.
+//
+// The frame-by-frame counts it pins, measured on darwin/arm64 with Go 1.27:
+//
+//	n=10  frame 1:  8 drawn   frame 2: 10 drawn  → complete after two frames
+//	n=20  frame 1:  8 drawn   frame 2: 16 drawn   frame 3: 20 drawn
+//
+// Which settles a contradiction in the record: the commit message of the icon
+// unit claimed "ten icons needed three drawn frames". Ten need two. Section 21
+// says three frames for twenty icons, and section 21 is right.
+func TestAScreenfulOfIconsFillsInOverSeveralFramesAtTheDefaultBudget(t *testing.T) {
+	const budget = ebiten.DefaultUploadsPerFrame
+	if budget != 8 {
+		t.Fatalf("DefaultUploadsPerFrame is %d; section 21 of the project plan quotes eight and "+
+			"the frame counts below are derived from it", budget)
+	}
+
+	for _, tc := range []struct{ n, frames int }{
+		{10, 2},
+		{20, 3},
+	} {
+		t.Run(strconv.Itoa(tc.n), func(t *testing.T) {
+			ui.ResetIconService()
+			tex := ebiten.NewTextureCache(ebiten.TextureConfig{})
+
+			row := make([]gift.View, tc.n)
+			for i := range row {
+				row[i] = ui.Icon(twentyIcons[i]).Size(16)
+			}
+			h := gifttest.New(t, gifttest.Options{
+				View: ui.HStack(row...),
+				// Wide enough that all n icons are laid out and painted;
+				// this test is about the upload budget and not about
+				// clipping.
+				Size: geom.Sz(1200, 100),
+			})
+			h.App().SetImages(tex)
+
+			for frame := 1; frame <= tc.frames+1; frame++ {
+				// BeginFrame and Tick are what the renderer does around a
+				// drawn frame, and they are the whole reason the budget is
+				// per *drawn* frame; gifttest has no renderer, so the test
+				// stands in for one.
+				tex.BeginFrame()
+				h.Frame()
+				tex.Tick()
+
+				drawn := 0
+				for _, op := range h.Ops() {
+					if op.Kind == render.OpImage {
+						drawn++
+					}
+				}
+				want := min(frame*budget, tc.n)
+				if drawn != want {
+					t.Fatalf("frame %d drew %d of %d icons, want %d (uploads %d, deferred %d)",
+						frame, drawn, tc.n, want, tex.Stats().Uploads, tex.Stats().Deferred)
+				}
+				if drawn == tc.n && frame < tc.frames {
+					t.Fatalf("all %d icons were on screen after %d frames; the test claims %d, so "+
+						"either the budget changed or this number is stale", tc.n, frame, tc.frames)
+				}
+			}
+			if got := tex.Stats().Uploads; got != uint64(tc.n) {
+				t.Errorf("%d uploads for %d icons; a re-upload means the cache is not holding", got, tc.n)
+			}
+		})
 	}
 }
 

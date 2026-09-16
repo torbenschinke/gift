@@ -67,11 +67,20 @@ import (
 // first connection. So the event loop wakes up on a real event, drains the
 // command channel, and sleeps again. No polling, no timer, no new dependency.
 //
-// Each of the two connections is touched from exactly one place: connection A
-// only from the event thread, connection B only under [x11Clipboard.mu]. That
-// is why XInitThreads is not called, and it must not be called late anyway —
-// Xlib documents it as the first Xlib call of a process, and by the time a
-// user presses Ctrl+C, GLFW has been talking to X for minutes.
+// Neither connection is ever used by two goroutines at the same time, which is
+// what Xlib cares about, and that is a different claim from "each is touched
+// from one place" — an earlier version of this comment made the second one and
+// it is not true. Both connections are touched by the constructor, on the
+// caller's goroutine: connection A takes the window, the event mask and the
+// atoms, connection B is opened there. What makes it safe is ordering, not
+// locality: the constructor finishes every one of those calls before it starts
+// the event goroutine, so there is a happens-before edge and no overlap.
+// Afterwards the division is clean — connection A belongs to the event thread,
+// connection B is used only under [x11Clipboard.mu] by whoever is waking it.
+//
+// That is why XInitThreads is not called, and it must not be called late
+// anyway — Xlib documents it as the first Xlib call of a process, and by the
+// time a user presses Ctrl+C, GLFW has been talking to X for minutes.
 
 // ReadTimeout is how long a paste waits for the owner of the selection to
 // answer before giving up and reporting an empty clipboard.
@@ -154,20 +163,10 @@ type x11Clipboard struct {
 	cmds chan *x11Command
 }
 
-// x11Command is one unit of work for the event thread. done is buffered with
-// one slot, so the thread can always answer even if the caller has already
-// timed out and walked away.
-type x11Command struct {
-	write bool
-	text  string
-	done  chan x11Result
-}
-
-type x11Result struct {
-	text string
-	ok   bool
-	err  error
-}
+// x11Command, x11Result and x11Read live in pending.go, which carries no
+// build tag: the lifetime of a paste in flight is the trickiest thing in this
+// file and the one part of it that can be tested on a machine with no X
+// server. See the comment at the top of that file.
 
 func newX11Clipboard(log *slog.Logger) (*x11Clipboard, error) {
 	display := os.Getenv("DISPLAY")
@@ -194,6 +193,17 @@ func newX11Clipboard(log *slog.Logger) (*x11Clipboard, error) {
 	if c.wakeDpy == 0 {
 		return nil, fmt.Errorf("%w: the second XOpenDisplay(%q), used only to wake the event loop, failed", ErrUnsupported, display)
 	}
+	// Both connections are declared ours *here*, before the first request
+	// that can fail, and not in [x11Clipboard.loop]. Doing it in the loop was
+	// a real defect: XCreateWindow, XSelectInput and ten XInternAtom calls
+	// run below, XInternAtom is a round trip, and an error provoked by any of
+	// them was therefore dispatched while the table was still empty. The
+	// handler then took the error for somebody else's and passed it to the
+	// handler Xlib installs by default, which prints and calls exit(1) — so
+	// the errors most likely to happen, our own setup, were exactly the ones
+	// the chaining did not protect against.
+	errorDisplays.Store(c.dpy, struct{}{})
+	errorDisplays.Store(c.wakeDpy, struct{}{})
 
 	root := lib.defaultRootWindow(c.dpy)
 	c.win = lib.createWindow(c.dpy, root, 0, 0, 1, 1, 0, 0, classInputOnly, 0, 0, 0)
@@ -284,6 +294,15 @@ func loadX11() (lib x11lib, err error) {
 // Xlib handler prints and calls exit(1); an X error caused by a requestor
 // window that died between its request and our answer is routine, and a
 // clipboard that can kill the application is not acceptable.
+//
+// When there was no handler before us — this package opened before GLFW, or it
+// is the only user of Xlib in the process — a foreign error is logged and
+// swallowed rather than passed on. There is nothing to pass it to: Xlib offers
+// no way to invoke the handler it had before it was replaced, and the one it
+// had is the default, whose behaviour is the exit(1) that this whole
+// arrangement exists to avoid. Swallowing it silently, which is what the code
+// did until WU-AH, is the one thing that must not happen, because then an
+// error on somebody else's connection leaves no trace anywhere.
 var (
 	errorHandlerOnce sync.Once
 	previousHandler  uintptr
@@ -295,7 +314,8 @@ func installErrorHandler(lib x11lib, log *slog.Logger) {
 	errorHandlerOnce.Do(func() {
 		errorLog = log
 		cb := purego.NewCallback(func(dpy uintptr, ev unsafe.Pointer) uintptr {
-			if _, ours := errorDisplays.Load(dpy); !ours && previousHandler != 0 {
+			_, ours := errorDisplays.Load(dpy)
+			if !ours && previousHandler != 0 {
 				return xcallPrevious(previousHandler, dpy, ev)
 			}
 			if errorLog != nil {
@@ -305,7 +325,11 @@ func installErrorHandler(lib x11lib, log *slog.Logger) {
 				// them is a fixed offset and is done here rather than in a
 				// helper because this is the only error path.
 				b := unsafe.Slice((*byte)(ev), 40)
-				errorLog.Error("an X11 error arrived on the clipboard connection, ignoring it",
+				msg := "an X11 error arrived on the clipboard connection, ignoring it"
+				if !ours {
+					msg = "an X11 error arrived on a connection that is not the clipboard's, and there is no handler to pass it to, ignoring it"
+				}
+				errorLog.Error(msg,
 					"error_code", b[32], "request_code", b[33], "minor_code", b[34])
 			}
 			return 0
@@ -319,6 +343,17 @@ func installErrorHandler(lib x11lib, log *slog.Logger) {
 var xcallPrevious = func(fn uintptr, dpy uintptr, ev unsafe.Pointer) uintptr {
 	r, _, _ := purego.SyscallN(fn, dpy, uintptr(ev))
 	return r
+}
+
+// logError is the event thread's only report. The portable half logs
+// everything a caller can see; this exists for the things only the thread
+// knows, which today is a paste that was abandoned. A nil logger is silence,
+// per section 15 of the project plan.
+func (c *x11Clipboard) logError(msg string, args ...any) {
+	if c.log == nil {
+		return
+	}
+	c.log.Error(msg, args...)
 }
 
 func (c *x11Clipboard) text() (string, bool, error) {
@@ -403,15 +438,16 @@ func (e *xEvent) kind() uint32 { return uint32(e[0]) }
 // there is no Close.
 func (c *x11Clipboard) loop() {
 	runtime.LockOSThread()
-	errorDisplays.Store(c.dpy, struct{}{})
-	errorDisplays.Store(c.wakeDpy, struct{}{})
 
 	var (
 		ev      xEvent
-		owned   string   // the text this process is currently offering
-		haveOwn bool     // whether we own CLIPBOARD as far as we know
-		ownTime uint64   // the timestamp ownership was taken at
-		pending *x11Read // the paste in flight, if any
+		owned   string // the text this process is currently offering
+		haveOwn bool   // whether we own CLIPBOARD as far as we know
+		ownTime uint64 // the timestamp ownership was taken at
+		// reads is the single paste slot. See pending.go, which is where
+		// the deadline that keeps an unanswered paste from wedging every
+		// later one lives.
+		reads = readSlot{timeout: ReadTimeout}
 	)
 
 	for {
@@ -423,18 +459,20 @@ func (c *x11Clipboard) loop() {
 				select {
 				case cmd := <-c.cmds:
 					if cmd.write {
-						owned, haveOwn, ownTime = cmd.text, true, currentTime
-						cmd.done <- x11Result{err: c.takeOwnership()}
-						continue
-					}
-					if pending != nil {
-						// A second paste while the first is still in
-						// flight. The first one's caller is still waiting
-						// or has already timed out; either way there is
-						// one property to read into, so the newcomer is
-						// answered with nothing rather than being mixed up
-						// with it.
-						cmd.done <- x11Result{err: fmt.Errorf("gift/clipboard: a previous paste is still waiting for the selection owner")}
+						// Ownership first, state afterwards. The other
+						// order records that we own the selection even
+						// when the server said we do not, and a lie held
+						// in state is worse than the failure it hides:
+						// this process would then answer a paste of its
+						// own from `owned` instead of asking the real
+						// owner.
+						err := c.takeOwnership()
+						if err != nil {
+							owned, haveOwn, ownTime = "", false, currentTime
+						} else {
+							owned, haveOwn, ownTime = cmd.text, true, currentTime
+						}
+						cmd.done <- x11Result{err: err}
 						continue
 					}
 					if haveOwn && c.lib.getSelectionOwner(c.dpy, c.a.clipboard) == c.win {
@@ -442,12 +480,33 @@ func (c *x11Clipboard) loop() {
 						// waiting on this very thread for an answer only
 						// this very thread can send, which is a deadlock
 						// dressed up as a timeout.
+						//
+						// This is checked before the slot is consulted,
+						// which it was not before WU-AH: it touches no
+						// property and needs no round trip, so there is
+						// nothing for a paste in flight to conflict with,
+						// and a paste of our own text should not be
+						// refused because somebody else's owner is slow.
 						cmd.done <- x11Result{text: owned, ok: true}
 						continue
 					}
-					pending = c.beginRead(cmd)
-					if pending.finished {
-						pending = nil
+					before := reads.abandoned
+					r, ok := reads.begin(cmd)
+					if reads.abandoned != before {
+						c.logError("a previous paste never got its answer and was given up on, so that this one can proceed",
+							"abandoned_total", reads.abandoned, "timeout", ReadTimeout)
+					}
+					if !ok {
+						// A second paste while the first is still in
+						// flight and still inside its deadline. There is
+						// one property to read into, so the newcomer is
+						// answered with nothing rather than being mixed
+						// up with it.
+						cmd.done <- x11Result{err: fmt.Errorf("gift/clipboard: a previous paste is still waiting for the selection owner")}
+						continue
+					}
+					if !c.beginRead(r) {
+						reads.done()
 					}
 				default:
 				}
@@ -458,11 +517,12 @@ func (c *x11Clipboard) loop() {
 			c.serve(&ev, owned, haveOwn, ownTime)
 
 		case evSelectionNotify:
-			if pending == nil {
+			r := reads.current()
+			if r == nil {
 				continue // a late answer to a paste that has been given up on
 			}
-			if c.finishRead(pending, &ev) {
-				pending = nil
+			if c.finishRead(r, &ev) {
+				reads.done()
 			}
 
 		case evSelectionClear:
@@ -502,26 +562,21 @@ func (c *x11Clipboard) takeOwnership() error {
 	return nil
 }
 
-// x11Read is a paste in flight: the command that asked for it and how far
-// through [atoms.readTargets] it has got.
-type x11Read struct {
-	cmd      *x11Command
-	target   int
-	finished bool
-}
+// x11Read is in pending.go; beginRead is the half of it that talks to the
+// server.
 
 // beginRead asks the current owner for the first target, and is also the
-// function that gives up when there is no owner at all.
-func (c *x11Clipboard) beginRead(cmd *x11Command) *x11Read {
+// function that gives up when there is no owner at all. It reports whether the
+// read is still in flight, that is, whether an answer is to be expected.
+func (c *x11Clipboard) beginRead(r *x11Read) bool {
 	if c.lib.getSelectionOwner(c.dpy, c.a.clipboard) == 0 {
 		// Nobody owns the clipboard. That is the state of a fresh session
 		// and it is an empty clipboard, not a failure.
-		cmd.done <- x11Result{}
-		return &x11Read{finished: true}
+		r.cmd.done <- x11Result{}
+		return false
 	}
-	r := &x11Read{cmd: cmd}
 	c.ask(r)
-	return r
+	return true
 }
 
 // ask sends the conversion request for the target r is currently on.

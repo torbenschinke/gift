@@ -956,15 +956,33 @@ func (n *textFieldNode) key(ctx *gift.EventContext, e gift.Event) bool {
 	return true
 }
 
-// copy puts the selection on the clipboard and reports whether there was
-// anything to put there. An empty selection is not a copy: silently replacing
-// the clipboard with nothing is how a user loses what they had in it.
+// copy puts the selection on the clipboard and reports whether it is now
+// there. An empty selection is not a copy: silently replacing the clipboard
+// with nothing is how a user loses what they had in it.
+//
+// The return value is what Ctrl+X hangs its deletion on, so "there was
+// something to copy" is not good enough an answer. A [CheckedClipboard] is
+// asked for the error and a failed write reports false, which leaves the
+// selection in the document; that is the whole of the defence against a cut
+// that destroys text it never managed to copy. An X11 owner that does not
+// answer, a display connection that died with the session, a platform layer
+// that failed to open — all of them come back as an error here and none of
+// them is exotic on a kiosk.
+//
+// A plain [Clipboard] reports true, because a two method implementation has no
+// way to say anything else and refusing to cut into one would break every
+// clipboard that works. [MemoryClipboard], the default, is such an
+// implementation.
 func (n *textFieldNode) copy() bool {
 	s := n.ed.SelectedText()
 	if s == "" {
 		return false
 	}
-	CurrentClipboard().SetText(s)
+	cb := CurrentClipboard()
+	if w, ok := cb.(CheckedClipboard); ok {
+		return w.SetTextErr(s) == nil
+	}
+	cb.SetText(s)
 	return true
 }
 

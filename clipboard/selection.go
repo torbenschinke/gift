@@ -176,7 +176,15 @@ func encodeLongs(v []xAtom) []byte {
 	return b
 }
 
-// decodeLongs is the inverse, for a property read back at format 32.
+// decodeLongs is the inverse of [encodeLongs], and it exists for the tests of
+// this package and for nothing else. No production path calls it: the only
+// property this package reads back is the one a paste is delivered into, and
+// [atoms.decode] refuses anything that is not format 8, so a format 32 array
+// never has to be turned back into atoms. It is kept rather than deleted
+// because reading the bytes of a TARGETS or TIMESTAMP reply back as numbers is
+// how those answers are asserted in selection_test.go, and a test that
+// open-coded [binary.NativeEndian] would be asserting the answer against
+// itself.
 func decodeLongs(b []byte) []xAtom {
 	v := make([]xAtom, len(b)/8)
 	for i := range v {

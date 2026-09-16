@@ -204,10 +204,16 @@ var errBothFillAndStroke = fmt.Errorf("both filled and stroked")
 // ParseFile is [Parse] with the one element that is both filled and stroked
 // expanded into two figures, fill first.
 //
-// solid/circle-plus.svg is that element. Splitting it here rather than in the
-// encoder keeps the rule where the SVG semantics are: a filled and stroked
-// shape paints its fill and then its stroke, and a figure in internal/icon
-// carries exactly one paint.
+// solid/npm.svg is that element: its <path> carries stroke="currentColor" and
+// inherits the fill="currentColor" of the <svg>, so it is both. Earlier
+// versions of this comment named solid/circle-plus.svg, which is wrong — that
+// one is a single even-odd fill with no stroke at all — and the corpus was
+// re-scanned in WU-AH to confirm that npm.svg is the only such element in
+// either set.
+//
+// Splitting it here rather than in the encoder keeps the rule where the SVG
+// semantics are: a filled and stroked shape paints its fill and then its
+// stroke, and a figure in internal/icon carries exactly one paint.
 func ParseFile(name, src string) (Doc, error) {
 	d, err := Parse(name, src)
 	if err == nil {

@@ -1,6 +1,7 @@
 package ui_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -480,6 +481,90 @@ func TestCopyCutAndPasteUseTheInstalledClipboard(t *testing.T) {
 	f.h.Key(gift.KeyC, gift.ShortcutModifier)
 	if got, ok := cb.Text(); !ok || got != "world" {
 		t.Fatalf("a copy with nothing selected changed the clipboard to %q, %v", got, ok)
+	}
+}
+
+// checkedClipboard is a [ui.CheckedClipboard] whose write can be made to fail,
+// which is the only way to reach the branch below: [ui.MemoryClipboard]
+// deliberately implements the two method interface and never fails.
+type checkedClipboard struct {
+	ui.MemoryClipboard
+	err   error
+	wrote int
+}
+
+func (c *checkedClipboard) SetTextErr(s string) error {
+	c.wrote++
+	if c.err != nil {
+		return c.err
+	}
+	c.MemoryClipboard.SetText(s)
+	return nil
+}
+
+func (c *checkedClipboard) SetText(s string) { _ = c.SetTextErr(s) }
+
+// TestACutWhoseCopyFailedDoesNotDeleteTheText is data loss, not tidiness. The
+// field has no undo, so text that a cut removed after a failed copy is in no
+// clipboard, in no document and in no history — and a dead X11 selection owner
+// or a display connection that went away with the session is an ordinary
+// Tuesday on a kiosk, not a corner case.
+//
+// The two directions are one test on purpose: "a failing clipboard does not
+// delete" passes trivially if the cut is broken for everybody, so the working
+// clipboard is checked with the same field and the same keystroke.
+func TestACutWhoseCopyFailedDoesNotDeleteTheText(t *testing.T) {
+	cb := &checkedClipboard{}
+	ui.SetClipboard(cb)
+	t.Cleanup(func() { ui.SetClipboard(nil) })
+
+	f := newField(t, "hello world", nil)
+	f.node().Focus()
+
+	// Direction one: the clipboard works, so the cut cuts.
+	f.ed.SetSelection(0, 6)
+	f.h.Key(gift.KeyX, gift.ShortcutModifier)
+	if got := f.ed.Text(); got != "world" {
+		t.Fatalf("a cut through a working clipboard left %q, want %q", got, "world")
+	}
+	if got, ok := cb.Text(); !ok || got != "hello " {
+		t.Fatalf("the working cut put %q, %v on the clipboard", got, ok)
+	}
+
+	// Direction two: the clipboard refuses, so the document keeps its text.
+	cb.err = errors.New("the selection owner never answered")
+	f.ed.SetSelection(0, 5)
+	f.h.Key(gift.KeyX, gift.ShortcutModifier)
+	if got := f.ed.Text(); got != "world" {
+		t.Fatalf("a cut whose copy failed changed the document to %q; the text is now nowhere", got)
+	}
+	if !f.ed.HasSelection() {
+		t.Error("the failed cut dropped the selection, so a second Ctrl+X would do nothing either")
+	}
+	if cb.wrote != 2 {
+		t.Errorf("the clipboard was written %d times, want two; the failing cut has to have tried", cb.wrote)
+	}
+}
+
+// TestACutThroughAPlainClipboardStillCuts is the fallback half: an
+// implementation of the two method [ui.Clipboard] cannot report a failure, so
+// a cut through one must behave exactly as it did before the checked interface
+// existed. [ui.MemoryClipboard] is such an implementation and is the default,
+// so this is also the path every other test in this file takes.
+func TestACutThroughAPlainClipboardStillCuts(t *testing.T) {
+	cb := &ui.MemoryClipboard{}
+	if _, ok := any(cb).(ui.CheckedClipboard); ok {
+		t.Fatal("MemoryClipboard implements CheckedClipboard, so the fallback path is no longer covered anywhere")
+	}
+	ui.SetClipboard(cb)
+	t.Cleanup(func() { ui.SetClipboard(nil) })
+
+	f := newField(t, "hello world", nil)
+	f.node().Focus()
+	f.ed.SetSelection(0, 6)
+	f.h.Key(gift.KeyX, gift.ShortcutModifier)
+	if got := f.ed.Text(); got != "world" {
+		t.Fatalf("a cut through a plain clipboard left %q, want %q", got, "world")
 	}
 }
 
