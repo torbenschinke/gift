@@ -1,4 +1,4 @@
-package kitchensink
+package main
 
 import (
 	"fmt"

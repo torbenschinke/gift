@@ -33,7 +33,7 @@ import (
 //
 // [gift.App] has no notion of an appearance. It owns a tree, a layout and a
 // display list, and a colour it painted on its own behalf would be a colour no
-// view asked for — invisible to the gifttest harness, to cmd/gift-shot and to
+// view asked for — invisible to the gifttest harness and to
 // every assertion in this module, all of which look at the display list. A
 // background that is a view is a background the tests can see, which is
 // exactly the property that was missing.

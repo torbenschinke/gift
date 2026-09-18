@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/worldiety/gift"
-	backend "github.com/worldiety/gift/backend/ebiten"
 )
 
 // DefaultAddr is where the interface listens when GIFT_AUTO_ADDR says nothing.
@@ -37,46 +36,33 @@ const (
 // the running application and there is exactly one of those.
 var std = newDriver(timeoutFromEnv())
 
-// once guards the listener, so that a second init or a manual Start cannot
-// bind twice.
+// once guards the listener so repeated Start calls cannot bind twice.
 var once sync.Once
 
-// init installs the seam into the backend's frame loop and starts the server.
+// Start attaches the application and opens the automation listener. The
+// giftauto-enabled backend calls it on the UI goroutine before opening the window.
 //
-// This is what the side-effect import does, and it is why the import is the
-// opt-in: without `import _ "github.com/worldiety/gift/auto"` nothing here
-// runs, and without `-tags giftauto` this file does not exist at all.
-//
-// The listener is opened when the frame loop hands the application over,
-// which is inside [backend.Run] and still before the window opens, so a
-// failure to bind is reported to a terminal somebody is still reading. It is
-// deliberately not opened from this init: a test binary that happens to link
-// this package would otherwise bind a fixed port for the whole test run, and
-// two such binaries would fight over it.
-func init() {
-	backend.SetAutomation(seam{std})
+// Merely importing the package does not bind a port, so test binaries can link
+// it without competing for the default address.
+func Start(app *gift.App) {
+	std.Start(app)
+	start(std)
 }
 
-// seam adapts the driver to the backend's automation interface.
-//
-// It exists so that driver.go imports no backend and can therefore be tested
-// without one: the only thing the backend's own type contributes is the shape
-// of a captured frame.
-type seam struct{ d *driver }
+// WantsFrame reports whether the driver needs the next drawn framebuffer.
+// The backend calls it on the UI goroutine before reading pixels back.
+func WantsFrame() bool { return std.WantsFrame() }
 
-func (s seam) Start(app *gift.App) {
-	s.d.Start(app)
-	start(s.d)
-}
-func (s seam) WantsFrame() bool { return s.d.WantsFrame() }
-func (s seam) Frame(f backend.Frame) {
-	s.d.Frame(f.Width, f.Height, f.Pix, f.Count)
+// Frame receives a requested framebuffer on the UI goroutine. Dimensions are
+// physical pixels, pix is owned RGBA data, and count is the drawn frame number.
+func Frame(width, height int, pix []byte, count uint64) {
+	std.Frame(width, height, pix, count)
 }
 
 // start opens the listener and serves in the background.
 //
 // The goroutine it starts is the one goroutine this package adds to a process,
-// and it exists only in a giftauto build with the side-effect import present.
+// and it exists only in a giftauto build after the backend starts.
 func start(d *driver) {
 	once.Do(func() {
 		addr := os.Getenv(EnvAddr)

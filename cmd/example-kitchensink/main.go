@@ -59,7 +59,6 @@ import (
 	"github.com/worldiety/gift/asset"
 	backend "github.com/worldiety/gift/backend/ebiten"
 	"github.com/worldiety/gift/internal/example"
-	"github.com/worldiety/gift/internal/example/kitchensink"
 	"github.com/worldiety/gift/ui"
 )
 
@@ -73,9 +72,8 @@ func main() {
 	}
 }
 
-// run is everything the window needs and nothing the screen decides: the
-// views themselves live in [kitchensink], so that cmd/gift-shot and the golden
-// tests can render the same screens this window shows.
+// run sets up the window around the local views, which the golden tests in
+// this package exercise directly.
 func run() error {
 	if err := example.LoadFont(); err != nil {
 		return err
@@ -84,12 +82,12 @@ func run() error {
 	if err != nil {
 		base = os.TempDir()
 	}
-	if kitchensink.Pictures, err = kitchensink.Samples(filepath.Join(base, "gift", "kitchensink")); err != nil {
+	if Pictures, err = Samples(filepath.Join(base, "gift", "kitchensink")); err != nil {
 		return err
 	}
 
-	app := gift.New(gift.Options{Root: kitchensink.Screen})
-	kitchensink.App = app
+	app := gift.New(gift.Options{Root: Screen})
+	App = app
 
 	// The image pipeline. ui.Image draws through whatever is installed here
 	// and draws its placeholder when nothing is; see ui.SetImagePipeline.
@@ -108,7 +106,7 @@ func run() error {
 	ui.SetOnScreenKeyboard(nil, true)
 
 	if *traceIcons {
-		go kitchensink.TraceIconCache(app)
+		go TraceIconCache(app)
 	}
 	return backend.Run(app, backend.Config{
 		Title: "gift kitchen sink", Width: 900, Height: 760,

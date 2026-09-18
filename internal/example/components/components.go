@@ -2,15 +2,8 @@
 // the ui package: a list, a row, a card, a badge, a divider, a toggle, a
 // slider, a segmented control and a progress bar.
 //
-// # Why the scenes are here and not in a test file
-//
-// Because two consumers need the same picture. The golden tests of the ui
-// package compare these scenes pixel by pixel in both themes, and cmd/gift-shot
-// renders them to a PNG so that a person can look at one without writing a
-// test. A scene declared inside a _test.go file can only ever serve the first
-// of those, and the reason this package exists at all is that a framework
-// whose appearance is only ever asserted structurally ships screens that are
-// wrong in ways no structural assertion can see.
+// The golden tests of the ui package compare these scenes pixel by pixel in
+// both themes. Screenshots of running demos use the giftauto build tag instead.
 //
 // # What makes a scene here different from a demo screen
 //

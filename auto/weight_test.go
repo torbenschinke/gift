@@ -18,7 +18,7 @@ import (
 // TestWithoutTheBuildTagThePackageDependsOnNothingAtAll is the no-weight
 // claim. It fails the moment a file without the giftauto tag imports anything.
 func TestWithoutTheBuildTagThePackageDependsOnNothingAtAll(t *testing.T) {
-	deps := listDeps(t, "")
+	deps := listDeps(t, "", "github.com/worldiety/gift/auto")
 	if len(deps) != 1 || deps[0] != "github.com/worldiety/gift/auto" {
 		t.Fatalf("without the tag the package depends on %v; it must depend on nothing, "+
 			"because a package that pulls in net/http is a package that can smuggle a "+
@@ -30,13 +30,16 @@ func TestWithoutTheBuildTagThePackageDependsOnNothingAtAll(t *testing.T) {
 // what makes the test above meaningful: the difference between the two lists
 // is exactly the weight the tag adds.
 func TestWithTheBuildTagThePackageBringsTheServerIn(t *testing.T) {
-	deps := listDeps(t, "giftauto")
+	deps := listDeps(t, "giftauto", "github.com/worldiety/gift/auto")
 	want := []string{"net/http", "encoding/json", "image/png",
-		"github.com/hajimehoshi/ebiten/v2", "github.com/worldiety/gift"}
+		"github.com/worldiety/gift"}
 	for _, w := range want {
 		if !contains(deps, w) {
 			t.Fatalf("with the tag the package does not depend on %s; the list was %v", w, deps)
 		}
+	}
+	if contains(deps, "github.com/hajimehoshi/ebiten/v2") {
+		t.Fatal("the automation driver must not depend on the backend")
 	}
 	if n := len(deps); n < 50 {
 		t.Fatalf("the tagged package has %d dependencies, which is too few to be the "+
@@ -44,17 +47,28 @@ func TestWithTheBuildTagThePackageBringsTheServerIn(t *testing.T) {
 	}
 }
 
-// listDeps asks the toolchain for the transitive imports of this package.
-func listDeps(t *testing.T, tags string) []string {
+func TestBackendIncludesAutomationOnlyWithTheBuildTag(t *testing.T) {
+	for _, tags := range []string{"", "giftauto"} {
+		t.Run("tags="+tags, func(t *testing.T) {
+			deps := listDeps(t, tags, "github.com/worldiety/gift/backend/ebiten")
+			if got := contains(deps, "github.com/worldiety/gift/auto"); got != (tags == "giftauto") {
+				t.Fatalf("backend includes automation = %v with tags %q", got, tags)
+			}
+		})
+	}
+}
+
+// listDeps asks the toolchain for a package's transitive imports.
+func listDeps(t *testing.T, tags, pkg string) []string {
 	t.Helper()
 	args := []string{"list", "-deps"}
 	if tags != "" {
 		args = append(args, "-tags", tags)
 	}
-	args = append(args, "github.com/worldiety/gift/auto")
-	out, err := exec.Command("go", args...).Output()
+	args = append(args, pkg)
+	out, err := exec.Command("go", args...).CombinedOutput()
 	if err != nil {
-		t.Skipf("go list is unavailable in this environment: %v", err)
+		t.Fatalf("go list failed: %v\n%s", err, out)
 	}
 	return strings.Fields(string(out))
 }

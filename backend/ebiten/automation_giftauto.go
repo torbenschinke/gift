@@ -6,16 +6,15 @@ import (
 	"sync"
 
 	"github.com/worldiety/gift"
+	driver "github.com/worldiety/gift/auto"
 )
 
 // This file is the whole of the automation seam on the backend side, and it
 // exists only under the giftauto build tag. Without the tag the counterpart in
 // automation_off.go compiles the seam away to a constant false.
 //
-// It deliberately knows nothing about HTTP, JSON or the driver. It offers two
-// things the frame loop alone can offer — the [gift.App] before the window
-// opens, and the *real* framebuffer inside Draw — and hands them to whoever
-// registered. The gift/auto package is that whoever.
+// The tag alone installs gift/auto. This debug-only dependency also brings in
+// ui for tree and theme inspection; the untagged backend stays independent of it.
 
 // Frame is one captured framebuffer: the pixels the window actually drew.
 //
@@ -58,14 +57,22 @@ const autoEnabled = true
 
 var (
 	autoMu sync.Mutex
-	auto   Automation
+	auto   Automation = defaultAutomation{}
 )
+
+type defaultAutomation struct{}
+
+func (defaultAutomation) Start(app *gift.App) { driver.Start(app) }
+func (defaultAutomation) WantsFrame() bool    { return driver.WantsFrame() }
+func (defaultAutomation) Frame(f Frame) {
+	driver.Frame(f.Width, f.Height, f.Pix, f.Count)
+}
 
 // SetAutomation installs the automation seam. It exists only in a build with
 // the giftauto tag, so a production binary cannot call it even by accident.
 //
-// It is safe to call from any goroutine and before [Run]; the gift/auto
-// package calls it from an init function. Passing nil removes the seam.
+// It is safe to call from any goroutine and before [Run]. By default gift/auto
+// is installed automatically. Passing nil removes the seam.
 func SetAutomation(a Automation) {
 	autoMu.Lock()
 	auto = a

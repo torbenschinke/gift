@@ -24,9 +24,7 @@ import (
 // # What is compared
 //
 // One scene per component from [components], in both themes, rendered through
-// the real backend renderer. The scenes are in a package and not in this file
-// on purpose: cmd/gift-shot renders exactly these, so a person can look at the
-// same picture this test compares without writing a test first.
+// the real backend renderer. The reference PNGs live in testdata.
 //
 // Both themes and not one, because half the defects a theme can have are
 // invisible in the theme the defaults were designed against: a hairline that

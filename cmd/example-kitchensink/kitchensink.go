@@ -1,23 +1,6 @@
-// Package kitchensink is the view layer of cmd/example-kitchensink: the
-// navigation of the project plan, section 23, step 9b, the controls of
-// step 9a, the list components of step 9c, the text field and on-screen
-// keyboard of step 8, the icons of section 21, the image pipeline of section 9
-// and the runtime theme switch of section 20.
-//
-// # Why a package and not a main
-//
-// It used to be a main, and everything in it was therefore unreachable to
-// anything but its own test binary. Two consumers now need the very screens a
-// person looks at: cmd/gift-shot, which renders one of them to a PNG so that a
-// human can look without writing a test, and the golden tests next door, which
-// compare those same pixels on every run. A demo that cannot be imported is a
-// demo whose appearance can only ever be asserted structurally, and the whole
-// reason this package exists in this shape is that structural assertions did
-// not see three defects a human saw in two minutes.
-//
-// The command is the thin half: flags, the font, the image pipeline, the
-// window. Everything that decides what is on the screen is here.
-package kitchensink
+// The demo's views live alongside main and their golden tests in this package.
+// Screenshots of the running demo use giftauto, not an importable UI copy.
+package main
 
 import (
 	"fmt"

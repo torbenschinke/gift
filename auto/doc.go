@@ -12,11 +12,9 @@
 // Linking it into a production binary therefore takes a deliberate
 // `-tags giftauto` on the build command line and not a forgotten import.
 //
-//	//go:build giftauto
-//
-//	package main
-//
-//	import _ "github.com/worldiety/gift/auto"
+// The Ebitengine backend installs this interface automatically when built with
+// the tag. No application import or extra source file is needed. The listener
+// starts in backend.Run, not at package initialization.
 //
 // Build the application with the tag, run it, and drive it:
 //
