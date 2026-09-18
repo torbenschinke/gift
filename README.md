@@ -1,101 +1,101 @@
 # Gift
 
-Gift ist ein deklaratives UI-Toolkit fuer Go: SwiftUI-artige Views, typisierter
-State und GPU-Rendering mit [Ebitengine](https://ebitengine.org/), ohne Browser
-oder WebView. Im Fokus stehen Desktop- und Touch-Kiosk-Anwendungen, insbesondere
-auf Raspberry Pi 4 und 5.
+Gift is a declarative UI toolkit for Go: SwiftUI-style views, typed state and
+GPU rendering with [Ebitengine](https://ebitengine.org/), without a browser or
+WebView. It focuses on desktop and touchscreen kiosk applications, particularly
+on Raspberry Pi 4 and 5.
 
-## Warum?
+## Why?
 
-Go-Anwendungen sollen ihre Oberflaeche direkt in Go beschreiben koennen, ohne
-einen Web-Stack mitzubringen. Gift verbindet kleine, kombinierbare Views mit
-gezielten State-Updates statt staendiger kompletter Neuaufbauten. Virtuelle
-Galerien, asynchrones Bildladen und begrenzte Ressourcenbudgets sind fuer
-bildreiche Oberflaechen auf kleiner Hardware gedacht.
+Go applications should be able to describe their interfaces directly in Go,
+without bringing along a web stack. Gift combines small, composable views with
+targeted state updates instead of repeatedly rebuilding the entire UI.
+Virtualized galleries, asynchronous image loading and bounded resource budgets
+are designed for image-heavy interfaces on modest hardware.
 
-**In Entwicklung:** APIs koennen sich noch aendern. 1080p bei 60 Hz auf dem
-Raspberry Pi ist ein Ziel, keine bereits bestaetigte Leistungsgarantie.
+**Under development:** APIs may still change. 1080p at 60 Hz on Raspberry Pi is
+a target, not a verified performance guarantee.
 
-## So Sieht Es Aus
+## What It Looks Like
 
-Echte Framebuffer-Aufnahmen der laufenden Beispiele, aufgenommen mit `giftauto`.
+Actual framebuffer captures of the running examples, taken with `giftauto`.
 
-**Kitchen Sink:** Navigation, Tabs, Formulare, Bildschirmtastatur, Icons und
-umschaltbares helles/dunkles Theme.
+**Kitchen Sink:** Navigation, tabs, forms, an on-screen keyboard, icons and
+switchable light/dark themes.
 
-<img src="docs/screenshots/kitchensink.png" alt="Kitchen Sink im dunklen Theme mit Karten, Navigation, Bildern und Tab-Leiste" width="780">
+<img src="docs/screenshots/kitchensink.png" alt="Kitchen Sink in dark mode with cards, navigation, images and a tab bar" width="780">
 
-| Bildergalerie | Effekte |
+| Image Gallery | Effects |
 | --- | --- |
-| ![Virtuelle Galerie mit generierten Beispielbildern im Masonry-Layout](docs/screenshots/gallery.png) | ![Experimentelles Glas-Panel vor farbigen Kacheln und Karten mit Schatten](docs/screenshots/effects.png) |
-| Masonry/Justified, Auswahl, Datei-/HTTP-Quellen und Thumbnail-Cache. Die rote Kachel demonstriert einen Ladefehler. | Schatten, abgerundete Formen und experimentelles Glas mit einstellbarer Qualitaet. |
+| ![Virtualized gallery with generated sample images in a masonry layout](docs/screenshots/gallery.png) | ![Experimental glass panel over colored tiles and cards with shadows](docs/screenshots/effects.png) |
+| Masonry/justified layouts, selection, file/HTTP sources and a thumbnail cache. The red tile demonstrates a loading error. | Shadows, rounded shapes and experimental glass with adjustable quality. |
 
-## Ausprobieren
+## Try It
 
-Benoetigt **Go 1.27** und eine grafische Sitzung mit GPU-Unterstuetzung. Die
-Beispiele bringen Inter als eingebettete Schrift mit. Fuer den Raspberry Pi
-ist Raspberry Pi OS 64-Bit mit X11/XWayland und hardwarebeschleunigtem Mesa
-vorgesehen; Builds sind ohne CGO moeglich.
+Requires **Go 1.27** and a graphical session with GPU support. The examples
+include Inter as an embedded font. The intended Raspberry Pi setup is
+Raspberry Pi OS 64-bit with X11/XWayland and hardware-accelerated Mesa;
+builds do not require CGO.
 
-Im geklonten Repository, jeweils ein Beispiel starten:
+From the cloned repository, run one example at a time:
 
 ```sh
-go run ./cmd/example-counter       # Einstieg: State, Buttons, Scrollen
-go run ./cmd/example-kitchensink   # Uebersicht der UI-Komponenten
-go run ./cmd/example-gallery      # Generiert eigene Beispielbilder
+go run ./cmd/example-counter      # Start here: state, buttons, scrolling
+go run ./cmd/example-kitchensink  # UI component showcase
+go run ./cmd/example-gallery      # Generates its own sample images
 go run ./cmd/example-effects -quality=full
 ```
 
-Eigene JPEG-/PNG-Bilder: `go run ./cmd/example-gallery -dir "$HOME/Pictures"`.
-Bedienung per Maus, Tastatur oder Touch; die Galerie laesst sich auch ziehen.
+Use your own JPEG/PNG images: `go run ./cmd/example-gallery -dir "$HOME/Pictures"`.
+Interact using a mouse, keyboard or touch; the gallery also supports drag scrolling.
 
-## Eigene Anwendung
+## Your Own Application
 
-Mit `go get github.com/worldiety/gift` einbinden. Views sind Go-Funktionen;
-State wird im Context angelegt und Aenderungen bauen die abhaengigen Views neu:
+Add the module with `go get github.com/worldiety/gift`. Views are Go functions;
+state is created in the context, and changes rebuild the views that depend on it:
 
 ```go
 func counter(ctx *gift.Context) gift.View {
     count := ctx.State("count", 0)
     n := ctx.Read(count)
     return ui.Window(ui.VStack(
-        ui.Text(fmt.Sprintf("%d Klicks", n)),
+        ui.Text(fmt.Sprintf("%d clicks", n)),
         ui.Button(ui.Text("+1"), func() { count.Set(count.Get() + 1) }),
     ).Gap(16).Padding(24))
 }
 ```
 
-`gift.New(gift.Options{Root: counter})` erstellt die App, `backend.Run` aus
-`github.com/worldiety/gift/backend/ebiten` oeffnet das Fenster. Schrift und
-Fenstergroesse setzt die Anwendung explizit. Ein vollstaendiges Beispiel steht
-in [`cmd/example-counter`](cmd/example-counter/main.go).
+`gift.New(gift.Options{Root: counter})` creates the app; `backend.Run` from
+`github.com/worldiety/gift/backend/ebiten` opens the window. The application
+explicitly sets its font and window size. See
+[`cmd/example-counter`](cmd/example-counter/main.go) for a complete example.
 
-## Testen Und Automatisieren
+## Testing And Automation
 
 ```sh
 go test ./...
 go test -tags giftauto ./...
-# Pixeltests mit echter GPU und vorhandenen Referenzbildern:
+# Pixel tests using a real GPU and existing reference images:
 GIFT_REQUIRE_GOLDEN=1 go test -tags giftgpu ./...
 ```
 
-Fuer Automation und Screenshots reicht das Build-Tag allein, ohne Zusatzdatei
-oder Side-Effect-Import in der Anwendung:
+For automation and screenshots, the build tag alone is enough. No extra source
+file or side-effect import is needed in the application:
 
 ```sh
 go run -tags giftauto ./cmd/example-kitchensink
-# In einem zweiten Terminal:
+# In a second terminal:
 curl -fsS http://127.0.0.1:7391/tree
 curl -fsS 'http://127.0.0.1:7391/screenshot?settle=8' -o screenshot.png
 ```
 
-**Nicht mit `giftauto` ausliefern:** Es aktiviert eine unauthentifizierte lokale
-Debug-Schnittstelle fuer Eingaben und Bildschirminhalte. Ohne Tag ist sie nicht
-im Backend enthalten. Details: [`auto`](auto/doc.go),
-[Screenshot-Reproduktion](docs/screenshots/README.md),
-[Architektur und Ziele](PLAN.md).
+**Do not ship with `giftauto`:** It enables an unauthenticated local debugging
+interface for input and screen capture. Without the tag, it is not included in
+the backend. See [`auto`](auto/doc.go),
+[reproducing the screenshots](docs/screenshots/README.md) and
+[architecture and goals](PLAN.md) (in German).
 
-## Lizenz
+## License
 
-[BSD-2-Clause](LICENSE). Eingebettete Schriften und Icons haben eigene
-Lizenzhinweise in ihren Paketverzeichnissen.
+[BSD-2-Clause](LICENSE). Embedded fonts and icons have their own license notices
+in their package directories.
