@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/ui"
 )
 
 // buf is the mistake the ownership check exists for: a reused buffer that is

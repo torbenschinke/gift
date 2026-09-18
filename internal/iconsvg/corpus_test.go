@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift/internal/iconsvg"
+	"github.com/worldiety/gift/internal/iconsvg"
 )
 
 // corpusDirs are the two sets that ship in gift/icon.

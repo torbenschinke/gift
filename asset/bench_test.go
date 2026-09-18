@@ -6,7 +6,7 @@ import (
 	"image/jpeg"
 	"testing"
 
-	"github.com/torbenschinke/gift/asset"
+	"github.com/worldiety/gift/asset"
 )
 
 // benchPicture is a representative photograph: six megapixels, the size a

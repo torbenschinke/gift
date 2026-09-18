@@ -5,8 +5,8 @@ package auto
 import (
 	"strings"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/ui"
 )
 
 // maxTreeDepth bounds a tree walk. It is the same order as the scene's own

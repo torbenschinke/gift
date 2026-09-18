@@ -3,7 +3,7 @@ package gift
 import (
 	"fmt"
 
-	"github.com/torbenschinke/gift/internal/scene"
+	"github.com/worldiety/gift/internal/scene"
 )
 
 // Context is the interface of a component function to the runtime.

@@ -6,10 +6,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/gifttest"
-	"github.com/torbenschinke/gift/render"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/gifttest"
+	"github.com/worldiety/gift/render"
+	"github.com/worldiety/gift/ui"
 )
 
 // densityLabel is the scene of both golden tests below: one line of text on a

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift/render"
 )
 
 // TestAddRejectsAnUnresolvedColour pins the debug build check of color_debug.go.

@@ -41,7 +41,7 @@ package scene
 import (
 	"fmt"
 
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift/geom"
 )
 
 // Flags is the per node invalidation state.

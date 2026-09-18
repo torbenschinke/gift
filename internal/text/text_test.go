@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift/geom"
 )
 
 // The tests use Roboto-Regular.ttf from testdata. It is there because it

@@ -16,7 +16,7 @@
 //
 //	package main
 //
-//	import _ "github.com/torbenschinke/gift/auto"
+//	import _ "github.com/worldiety/gift/auto"
 //
 // Build the application with the tag, run it, and drive it:
 //

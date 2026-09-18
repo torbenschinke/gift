@@ -1,6 +1,6 @@
 package text
 
-import "github.com/torbenschinke/gift/geom"
+import "github.com/worldiety/gift/geom"
 
 // Glyph is one positioned glyph of a shaped run.
 //

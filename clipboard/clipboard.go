@@ -5,7 +5,7 @@
 // programs; do not import it and they exchange text only inside this process,
 // through [ui.MemoryClipboard], which stays the default:
 //
-//	import _ "github.com/torbenschinke/gift/clipboard"
+//	import _ "github.com/worldiety/gift/clipboard"
 //
 // This is the shape of font/inter and it is chosen for the same reason: a
 // binary that does not import this package pays nothing for it — no purego, no
@@ -127,7 +127,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/ui"
 )
 
 // MaxBytes is the largest amount of text this package moves in either

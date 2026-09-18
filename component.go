@@ -3,7 +3,7 @@ package gift
 import (
 	"fmt"
 
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift/geom"
 )
 
 // componentTypeID is the type ID of the internal component views. All

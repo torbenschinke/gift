@@ -1,6 +1,6 @@
 package ui
 
-import "github.com/torbenschinke/gift/render"
+import "github.com/worldiety/gift/render"
 
 // Background is what a view fills its shape with: a [Color] or a material.
 // It is [render.Background]; see there for why this is an interface.

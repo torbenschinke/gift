@@ -24,9 +24,9 @@ import (
 
 	eb "github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
-	"github.com/torbenschinke/gift"
-	backend "github.com/torbenschinke/gift/backend/ebiten"
-	"github.com/torbenschinke/gift/internal/stress"
+	"github.com/worldiety/gift"
+	backend "github.com/worldiety/gift/backend/ebiten"
+	"github.com/worldiety/gift/internal/stress"
 )
 
 func main() {

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/torbenschinke/gift/asset"
+	"github.com/worldiety/gift/asset"
 )
 
 // baseConfig is a pipeline with no disk cache and a synchronous, drained

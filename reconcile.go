@@ -3,7 +3,7 @@ package gift
 import (
 	"fmt"
 
-	"github.com/torbenschinke/gift/internal/scene"
+	"github.com/worldiety/gift/internal/scene"
 )
 
 // childDesc is what the reconciler knows about a child view before it decides

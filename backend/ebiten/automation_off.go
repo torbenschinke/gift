@@ -2,7 +2,7 @@
 
 package ebiten
 
-import "github.com/torbenschinke/gift"
+import "github.com/worldiety/gift"
 
 // autoEnabled is false without the giftauto build tag, and it is a constant,
 // so every `if autoEnabled` in this package is removed by the compiler

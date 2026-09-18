@@ -3,7 +3,7 @@ package text
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift/geom"
 )
 
 // TestLineAdvanceIncludesTrailingWhitespaceThatWidthExcludes is the unit test

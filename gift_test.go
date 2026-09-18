@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 // The test views below are the smallest possible stand-ins for the real

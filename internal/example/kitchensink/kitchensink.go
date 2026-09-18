@@ -29,12 +29,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/asset"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/icon/outline"
-	"github.com/torbenschinke/gift/icon/solid"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/asset"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/icon/outline"
+	"github.com/worldiety/gift/icon/solid"
+	"github.com/worldiety/gift/ui"
 )
 
 // App is the application the theme switch asks to rebuild.

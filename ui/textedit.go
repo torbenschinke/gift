@@ -5,8 +5,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // TextEditor is the document a [TextFieldView] edits, together with the state

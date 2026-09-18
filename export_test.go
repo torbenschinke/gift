@@ -1,6 +1,6 @@
 package gift
 
-import "github.com/torbenschinke/gift/internal/scene"
+import "github.com/worldiety/gift/internal/scene"
 
 // This file exposes a sliver of the pointer state machine to the external test
 // package. It is a _test.go file, so nothing here is part of the API.

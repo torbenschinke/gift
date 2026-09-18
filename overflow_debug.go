@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/scene"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/scene"
 )
 
 // diagnoseOverflow reports a node whose content stopped fitting, or stopped

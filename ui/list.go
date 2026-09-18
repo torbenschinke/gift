@@ -1,9 +1,9 @@
 package ui
 
 import (
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 var (

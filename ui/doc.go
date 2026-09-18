@@ -198,7 +198,7 @@
 // measures nothing: gift translates the children with a matrix.
 //
 // [ImageGallery] is the other kind. It is a *virtualising* container over an
-// [github.com/torbenschinke/gift/asset.Collection]: only the entries inside
+// [github.com/worldiety/gift/asset.Collection]: only the entries inside
 // the viewport have nodes, and which entry a node stands for is decided during
 // layout rather than during build. A hundred thousand entries and a hundred
 // entries therefore produce the same handful of nodes, and scrolling still
@@ -216,12 +216,12 @@
 // placeholder flashing in place of a sixteen pixel symbol would be a visible
 // defect. It also adds no operation kind and no shader: the mask is
 // premultiplied white, the colour of a
-// [github.com/torbenschinke/gift/render.Op] is a multiply, and white times a
+// [github.com/worldiety/gift/render.Op] is a multiply, and white times a
 // premultiplied foreground is that foreground at that coverage.
 //
 // The symbols live in packages above this one, like the typefaces:
 //
-//	import "github.com/torbenschinke/gift/icon/outline"
+//	import "github.com/worldiety/gift/icon/outline"
 //
 //	ui.Icon(outline.User).Size(16).Foreground(ui.ColorAccent)
 //
@@ -246,7 +246,7 @@
 // happens exactly once per drawn frame. A picture that is decoded but has not
 // been admitted yet draws its placeholder, which is also what a fast jump
 // draws and what a headless test — one with no backend and therefore no
-// [github.com/torbenschinke/gift/render.Images] — draws for everything.
+// [github.com/worldiety/gift/render.Images] — draws for everything.
 //
 // Nothing in this package holds a pixel, a texture or a file handle. What a
 // view holds is a key; what the backend holds is the texture; and what

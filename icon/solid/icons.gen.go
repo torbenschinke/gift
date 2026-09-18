@@ -5,7 +5,7 @@ package solid
 import (
 	_ "embed"
 
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/ui"
 )
 
 // blob is the encoded geometry of all 239 icons of the Flowbite solid set, 56607 bytes.

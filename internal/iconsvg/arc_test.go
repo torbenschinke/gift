@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/torbenschinke/gift/internal/iconsvg"
+	"github.com/worldiety/gift/internal/iconsvg"
 )
 
 // The elliptical arc is the most common command in the corpus — 2875 relative

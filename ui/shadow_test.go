@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
+	"github.com/worldiety/gift/ui"
 )
 
 // The shadow of the project plan, section 8, spelled exactly as the plan

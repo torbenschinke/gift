@@ -3,9 +3,9 @@ package gifttest_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/gifttest"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/gifttest"
+	"github.com/worldiety/gift/ui"
 )
 
 // threeRows is a tree with exactly three nodes carrying the label "row".

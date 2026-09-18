@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift/geom"
 )
 
 // Axis selects the main axis of a stack.

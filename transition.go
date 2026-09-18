@@ -3,8 +3,8 @@ package gift
 import (
 	"time"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/scene"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/scene"
 )
 
 // This file is the fourth "keep repainting for a while" mechanism, after the

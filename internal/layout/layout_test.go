@@ -3,8 +3,8 @@ package layout_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/layout"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/layout"
 )
 
 const eps = 1e-4

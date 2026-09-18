@@ -1,6 +1,6 @@
 package gift
 
-import "github.com/torbenschinke/gift/internal/scene"
+import "github.com/worldiety/gift/internal/scene"
 
 // Focus returns the node that currently holds the keyboard focus, and whether
 // anything does.

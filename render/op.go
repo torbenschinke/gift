@@ -1,6 +1,6 @@
 package render
 
-import "github.com/torbenschinke/gift/geom"
+import "github.com/worldiety/gift/geom"
 
 // OpKind discriminates the drawing operations of an [Op].
 //

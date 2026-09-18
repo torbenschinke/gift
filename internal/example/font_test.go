@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift/font/inter"
-	"github.com/torbenschinke/gift/internal/example"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/font/inter"
+	"github.com/worldiety/gift/internal/example"
+	"github.com/worldiety/gift/ui"
 )
 
 // TestLoadFontIsDeterministicWithoutTheEnvironment is the point of the whole

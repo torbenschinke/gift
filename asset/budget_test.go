@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/torbenschinke/gift/asset"
+	"github.com/worldiety/gift/asset"
 )
 
 // TestPixelBudgetSaturates drives the pipeline past its pixel budget and

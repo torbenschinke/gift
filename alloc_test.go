@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // TestFramePathIsAllocationFree is go/no-go criterion 3 of the project plan,

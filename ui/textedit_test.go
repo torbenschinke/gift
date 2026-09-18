@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/ui"
 )
 
 // The editor model, tested directly. Word boundaries, rune arithmetic and the

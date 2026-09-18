@@ -3,8 +3,8 @@ package render_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 func TestColorPremultiplied(t *testing.T) {

@@ -3,8 +3,8 @@
 // Import it and name an icon:
 //
 //	import (
-//		"github.com/torbenschinke/gift/ui"
-//		"github.com/torbenschinke/gift/icon/outline"
+//		"github.com/worldiety/gift/ui"
+//		"github.com/worldiety/gift/icon/outline"
 //	)
 //
 //	ui.Icon(outline.User)
@@ -13,7 +13,7 @@
 // If you prefer the spelling of the tree these icons were surveyed in, alias
 // the import — the identifiers are the same:
 //
-//	import icons "github.com/torbenschinke/gift/icon/outline"
+//	import icons "github.com/worldiety/gift/icon/outline"
 //
 //	ui.Icon(icons.User)
 //
@@ -71,7 +71,7 @@
 //
 // This set is drawn as strokes, two units wide on a 24 unit grid, with round
 // caps and joins. It reads as lighter and is the usual choice for toolbars and
-// list rows. [github.com/torbenschinke/gift/icon/solid] is the filled
+// list rows. [github.com/worldiety/gift/icon/solid] is the filled
 // counterpart and is the usual choice for a selected state or a small size,
 // where a two unit stroke starts to close up. The two sets do not cover the
 // same names: this one has 282 icons and solid has 239.

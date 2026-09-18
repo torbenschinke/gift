@@ -1,6 +1,6 @@
 package render
 
-import "github.com/torbenschinke/gift/geom"
+import "github.com/worldiety/gift/geom"
 
 // sentinelExtent is the half extent of the unbounded clip rectangle at index
 // 0. It is large enough to contain any plausible view space coordinate and

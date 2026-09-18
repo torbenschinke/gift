@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift/geom"
 )
 
 // TestCacheHitIsAllocationFree is the assertion behind the allocation boundary

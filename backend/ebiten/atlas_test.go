@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
-	"github.com/torbenschinke/gift/internal/text"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift/internal/text"
+	"github.com/worldiety/gift/render"
 )
 
 // The atlas tests shape real text with the Roboto that internal/text keeps in

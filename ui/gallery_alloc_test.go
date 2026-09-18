@@ -4,10 +4,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/asset"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/asset"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/ui"
 )
 
 // galleryApp mounts a 100 000 entry gallery directly on a [gift.App], without

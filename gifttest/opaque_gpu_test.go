@@ -5,9 +5,9 @@ package gifttest_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/gifttest"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/gifttest"
+	"github.com/worldiety/gift/ui"
 )
 
 // These two tests are the pixel evidence for the rule that replaced

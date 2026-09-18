@@ -3,8 +3,8 @@
 // Import it for its side effect and ask for a face by name:
 //
 //	import (
-//		"github.com/torbenschinke/gift/ui"
-//		"github.com/torbenschinke/gift/font/ibmplexmono"
+//		"github.com/worldiety/gift/ui"
+//		"github.com/worldiety/gift/font/ibmplexmono"
 //	)
 //
 //	code := ui.MustFont(ui.FontQuery{Family: ibmplexmono.Family})
@@ -83,7 +83,7 @@ import (
 	_ "embed"
 	"fmt"
 
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/ui"
 )
 
 // Family is the family name these faces are registered under.

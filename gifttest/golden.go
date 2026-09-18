@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 // GoldenTolerance is the per channel difference, in 8 bit units, that a golden

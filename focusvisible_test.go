@@ -3,8 +3,8 @@ package gift_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // The tests of the three focus rules a human found broken while driving the

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/ui"
 )
 
 // tree builds a representative layout of roughly 200 nodes out of nothing but

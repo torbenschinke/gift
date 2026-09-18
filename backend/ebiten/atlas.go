@@ -5,8 +5,8 @@ import (
 	"math"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
-	"github.com/torbenschinke/gift/internal/text"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift/internal/text"
+	"github.com/worldiety/gift/render"
 )
 
 // AtlasConfig configures a [GlyphAtlas]. The zero value selects the defaults

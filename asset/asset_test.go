@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/torbenschinke/gift/asset"
+	"github.com/worldiety/gift/asset"
 )
 
 func entries(n int) []asset.Metadata {

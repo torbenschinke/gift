@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/render"
 )
 
 // This file is the semantic colour layer of the project plan, section 20:

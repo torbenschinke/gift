@@ -4,10 +4,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/gifttest"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/gifttest"
+	"github.com/worldiety/gift/ui"
 )
 
 // Review Gate 3 named exactly three things that break in this package without

@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // --- Memo -------------------------------------------------------------------

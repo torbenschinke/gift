@@ -3,9 +3,9 @@ package ui
 import (
 	"fmt"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 var dividerType = gift.RegisterType("ui.Divider")

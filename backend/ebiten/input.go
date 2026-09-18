@@ -4,8 +4,8 @@ import (
 	"time"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // inputBridge translates Ebitengine's polled input state into gift's event

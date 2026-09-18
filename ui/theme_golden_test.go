@@ -3,12 +3,12 @@ package ui_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/font/inter"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/gifttest"
-	"github.com/torbenschinke/gift/render"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/font/inter"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/gifttest"
+	"github.com/worldiety/gift/render"
+	"github.com/worldiety/gift/ui"
 )
 
 // memoisedScene is a card behind a rebuild boundary.

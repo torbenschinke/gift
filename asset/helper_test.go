@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/torbenschinke/gift/asset"
+	"github.com/worldiety/gift/asset"
 )
 
 // --- test pictures -----------------------------------------------------------

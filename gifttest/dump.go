@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/torbenschinke/gift"
+	"github.com/worldiety/gift"
 )
 
 // maxDumpLines bounds a tree dump.

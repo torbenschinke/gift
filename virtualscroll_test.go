@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // This file covers the primitives WU-N added to the runtime contract so that a

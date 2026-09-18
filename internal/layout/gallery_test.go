@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/torbenschinke/gift/internal/layout"
+	"github.com/worldiety/gift/internal/layout"
 )
 
 // dims is a Dimensions over a plain slice of sizes. A zero pair means the

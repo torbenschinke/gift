@@ -4,8 +4,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/scene"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/scene"
 )
 
 // ScrollAxis is the single axis a scroll container moves along.

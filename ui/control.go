@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 // This file holds what [ToggleView], [SliderView], [SegmentedControlView] and

@@ -3,9 +3,9 @@ package ui_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/ui"
 )
 
 // idProbe mounts a component whose state carries a serial number. The number

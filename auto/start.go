@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/torbenschinke/gift"
-	backend "github.com/torbenschinke/gift/backend/ebiten"
+	"github.com/worldiety/gift"
+	backend "github.com/worldiety/gift/backend/ebiten"
 )
 
 // DefaultAddr is where the interface listens when GIFT_AUTO_ADDR says nothing.
@@ -44,7 +44,7 @@ var once sync.Once
 // init installs the seam into the backend's frame loop and starts the server.
 //
 // This is what the side-effect import does, and it is why the import is the
-// opt-in: without `import _ "github.com/torbenschinke/gift/auto"` nothing here
+// opt-in: without `import _ "github.com/worldiety/gift/auto"` nothing here
 // runs, and without `-tags giftauto` this file does not exist at all.
 //
 // The listener is opened when the frame loop hands the application over,

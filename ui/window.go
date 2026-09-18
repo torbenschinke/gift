@@ -1,7 +1,7 @@
 package ui
 
 import (
-	"github.com/torbenschinke/gift"
+	"github.com/worldiety/gift"
 )
 
 // Window wraps the root view of an application in the window background.

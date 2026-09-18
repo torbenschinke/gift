@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 // These tests need no graphics context. Ebitengine allocates an image lazily —

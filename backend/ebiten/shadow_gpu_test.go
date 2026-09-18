@@ -7,8 +7,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 // These are the pixel level checks of the analytic shadow. They exist because

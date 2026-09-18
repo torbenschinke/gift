@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/ui"
 )
 
 // server is the HTTP half: it parses, calls the driver, and serialises. It

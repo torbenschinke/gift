@@ -16,4 +16,4 @@ package main
 //
 // See the gift/auto package documentation, which also states why this must
 // never be in a shipped kiosk binary.
-import _ "github.com/torbenschinke/gift/auto"
+import _ "github.com/worldiety/gift/auto"

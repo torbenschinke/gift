@@ -5,8 +5,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // touchID is the pointer identifier every touch action uses. gift only ever

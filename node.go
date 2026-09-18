@@ -1,8 +1,8 @@
 package gift
 
 import (
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/scene"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/scene"
 )
 
 // nodeData is the gift owned payload of a scene node.

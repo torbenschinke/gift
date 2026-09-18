@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/torbenschinke/gift/asset"
+	"github.com/worldiety/gift/asset"
 )
 
 // pictureServer serves one picture with an ETag and counts what was asked of

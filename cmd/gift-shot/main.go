@@ -59,14 +59,14 @@ import (
 	"strings"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
-	backend "github.com/torbenschinke/gift/backend/ebiten"
-	"github.com/torbenschinke/gift/font/inter"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/gifttest"
-	"github.com/torbenschinke/gift/internal/example"
-	"github.com/torbenschinke/gift/internal/example/components"
-	"github.com/torbenschinke/gift/internal/example/kitchensink"
-	"github.com/torbenschinke/gift/ui"
+	backend "github.com/worldiety/gift/backend/ebiten"
+	"github.com/worldiety/gift/font/inter"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/gifttest"
+	"github.com/worldiety/gift/internal/example"
+	"github.com/worldiety/gift/internal/example/components"
+	"github.com/worldiety/gift/internal/example/kitchensink"
+	"github.com/worldiety/gift/ui"
 )
 
 var (

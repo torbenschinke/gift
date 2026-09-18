@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // The two tests in this file are about one user visible failure — "the gallery

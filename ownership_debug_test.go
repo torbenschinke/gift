@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift"
+	"github.com/worldiety/gift"
 )
 
 // sharedChildren is the mistake this check exists for: a caller that keeps a

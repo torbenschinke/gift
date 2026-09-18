@@ -1,4 +1,4 @@
-module github.com/torbenschinke/gift
+module github.com/worldiety/gift
 
 go 1.27
 

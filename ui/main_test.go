@@ -3,7 +3,7 @@ package ui_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift/gifttest"
+	"github.com/worldiety/gift/gifttest"
 )
 
 // TestMain is the one line a package with golden tests writes.

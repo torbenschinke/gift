@@ -3,8 +3,8 @@ package gifttest
 import (
 	"strings"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // Selector is a predicate over the nodes of the retained tree.

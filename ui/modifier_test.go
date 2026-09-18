@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/asset"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/asset"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/ui"
 )
 
 // This is the check the project plan, section 4, decided on in place of a

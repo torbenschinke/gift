@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/torbenschinke/gift/internal/iconsvg"
+	"github.com/worldiety/gift/internal/iconsvg"
 )
 
 // build encodes one figure from a tiny path description and returns the blob.

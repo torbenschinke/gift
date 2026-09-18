@@ -3,8 +3,8 @@ package ui
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // TestNeedsPainterGateIsInstalled is an internal test on purpose.

@@ -3,11 +3,11 @@ package ui
 import (
 	"math"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/asset"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/metrics"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/asset"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/metrics"
+	"github.com/worldiety/gift/render"
 )
 
 var imageType = gift.RegisterType("ui.Image")

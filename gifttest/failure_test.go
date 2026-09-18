@@ -3,9 +3,9 @@ package gifttest_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/gifttest"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/gifttest"
+	"github.com/worldiety/gift/ui"
 )
 
 // twoDeleteButtons is the ambiguity every real UI test suite runs into: a list

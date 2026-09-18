@@ -30,9 +30,9 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/ui"
 )
 
 // Colours of the scene. They are exported because the tests identify the row

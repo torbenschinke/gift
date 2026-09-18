@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/torbenschinke/gift/font/ibmplexmono"
-	"github.com/torbenschinke/gift/font/inter"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/font/ibmplexmono"
+	"github.com/worldiety/gift/font/inter"
+	"github.com/worldiety/gift/ui"
 )
 
 // The two bundled font packages are imported by name rather than for their

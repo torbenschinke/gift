@@ -9,7 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/ui"
 )
 
 // What this file does and does not prove, because that distinction is the

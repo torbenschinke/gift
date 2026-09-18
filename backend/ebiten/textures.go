@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift/render"
 )
 
 // TextureConfig configures a [TextureCache]. The zero value selects the

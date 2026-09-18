@@ -2,7 +2,7 @@
 
 package gift
 
-import "github.com/torbenschinke/gift/internal/scene"
+import "github.com/worldiety/gift/internal/scene"
 
 // ownershipGuard is empty unless the giftdebug build tag is set.
 //

@@ -15,7 +15,7 @@ import (
 // optional package that binds libX11 or NSPasteboard through purego, as a side
 // effect import, so that the cgo free core of section 1 stays cgo free:
 //
-//	import _ "github.com/torbenschinke/gift/clipboard"
+//	import _ "github.com/worldiety/gift/clipboard"
 //
 // That package exists since WU-AE. This one stays what it was, so that the
 // text field is complete, testable and useful with the in-process default

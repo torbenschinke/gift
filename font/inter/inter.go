@@ -4,8 +4,8 @@
 // of its faces by name:
 //
 //	import (
-//		"github.com/torbenschinke/gift/ui"
-//		"github.com/torbenschinke/gift/font/inter"
+//		"github.com/worldiety/gift/ui"
+//		"github.com/worldiety/gift/font/inter"
 //	)
 //
 //	ui.SetDefaultFont(ui.MustFont(ui.FontQuery{Family: inter.Family}))
@@ -87,7 +87,7 @@ import (
 	_ "embed"
 	"fmt"
 
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/ui"
 )
 
 // Family is the family name these faces are registered under. Use the constant

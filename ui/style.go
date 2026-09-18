@@ -3,9 +3,9 @@ package ui
 import (
 	"fmt"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 // Color is the colour type of gift. It is [render.Color]: colours are a

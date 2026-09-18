@@ -1,6 +1,6 @@
 package render
 
-import "github.com/torbenschinke/gift/geom"
+import "github.com/worldiety/gift/geom"
 
 // Shadow is a blurred copy of the shape of a node, drawn behind it.
 //

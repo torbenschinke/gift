@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/torbenschinke/gift/internal/scene"
+	"github.com/worldiety/gift/internal/scene"
 )
 
 // ownershipGuard remembers the children slice a build handed over together

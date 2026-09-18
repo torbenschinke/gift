@@ -3,8 +3,8 @@ package gift
 import (
 	"fmt"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/scene"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/scene"
 )
 
 // Layouter measures a node and places its children.

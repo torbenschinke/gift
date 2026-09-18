@@ -1,6 +1,6 @@
 package gift
 
-import "github.com/torbenschinke/gift/internal/scene"
+import "github.com/worldiety/gift/internal/scene"
 
 // This file is the answer to one question: what happens to a notification that
 // the core owes a node, when the moment it is owed is a moment in which no

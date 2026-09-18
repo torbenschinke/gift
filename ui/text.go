@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/text"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/text"
+	"github.com/worldiety/gift/render"
 )
 
 var textType = gift.RegisterType("ui.Text")

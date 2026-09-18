@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 // boundsTolerance is how far an asserted rectangle may be off.

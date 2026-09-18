@@ -3,8 +3,8 @@
 // Import it and name an icon:
 //
 //	import (
-//		"github.com/torbenschinke/gift/ui"
-//		"github.com/torbenschinke/gift/icon/solid"
+//		"github.com/worldiety/gift/ui"
+//		"github.com/worldiety/gift/icon/solid"
 //	)
 //
 //	ui.Icon(solid.User)
@@ -13,19 +13,19 @@
 // If you prefer the spelling of the tree these icons were surveyed in, alias
 // the import — the identifiers are the same:
 //
-//	import icons "github.com/torbenschinke/gift/icon/solid"
+//	import icons "github.com/worldiety/gift/icon/solid"
 //
 //	ui.Icon(icons.User)
 //
 // There is no side effect and nothing to register; see
-// [github.com/torbenschinke/gift/icon/outline], which explains why that
+// [github.com/worldiety/gift/icon/outline], which explains why that
 // differs from gift/font/*.
 //
 // # What it costs
 //
 // The geometry of all 239 icons is one embedded blob of 56 607 bytes, and each
 // variable is a window into it. Measured the same way as
-// [github.com/torbenschinke/gift/icon/outline], which writes the method out,
+// [github.com/worldiety/gift/icon/outline], which writes the method out,
 // and re-measured in WU-AH: 104 159 bytes of symbols, and 132 224 bytes of
 // whole binary growth on darwin/arm64, 100 240 on linux/arm64. The previous
 // figure here, 57 216 bytes, was wrong in the same way as the outline one and

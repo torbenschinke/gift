@@ -1,9 +1,9 @@
 package ui
 
 import (
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/layout"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/layout"
 )
 
 var buttonType = gift.RegisterType("ui.Button")

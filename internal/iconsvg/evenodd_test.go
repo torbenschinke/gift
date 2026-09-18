@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/torbenschinke/gift/internal/iconsvg"
+	"github.com/worldiety/gift/internal/iconsvg"
 )
 
 // grid is the sampling resolution of the even-odd analysis, the same the

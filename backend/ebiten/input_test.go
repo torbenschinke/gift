@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
-	"github.com/torbenschinke/gift"
+	"github.com/worldiety/gift"
 )
 
 // The mouse and touch readings cannot be driven headless: they come from

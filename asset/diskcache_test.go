@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/torbenschinke/gift/asset"
+	"github.com/worldiety/gift/asset"
 )
 
 func diskConfig(c *collector, dir string, budget int64) asset.Config {

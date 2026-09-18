@@ -6,10 +6,10 @@ import (
 	"math"
 	"time"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
+	"github.com/worldiety/gift/ui"
 )
 
 // DefaultSize is the viewport a [Harness] uses when [Options.Size] is zero.
@@ -114,7 +114,7 @@ type Options struct {
 	// A consumer outside this module gets a deterministic golden by embedding
 	// its own typeface, or by importing one of the bundled ones:
 	//
-	//	import _ "github.com/torbenschinke/gift/font/inter"
+	//	import _ "github.com/worldiety/gift/font/inter"
 	//
 	// The TestMain is not optional for a golden: without it
 	// AssertGolden panics from inside Ebitengine, because pixels

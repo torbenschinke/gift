@@ -4,9 +4,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/torbenschinke/gift/asset"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/text"
+	"github.com/worldiety/gift/asset"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/text"
 )
 
 // This file exposes the text measurement internals to the external test

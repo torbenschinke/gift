@@ -3,8 +3,8 @@ package ebiten
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 // shadowOp is a blurred black shadow of r.

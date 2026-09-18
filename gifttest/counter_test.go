@@ -3,8 +3,8 @@ package gifttest_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/gifttest"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/gifttest"
 )
 
 // TestCounter is the worked example: the whole of the counter's behaviour,

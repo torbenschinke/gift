@@ -42,13 +42,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/asset"
-	backend "github.com/torbenschinke/gift/backend/ebiten"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/example"
-	"github.com/torbenschinke/gift/render"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/asset"
+	backend "github.com/worldiety/gift/backend/ebiten"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/example"
+	"github.com/worldiety/gift/render"
+	"github.com/worldiety/gift/ui"
 )
 
 var (

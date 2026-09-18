@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/render"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/render"
 )
 
 // legacyShapeShaderSrc is the shape shader as it was before WU-E, deriving the

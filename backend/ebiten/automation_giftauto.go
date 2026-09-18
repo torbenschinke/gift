@@ -5,7 +5,7 @@ package ebiten
 import (
 	"sync"
 
-	"github.com/torbenschinke/gift"
+	"github.com/worldiety/gift"
 )
 
 // This file is the whole of the automation seam on the backend side, and it

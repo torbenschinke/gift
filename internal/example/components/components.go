@@ -30,10 +30,10 @@ package components
 import (
 	"sort"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/icon/outline"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/icon/outline"
+	"github.com/worldiety/gift/ui"
 )
 
 // Scene is one named picture: the view and the viewport it is meant to be

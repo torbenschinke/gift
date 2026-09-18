@@ -1,6 +1,6 @@
 package gift
 
-import "github.com/torbenschinke/gift/geom"
+import "github.com/worldiety/gift/geom"
 
 // View is a short lived description of a piece of user interface.
 //

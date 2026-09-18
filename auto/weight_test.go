@@ -19,7 +19,7 @@ import (
 // claim. It fails the moment a file without the giftauto tag imports anything.
 func TestWithoutTheBuildTagThePackageDependsOnNothingAtAll(t *testing.T) {
 	deps := listDeps(t, "")
-	if len(deps) != 1 || deps[0] != "github.com/torbenschinke/gift/auto" {
+	if len(deps) != 1 || deps[0] != "github.com/worldiety/gift/auto" {
 		t.Fatalf("without the tag the package depends on %v; it must depend on nothing, "+
 			"because a package that pulls in net/http is a package that can smuggle a "+
 			"server into a production binary", deps)
@@ -32,7 +32,7 @@ func TestWithoutTheBuildTagThePackageDependsOnNothingAtAll(t *testing.T) {
 func TestWithTheBuildTagThePackageBringsTheServerIn(t *testing.T) {
 	deps := listDeps(t, "giftauto")
 	want := []string{"net/http", "encoding/json", "image/png",
-		"github.com/hajimehoshi/ebiten/v2", "github.com/torbenschinke/gift"}
+		"github.com/hajimehoshi/ebiten/v2", "github.com/worldiety/gift"}
 	for _, w := range want {
 		if !contains(deps, w) {
 			t.Fatalf("with the tag the package does not depend on %s; the list was %v", w, deps)
@@ -51,7 +51,7 @@ func listDeps(t *testing.T, tags string) []string {
 	if tags != "" {
 		args = append(args, "-tags", tags)
 	}
-	args = append(args, "github.com/torbenschinke/gift/auto")
+	args = append(args, "github.com/worldiety/gift/auto")
 	out, err := exec.Command("go", args...).Output()
 	if err != nil {
 		t.Skipf("go list is unavailable in this environment: %v", err)

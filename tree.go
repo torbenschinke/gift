@@ -1,8 +1,8 @@
 package gift
 
 import (
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/scene"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/scene"
 )
 
 // This file is the read only window onto the retained tree.

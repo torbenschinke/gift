@@ -3,7 +3,7 @@ package ui
 import (
 	"fmt"
 
-	"github.com/torbenschinke/gift/internal/text"
+	"github.com/worldiety/gift/internal/text"
 )
 
 // ErrBadFont is what [LoadFont] wraps when the bytes are not a font this
@@ -66,7 +66,7 @@ var defaultFont Font
 // two packages writing this slot from init would overwrite each other in an
 // order the language does not fix. Together the two calls read:
 //
-//	import _ "github.com/torbenschinke/gift/font/inter"
+//	import _ "github.com/worldiety/gift/font/inter"
 //	...
 //	ui.SetDefaultFont(ui.MustFont(ui.FontQuery{Family: inter.Family}))
 //
@@ -123,7 +123,7 @@ func resolveFont(f Font) *text.Font {
 			"gift links no font unless the application asks for one.\n" +
 			"The quickest way is one of the bundled typefaces:\n" +
 			"\n" +
-			"\timport _ \"github.com/torbenschinke/gift/font/inter\"\n" +
+			"\timport _ \"github.com/worldiety/gift/font/inter\"\n" +
 			"\t...\n" +
 			"\tui.SetDefaultFont(ui.MustFont(ui.FontQuery{Family: inter.Family}))\n" +
 			"\n" +

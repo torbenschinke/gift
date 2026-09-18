@@ -6,7 +6,7 @@ Dieses Dokument beschreibt den ersten vertikalen Prototyp und seine Grenzen.
 Codebeispiele sind API-Skizzen, keine bereits kompilierten Zusagen. Erst nach
 Review beginnt die Implementierung.
 
-Modulpfad: `github.com/torbenschinke/gift`. Toolchain: Go 1.27 (generische
+Modulpfad: `github.com/worldiety/gift`. Toolchain: Go 1.27 (generische
 Methoden), Ebitengine 2.10.1. Die go.mod ist bereits entsprechend gesetzt;
 Ebitengine wird in Schritt 1 gepinnt.
 
@@ -103,7 +103,7 @@ der Abhaengigkeiten aus diesem Abschnitt bleibt dadurch unveraendert.
 ist eine Teilmenge von SVG fuer genau einen Korpus und keine Zusage, SVG zu
 koennen.
 
-Die Modulwurzel wird als `github.com/torbenschinke/gift` importiert. Kein
+Die Modulwurzel wird als `github.com/worldiety/gift` importiert. Kein
 weiteres Verzeichnis gift innerhalb des Moduls und kein generischer
 pkg/-Sammelordner.
 
@@ -1348,7 +1348,7 @@ Debug-Level-Logger muss weiterhin 0 B/op liefern.
 
 ## 16. Im Review zu bestaetigen
 
-1. Modulpfad `github.com/torbenschinke/gift`, Go 1.27, Ebitengine 2.10.1.
+1. Modulpfad `github.com/worldiety/gift`, Go 1.27, Ebitengine 2.10.1.
 2. Frame-Modell: Vollredraw jedes Frames, Invalidierung spart CPU-Arbeit und
    nicht Fuellrate, kein On-Demand-Rendering.
 3. Package-Grenzen: kleine Modulwurzel fuer Runtime-Vertraege, ein ui-Package,

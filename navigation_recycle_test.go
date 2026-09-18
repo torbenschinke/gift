@@ -3,8 +3,8 @@ package gift_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/geom"
 )
 
 // The recycling tests of [gift.Element.Hidden] and [gift.Element.FocusTrap].

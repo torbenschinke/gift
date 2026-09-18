@@ -3,10 +3,10 @@ package ui_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift/font/inter"
-	"github.com/torbenschinke/gift/gifttest"
-	"github.com/torbenschinke/gift/internal/example/components"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/font/inter"
+	"github.com/worldiety/gift/gifttest"
+	"github.com/worldiety/gift/internal/example/components"
+	"github.com/worldiety/gift/ui"
 )
 
 // TestEveryComponentLooksTheWayItLooks is the pixel half of step 9a and 9c,

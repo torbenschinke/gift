@@ -3,11 +3,11 @@ package gifttest_test
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift/font/ibmplexmono"
-	"github.com/torbenschinke/gift/font/inter"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/gifttest"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/font/ibmplexmono"
+	"github.com/worldiety/gift/font/inter"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/gifttest"
+	"github.com/worldiety/gift/ui"
 )
 
 // TestOptionsFontPinsTheFontWithoutAGlobal is the test written from the

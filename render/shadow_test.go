@@ -3,7 +3,7 @@ package render
 import (
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift/geom"
 )
 
 var shadowBounds = geom.Rc(100, 100, 200, 150)

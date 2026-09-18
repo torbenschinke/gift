@@ -141,7 +141,7 @@ type familyKey struct {
 //
 // and an application then pulls that package in for its side effect:
 //
-//	import _ "github.com/torbenschinke/gift/font/inter"
+//	import _ "github.com/worldiety/gift/font/inter"
 //
 // # Why a register and not a second global
 //
@@ -301,7 +301,7 @@ func MustFont(q FontQuery) Font {
 			"Registered faces: %s\n"+
 			"A font package registers its faces from init, so it has to be imported:\n"+
 			"\n"+
-			"\timport _ \"github.com/torbenschinke/gift/font/inter\"\n"+
+			"\timport _ \"github.com/worldiety/gift/font/inter\"\n"+
 			"\n"+
 			"or register your own with ui.RegisterFont.",
 		q, describeFonts()))

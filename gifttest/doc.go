@@ -78,7 +78,7 @@
 // gift links no typeface into an application that does not ask for one, so a
 // consumer supplies its own or imports one of the bundled packages:
 //
-//	import _ "github.com/torbenschinke/gift/font/inter"
+//	import _ "github.com/worldiety/gift/font/inter"
 //
 // The TestMain below is not optional for a golden: without it AssertGolden
 // panics from inside Ebitengine, because pixels can only be read back on the

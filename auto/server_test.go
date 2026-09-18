@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/torbenschinke/gift"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	"github.com/worldiety/gift/ui"
 )
 
 // newTestServer mounts the fixture and returns the HTTP handler under test

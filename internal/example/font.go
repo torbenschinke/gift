@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/torbenschinke/gift/font/inter"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift/font/inter"
+	"github.com/worldiety/gift/ui"
 )
 
 // LoadFont installs the default font of the example programs.

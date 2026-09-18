@@ -3,7 +3,7 @@ package gift
 import (
 	"math"
 
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift/geom"
 )
 
 // MaxDensity is the largest device density gift accepts.

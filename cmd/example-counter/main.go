@@ -31,11 +31,11 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/torbenschinke/gift"
-	backend "github.com/torbenschinke/gift/backend/ebiten"
-	"github.com/torbenschinke/gift/geom"
-	"github.com/torbenschinke/gift/internal/example"
-	"github.com/torbenschinke/gift/ui"
+	"github.com/worldiety/gift"
+	backend "github.com/worldiety/gift/backend/ebiten"
+	"github.com/worldiety/gift/geom"
+	"github.com/worldiety/gift/internal/example"
+	"github.com/worldiety/gift/ui"
 )
 
 // app is the handle the theme switch needs.

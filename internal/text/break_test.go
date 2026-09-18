@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/torbenschinke/gift/geom"
+	"github.com/worldiety/gift/geom"
 )
 
 // width is the measured width of one string on a single unbounded line. The

@@ -1,6 +1,6 @@
 package render
 
-import "github.com/torbenschinke/gift/geom"
+import "github.com/worldiety/gift/geom"
 
 // Backend is the contract a concrete renderer fulfils. The Ebitengine
 // implementation lives in backend/ebiten.

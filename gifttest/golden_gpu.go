@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	eb "github.com/hajimehoshi/ebiten/v2"
-	backend "github.com/torbenschinke/gift/backend/ebiten"
-	"github.com/torbenschinke/gift/geom"
+	backend "github.com/worldiety/gift/backend/ebiten"
+	"github.com/worldiety/gift/geom"
 )
 
 // This is the only file in the package that imports a backend, and the only
